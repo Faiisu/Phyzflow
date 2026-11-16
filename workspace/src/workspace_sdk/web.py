@@ -83,6 +83,7 @@ def serve(
                 "/": ("index.html", "text/html; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
                 "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
             }.get(self.path)
             if asset:

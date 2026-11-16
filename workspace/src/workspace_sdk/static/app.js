@@ -1,3 +1,5 @@
+import { createEdgeRouter, pointAlongEdge, traceEdge } from "./edge-routing.js";
+
 const graph = document.querySelector("#graph");
 const canvas = graph.querySelector("canvas");
 const edgeLabels = document.createElement("div");
@@ -57,7 +59,7 @@ const minimumZoom = 50;
 const maximumZoom = 200;
 const zoomStep = 25;
 let zoomFloor = minimumZoom;
-let edgeExtent = 0;
+let edgePoints = [];
 
 function layoutSize(element) {
   const style = getComputedStyle(element);
@@ -76,6 +78,18 @@ function clampZoom(zoom) {
   return Math.max(zoomFloor, Math.min(maximumZoom, zoom));
 }
 
+function graphDrawingBounds(width, height) {
+  const bounds = { left: 0, top: 0, right: width, bottom: height };
+  for (const { node } of nodes.values()) {
+    if (!node.style.left) continue;
+    bounds.left = Math.min(bounds.left, node.offsetLeft - 24);
+    bounds.top = Math.min(bounds.top, node.offsetTop - 24);
+    bounds.right = Math.max(bounds.right, node.offsetLeft + node.offsetWidth + 80);
+    bounds.bottom = Math.max(bounds.bottom, node.offsetTop + node.offsetHeight + 80);
+  }
+  return bounds;
+}
+
 function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
   // Use fractional outer dimensions so scrollbar visibility cannot resize the graph.
   const { width, height } = layoutSize(graphViewport);
@@ -87,18 +101,21 @@ function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
   graph.style.minWidth = `${width}px`;
   graph.style.minHeight = `${height}px`;
   const graphSize = layoutSize(graph);
-  const scaledWidth = graphSize.width * scale;
-  const scaledHeight = graphSize.height * scale;
+  const bounds = graphDrawingBounds(graphSize.width, graphSize.height);
+  const scaledWidth = (bounds.right - bounds.left) * scale;
+  const scaledHeight = (bounds.bottom - bounds.top) * scale;
   // Leave a viewport of room on each side so the graph can pan under the panels.
-  const left = width + Math.max(0, (width - scaledWidth) / 2);
-  const top = height + Math.max(0, (height - scaledHeight) / 2);
+  const left = width + Math.max(0, (width - scaledWidth) / 2) - bounds.left * scale;
+  const top = height + Math.max(0, (height - scaledHeight) / 2) - bounds.top * scale;
   graphPlane.style.width = `${2 * width + Math.max(width, scaledWidth)}px`;
   graphPlane.style.height = `${2 * height + Math.max(height, scaledHeight)}px`;
   graph.style.left = `${left}px`;
   graph.style.top = `${top}px`;
   graph.style.transform = `scale(${scale})`;
-  graphViewport.scrollLeft = left + (center ? scaledWidth / 2 : graphX * scale) - (anchor?.x ?? graphViewport.clientWidth / 2);
-  graphViewport.scrollTop = top + (center ? scaledHeight / 2 : graphY * scale) - (anchor?.y ?? graphViewport.clientHeight / 2);
+  graphViewport.scrollLeft = left + (center ? (bounds.left + bounds.right) * scale / 2 : graphX * scale) -
+    (anchor?.x ?? graphViewport.clientWidth / 2);
+  graphViewport.scrollTop = top + (center ? (bounds.top + bounds.bottom) * scale / 2 : graphY * scale) -
+    (anchor?.y ?? graphViewport.clientHeight / 2);
 
   const label = graphZoom < 1 ? "<1%" : `${Math.round(graphZoom)}%`;
   if (zoomLevel.textContent !== label) zoomLevel.textContent = label;
@@ -177,8 +194,12 @@ function frameGraphBounds(bounds, fit = false) {
 
 fitGraph.addEventListener("click", () => {
   const bounds = graphBounds([...Array.from(nodes.values(), item => item.node), ...edgeLabels.children]);
-  if (narrowGraph.matches) bounds.right = Math.max(bounds.right, edgeExtent);
-  else bounds.bottom = Math.max(bounds.bottom, edgeExtent);
+  for (const point of edgePoints) {
+    bounds.left = Math.min(bounds.left, point.x);
+    bounds.top = Math.min(bounds.top, point.y);
+    bounds.right = Math.max(bounds.right, point.x);
+    bounds.bottom = Math.max(bounds.bottom, point.y);
+  }
   frameGraphBounds(bounds, true);
 });
 fitSelection.addEventListener("click", () => frameGraphBounds(graphBounds([nodes.get(activeNode).node]), true));
@@ -195,6 +216,7 @@ function animateWheelZoom(time) {
 graphViewport.addEventListener("wheel", event => {
   if (!zoomSettings || event.ctrlKey || event.metaKey || !event.deltaY) return;
   event.preventDefault();
+  if (graphViewport.classList.contains("is-dragging-node")) return;
   const pixelUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graphViewport.clientHeight : 1;
   const factor = Math.exp(-event.deltaY * pixelUnit * zoomSettings.speed * 0.002);
   const pendingTarget = wheelZoom?.target ?? graphZoom;
@@ -217,7 +239,8 @@ graphViewport.addEventListener("wheel", event => {
 
 let pan = null;
 graphViewport.addEventListener("pointerdown", event => {
-  if (pan || event.button !== 0 || event.target.closest(".node")) return;
+  if (pan || !event.isPrimary || event.button !== 0 || event.target.closest(".node") ||
+      graphViewport.classList.contains("is-dragging-node")) return;
   cancelWheelZoom();
   graphViewport.setPointerCapture(event.pointerId);
   graphViewport.classList.add("is-panning");
@@ -826,6 +849,7 @@ function positionGraph(project) {
     `${steps.length} ${steps.length === 1 ? "node" : "nodes"} / ${count} ${count === 1 ? "edge" : "edges"}`;
   layoutGraph(graphZoom, true);
   if (steps.length) inspectNode(steps[0], project);
+  enableNodeDragging(steps);
   const graphObserver = new ResizeObserver(() => {
     layoutGraph();
     drawEdges(steps);
@@ -834,86 +858,137 @@ function positionGraph(project) {
   graphObserver.observe(graphViewport, { box: "border-box" });
 }
 
+function enableNodeDragging(steps) {
+  let drag = null;
+  let draggedButton = null;
+  let redraw = null;
+
+  graphViewport.addEventListener("pointerdown", event => {
+    if (!event.isPrimary || event.button !== 0 || drag || pan) return;
+    draggedButton = null;
+    const button = event.target.closest(".inspect-node");
+    if (!button) return;
+    const node = button.closest(".node");
+    cancelWheelZoom();
+    button.setPointerCapture(event.pointerId);
+    drag = {
+      id: event.pointerId, button, node,
+      x: event.clientX, y: event.clientY,
+      left: parseFloat(node.style.left) || 0,
+      top: parseFloat(node.style.top) || 0,
+    };
+  });
+
+  graphViewport.addEventListener("pointermove", event => {
+    if (drag?.id !== event.pointerId) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!draggedButton) {
+      if (Math.hypot(dx, dy) < 4) return;
+      draggedButton = drag.button;
+      drag.button.click();
+      drag.node.classList.add("is-dragging");
+      graphViewport.classList.add("is-dragging-node");
+    }
+    const scale = graph.getBoundingClientRect().width / layoutSize(graph).width;
+    drag.node.style.left = `${drag.left + dx / scale}px`;
+    drag.node.style.top = `${drag.top + dy / scale}px`;
+    if (redraw === null) {
+      redraw = requestAnimationFrame(() => {
+        redraw = null;
+        drawEdges(steps);
+      });
+    }
+  });
+
+  graphViewport.addEventListener("lostpointercapture", event => {
+    if (drag?.id !== event.pointerId) return;
+    drag.node.classList.remove("is-dragging");
+    graphViewport.classList.remove("is-dragging-node");
+    drag = null;
+    if (draggedButton) layoutGraph();
+  });
+
+  for (const type of ["click", "dblclick"]) {
+    graphViewport.addEventListener(type, event => {
+      if (event.detail && event.target === draggedButton) event.stopPropagation();
+    }, true);
+  }
+}
+
 function drawEdges(steps) {
-  const width = graph.offsetWidth;
-  const height = graph.offsetHeight;
+  const { left, top, right, bottom } = graphDrawingBounds(graph.offsetWidth, graph.offsetHeight);
+  const width = right - left;
+  const height = bottom - top;
   const scale = window.devicePixelRatio || 1;
+  canvas.style.left = `${left}px`;
+  canvas.style.top = `${top}px`;
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
   canvas.width = Math.ceil(width * scale);
   canvas.height = Math.ceil(height * scale);
   const ctx = canvas.getContext("2d");
   ctx.scale(scale, scale);
+  ctx.translate(-left, -top);
   const vertical = narrowGraph.matches;
   if (vertical) ctx.transform(0, 1, 1, 0, 0, 0);
   ctx.lineJoin = "round";
-  const frames = new Map(steps.map(step => {
+  const screenCards = steps.map(step => {
     const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = nodes.get(step.id).node;
-    return [step.id, {
-      start: vertical ? offsetTop : offsetLeft,
-      end: vertical ? offsetTop + offsetHeight : offsetLeft + offsetWidth,
-      middle: vertical ? offsetLeft + offsetWidth / 2 : offsetTop + offsetHeight / 2,
-      outside: vertical ? offsetLeft + offsetWidth : offsetTop + offsetHeight,
-    }];
-  }));
-  const edges = steps.flatMap(step => step.dependencies.map(source => ({
-    step, source,
-    active: activeNode === step.id || activeNode === source,
-    bypass: nodes.get(step.id).column - nodes.get(source).column > 1,
+    return { left: offsetLeft, right: offsetLeft + offsetWidth, top: offsetTop, bottom: offsetTop + offsetHeight };
+  });
+  const cards = vertical
+    ? screenCards.map(card => ({ left: card.top, right: card.bottom, top: card.left, bottom: card.right }))
+    : screenCards;
+  const route = createEdgeRouter(cards);
+  const style = getComputedStyle(graph);
+  const edgeColors = {
+    in: style.getPropertyValue("--edge-in").trim(),
+    out: style.getPropertyValue("--edge-out").trim(),
+  };
+  const edges = steps.flatMap((step, target) => step.dependencies.map(source => ({
+    step, source, target, direction: activeNode === step.id ? "in" : activeNode === source ? "out" : null,
   })));
-  const selected = edges.filter(edge => edge.active);
-  const routeStart = Math.max(0, ...Array.from(frames.values(), frame => frame.outside)) + 12;
-  const routeEnd = (vertical ? width : height) - 20;
-  const selectedBypasses = selected.filter(edge => edge.bypass);
-  const gap = Math.min(18, (routeEnd - routeStart) / Math.max(1, selectedBypasses.length));
-  const lanes = new Map(selectedBypasses.map((edge, index) => [edge, routeStart + gap * index]));
-  const mutedBypass = routeStart + gap * selectedBypasses.length;
-  edgeExtent = edges.some(edge => edge.bypass) ? mutedBypass + 1 : 0;
-  const destinationLabels = new Map();
   const tags = [];
-  for (const edge of [...edges.filter(edge => !edge.active), ...selected]) {
-    const from = frames.get(edge.source);
-    const to = frames.get(edge.step.id);
-    const x1 = from.end + 3;
-    const x2 = to.start - 4;
-    const y1 = from.middle;
-    const y2 = to.middle;
-    const color = edge.active ? "#ff9b88" : "#73788770";
-    ctx.lineWidth = edge.active ? 2.2 : 1.4;
+  const labelBoxes = [];
+  edgePoints = [];
+  for (const edge of [...edges.filter(edge => !edge.direction), ...edges.filter(edge => edge.direction)]) {
+    const path = route(nodes.get(edge.source).index, edge.target);
+    for (const point of path.points) edgePoints.push(vertical ? { x: point.y, y: point.x } : point);
+    const end = path.points.at(-1);
+    const color = edge.direction ? edgeColors[edge.direction] : "#73788770";
+    ctx.lineWidth = edge.direction ? 2.2 : 1.4;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    const midpoint = (x1 + x2) / 2;
-    const lane = lanes.get(edge) ?? mutedBypass;
-    if (edge.bypass) {
-      ctx.lineTo(x1 + 11, y1);
-      ctx.lineTo(x1 + 11, lane);
-      ctx.lineTo(x2 - 11, lane);
-      ctx.lineTo(x2 - 11, y2);
-      ctx.lineTo(x2, y2);
-    } else {
-      ctx.bezierCurveTo(midpoint, y1, midpoint, y2, x2, y2);
-    }
+    traceEdge(ctx, path);
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(x2, y2);
-    ctx.lineTo(x2 - 6, y2 - 4);
-    ctx.lineTo(x2 - 6, y2 + 4);
+    ctx.moveTo(end.x, end.y);
+    ctx.lineTo(end.x - 6, end.y - 4);
+    ctx.lineTo(end.x - 6, end.y + 4);
     ctx.fill();
-    if (!edge.active) continue;
-    const boundary = edge.bypass ? lane : (y1 + y2) / 2;
-    let direction = edge.bypass ? x2 - 29 : midpoint;
-    if (vertical && edge.bypass) {
-      const labelIndex = destinationLabels.get(edge.step.id) ?? 0;
-      destinationLabels.set(edge.step.id, labelIndex + 1);
-      direction = Math.max(x1 + 18, direction - labelIndex * 17);
-    }
+    if (!edge.direction) continue;
     const bindings = inputBindings(edge.step, edge.source).join(", ");
     const tag = element("span", bindings, "edge-label");
-    tag.classList.toggle("edge-label-above", !vertical && !edge.bypass);
-    tag.style.left = `${vertical ? boundary : direction}px`;
-    tag.style.top = `${vertical ? direction : boundary}px`;
+    tag.dataset.direction = edge.direction;
+    const halfWidth = (bindings.length * 6 + 8) / 2;
+    const above = !vertical && Boolean(path.cubic);
+    const candidates = [.5, .64, .36, .77, .23].map(fraction => {
+      const point = pointAlongEdge(path, fraction);
+      const x = vertical ? point.y : point.x;
+      const y = vertical ? point.x : point.y;
+      return { x, y, left: x - halfWidth, right: x + halfWidth,
+        top: y - (above ? 18 : 7), bottom: y + (above ? -3 : 7) };
+    });
+    const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const position = candidates.find(box => screenCards.every(other => !overlaps(box, other)) &&
+      labelBoxes.every(other => !overlaps(box, other))) ??
+      candidates.find(box => labelBoxes.every(other => !overlaps(box, other))) ?? candidates[0];
+    labelBoxes.push(position);
+    tag.classList.toggle("edge-label-above", above);
+    tag.style.left = `${position.x}px`;
+    tag.style.top = `${position.y}px`;
     tags.push(tag);
   }
   edgeLabels.replaceChildren(...tags);

@@ -12,6 +12,52 @@ TELEMETRY = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Tel
 
 
 class GraphFitTests(unittest.TestCase):
+    def test_dragging_a_zoomed_node_moves_its_edges_and_keeps_source_access(self):
+        with local_ui(TELEMETRY, single_flow=True) as (url, _), browser_page() as page:
+            page.goto(url)
+            page.get_by_role("button", name="Zoom in", exact=True).click()
+            graph = page.get_by_role("region", name="Flow dependencies")
+            node = graph.get_by_role("button", name="Inspect Run Parallel Pipeline", exact=True)
+            neighbor = graph.get_by_role("button", name="Inspect Create Batch", exact=True)
+            before = node.bounding_box()
+            assert before is not None
+            neighbor_before = neighbor.bounding_box()
+            x = before["x"] + before["width"] / 2
+            y = before["y"] + before["height"] / 2
+            page.mouse.move(x, y)
+            page.mouse.down()
+            page.mouse.move(x + 95, y + 120, steps=8)
+
+            def edge_leaves_node(button):
+                return button.evaluate("""async button => {
+                    await new Promise(requestAnimationFrame);
+                    const card = button.closest(".node");
+                    const canvas = document.querySelector("#graph canvas");
+                    const x = card.offsetLeft + card.offsetWidth + 7 - canvas.offsetLeft;
+                    const y = card.offsetTop + card.offsetHeight / 2 - canvas.offsetTop;
+                    const scale = canvas.width / canvas.offsetWidth;
+                    const pixels = canvas.getContext("2d").getImageData(
+                        Math.floor(x * scale), Math.floor(y * scale) - 2, 2, 5
+                    ).data;
+                    return Math.max(...pixels.filter((_, index) => index % 4 === 3)) > 0;
+                }""")
+
+            try:
+                expect(node).to_have_attribute("aria-pressed", "true")
+                self.assertTrue(edge_leaves_node(node))
+            finally:
+                page.mouse.up()
+            after = node.bounding_box()
+            assert after is not None
+            self.assertAlmostEqual(after["x"] - before["x"], 95, delta=2)
+            self.assertAlmostEqual(after["y"] - before["y"], 120, delta=2)
+            self.assertEqual(neighbor.bounding_box(), neighbor_before)
+
+            dialog = page.get_by_role("dialog", name="Run Parallel Pipeline files", exact=True)
+            expect(dialog).to_be_hidden()
+            node.dblclick()
+            expect(dialog.locator("#node-source-name")).to_contain_text("nodes/stream_pipeline/entrypoint.py")
+
     def test_fit_graph_and_selection_keep_node_source_access(self):
         with TemporaryDirectory() as temporary, browser_page() as page:
             project = Path(temporary) / "Telemetry Control Room"

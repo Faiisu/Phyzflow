@@ -11,6 +11,8 @@
   --toolbar: #2b2e34;
   --canvas: #191b20;
   --accent: #ff826e;
+  --edge-in: #71d6fa;
+  --edge-out: #ffb17f;
   --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   --edge: .85rem;
   --panel-top: 4.65rem;
@@ -354,6 +356,8 @@ canvas { position: absolute; inset: 0; pointer-events: none; }
   white-space: nowrap;
 }
 .edge-label-above { transform: translate(-50%, calc(-100% - 3px)); }
+.edge-label[data-direction="in"], #inspector-inputs .inspector-dependency { color: var(--edge-in); }
+.edge-label[data-direction="out"], #inspector-feeds .inspector-dependency { color: var(--edge-out); }
 
 .node {
   position: relative;
@@ -371,6 +375,8 @@ canvas { position: absolute; inset: 0; pointer-events: none; }
   box-shadow: 0 2px 5px #090a0e80;
 }
 .node.is-selected { border-color: var(--accent); outline: 1px solid var(--accent); outline-offset: 2px; }
+.node.is-dragging { z-index: 3; }
+.graph-scroll.is-dragging-node { cursor: grabbing; user-select: none; }
 .node::before, .node::after {
   position: absolute;
   top: calc(50% - 4px);
@@ -391,7 +397,8 @@ canvas { position: absolute; inset: 0; pointer-events: none; }
 .node-metrics { justify-content: space-between; }
 .node-duration { color: var(--muted); font: .69rem/1.3 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .node .node-duration { color: #545461; font-size: .65rem; }
-.inspect-node { position: absolute; inset: 0; width: 100%; border: 0; border-radius: inherit; background: transparent; }
+.inspect-node { position: absolute; inset: 0; width: 100%; border: 0; border-radius: inherit; background: transparent; cursor: grab; }
+.graph-scroll.is-dragging-node .inspect-node { cursor: grabbing; }
 .inspect-node:hover { background: #ffffff27; }
 
 .badge {
@@ -467,13 +474,13 @@ canvas { position: absolute; inset: 0; pointer-events: none; }
   padding: 0;
   border: 0;
   background: transparent;
-  color: #ffd0c7;
+  color: inherit;
   text-align: left;
   text-decoration: underline;
   font: inherit;
   overflow-wrap: anywhere;
 }
-.inspector-dependency:hover { color: #fff0ed; }
+.inspector-dependency:hover { filter: brightness(1.17); }
 
 textarea, pre {
   max-width: 100%;

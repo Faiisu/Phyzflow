@@ -25,7 +25,8 @@ from .web import STATIC, serve
 
 VIEW_PATH = re.compile(
     r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view"
-    r"(/(?:app\.css|app\.js|prism-syntax\.js|project|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+    r"(/(?:app\.css|app\.js|edge-routing\.js|prism-syntax\.js|project|"
+    r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
 
 
