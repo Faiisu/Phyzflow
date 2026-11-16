@@ -28,7 +28,7 @@ From the same directory, start the Web UI and open the printed loopback URL:
 ../.venv/bin/workspace ui
 ```
 
-Run the prefilled sample, then replace the input with `{"text":"Debug failure"}` and run again. Open the traceback in Run details to find the failing predictor helper. After editing project source, stop and restart the UI to load the changes.
+Select a node on the canvas or in Flow outline to see its inputs, downstream nodes, and source location in Inspector. Use Run flow in the toolbar to run the prefilled sample. In the Run tab, replace the input with `{"text":"Debug failure"}` and run again. Open the traceback in Run details to find the failing predictor helper. After editing project source, stop and restart the UI to load the changes.
 
 ### Add and debug a node
 
@@ -60,7 +60,7 @@ The output now includes `"queue":"billing-urgent"`. In the UI, run the prefilled
 
 ### Recover a completed run
 
-You can close the browser tab while a run is in progress. Leave the `workspace ui` process running, then reopen its URL. In **Run history**, select a saved run to see its status, duration, source version, and node summaries. Use **Refresh history** if the run finishes after you reopen the page.
+You can close the browser tab while a run is in progress. Leave the `workspace ui` process running, then reopen its URL. Open the **History** tab and select a saved run to see its status, duration, source version, and node summaries. Use **Refresh history** if the run finishes after you reopen the page.
 
 Workspace saves completed runs in `.workspace/runs/` inside the project, so the same history is available after restarting the UI. Each source version identifies the project Python code loaded by Workspace, including uncommitted edits. History stores input and output metadata such as value type and tensor shape, dtype, and device. Saved failures show the exception type and project stack locations. Request values and exception messages are absent from history by default.
 
@@ -73,7 +73,7 @@ cd evidence-demo
 ../../.venv/bin/workspace ui
 ```
 
-Open the printed URL and run the prefilled ticket. Its category should be `technical`. The flow reports **Succeeded**, but the output says `billing`. In **Run history**, select **Refresh history** and open the successful run to find the first node that returned the wrong value.
+Open the printed URL and run the prefilled ticket. Its category should be `technical`. The flow reports **Succeeded**, but the output says `billing`. Open the **History** tab, select **Refresh history**, and open the successful run to find the first node that returned the wrong value.
 
 <details>
 <summary>Check the diagnosis</summary>

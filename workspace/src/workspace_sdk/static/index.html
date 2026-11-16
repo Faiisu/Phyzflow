@@ -3,44 +3,104 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Workspace | Flow runner</title>
+  <meta name="theme-color" content="#24262b">
+  <title>Workspace | Flow editor</title>
   <link rel="stylesheet" href="/app.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header>
-    <span class="mark" aria-hidden="true"></span>
-    <h1>Workspace</h1>
+  <header class="toolbar">
+    <div class="toolbar-project">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <strong>Workspace</strong>
+      <span id="project-name" class="project-name" hidden></span>
+    </div>
+    <div class="toolbar-actions">
+      <span id="status" role="status" class="badge">Ready</span>
+      <button type="submit" form="run-form" class="primary-button" id="run-flow" disabled>
+        <span class="play-mark" aria-hidden="true"></span>Run flow
+      </button>
+    </div>
   </header>
-  <main>
-    <section class="flow" aria-labelledby="flow-heading">
-      <div class="section-title"><h2 id="flow-heading">Flow</h2></div>
+
+  <main class="editor" aria-label="Flow workspace">
+    <aside class="outline" aria-labelledby="outline-heading">
+      <h2 class="dock-heading" id="outline-heading">Flow outline</h2>
+      <ul id="outline-list"></ul>
+    </aside>
+
+    <section class="stage" aria-labelledby="graph-heading">
+      <div class="document-bar">
+        <h1 id="graph-heading" class="sr-only">Execution graph</h1>
+        <span class="document-tab"><i aria-hidden="true"></i>flow.py</span>
+      </div>
       <div class="graph-scroll" role="region" aria-label="Flow dependencies" tabindex="0">
         <div id="graph"><canvas aria-hidden="true"></canvas></div>
       </div>
-      <form>
-        <label for="input">Run input <span>JSON</span></label>
-        <textarea id="input" rows="5" spellcheck="false" required></textarea>
-        <button type="submit" disabled>Run flow <span aria-hidden="true">→</span></button>
-      </form>
-    </section>
-    <section class="run" aria-labelledby="run-heading">
-      <div class="section-title">
-        <h2 id="run-heading">Run details</h2>
-        <span id="status" role="status">Ready</span>
-      </div>
-      <div id="result"><p>Run the flow to inspect its output or trace an error.</p></div>
-    </section>
-    <section class="history" aria-labelledby="history-heading">
-      <div class="section-title">
-        <h2 id="history-heading">Run history</h2>
-        <button type="button" id="refresh-history">Refresh history</button>
-      </div>
-      <div class="history-grid">
-        <div id="history-list"></div>
-        <div id="history-detail"></div>
+      <div class="canvas-footer">
+        <span>Execution graph</span>
+        <span id="graph-summary"></span>
       </div>
     </section>
+
+    <aside class="dock" aria-label="Workspace tools">
+      <div class="dock-tabs" role="tablist" aria-label="Workspace panels">
+        <button type="button" id="tab-inspector" role="tab" aria-controls="panel-inspector" aria-selected="true">Inspector</button>
+        <button type="button" id="tab-run" role="tab" aria-controls="panel-run" aria-selected="false" tabindex="-1">Run</button>
+        <button type="button" id="tab-history" role="tab" aria-controls="panel-history" aria-selected="false" tabindex="-1">History</button>
+      </div>
+
+      <div id="panel-inspector" role="tabpanel" aria-labelledby="tab-inspector">
+        <section aria-labelledby="inspector-heading">
+          <h2 class="dock-heading" id="inspector-heading">Node inspector</h2>
+          <div class="dock-content">
+            <p id="inspector-empty" class="muted">Select a node to inspect its connections.</p>
+            <div id="inspector-detail" hidden>
+              <div class="inspector-title">
+                <strong id="inspector-name"></strong>
+                <span id="inspector-state" class="badge"></span>
+              </div>
+              <p id="inspector-description" hidden></p>
+              <div class="source-row">
+                <code id="inspector-source"></code>
+                <button type="button" id="copy-source" class="text-button">Copy location</button>
+              </div>
+              <div class="inspector-links">
+                <div><h3>Inputs</h3><ul id="inspector-inputs"></ul></div>
+                <div><h3>Feeds</h3><ul id="inspector-feeds"></ul></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div id="panel-run" role="tabpanel" aria-labelledby="tab-run" hidden>
+        <form id="run-form" aria-labelledby="input-label">
+          <div class="dock-heading"><label id="input-label" for="input">Run input</label><span class="muted">JSON</span></div>
+          <div class="dock-content">
+            <textarea id="input" rows="7" spellcheck="false" autocomplete="off" required></textarea>
+            <button type="button" class="text-button" id="reset-input" disabled>Reset input</button>
+          </div>
+        </form>
+        <section aria-labelledby="run-heading">
+          <h2 class="dock-heading" id="run-heading">Run details</h2>
+          <div id="result" class="dock-content">
+            <p class="muted">Run the flow to see its output and node diagnostics.</p>
+          </div>
+        </section>
+      </div>
+
+      <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>
+        <section aria-labelledby="history-heading">
+          <div class="dock-heading">
+            <h2 id="history-heading">Run history</h2>
+            <button type="button" id="refresh-history" class="text-button">Refresh history</button>
+          </div>
+          <div id="history-list" class="dock-content"></div>
+          <div id="history-detail" class="dock-content"></div>
+        </section>
+      </div>
+    </aside>
   </main>
 </body>
 </html>

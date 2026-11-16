@@ -1,5 +1,6 @@
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from inspect import getdoc
 import json
 from pathlib import Path
 from threading import Lock
@@ -23,8 +24,18 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
             "id": step.id,
             "file": file,
             "line": line,
-            "dependencies": [
+            "source": relative_source(root, file),
+            "description": (getdoc(step.function) or "").split("\n\n", 1)[0],
+            "dependencies": list(dict.fromkeys(
                 ref.step_id for ref in step.arguments.values() if isinstance(ref, Output)
+            )),
+            "arguments": [
+                {
+                    "name": name,
+                    "source": ref.step_id if isinstance(ref, Output) else ref.name,
+                    "kind": "node" if isinstance(ref, Output) else "input",
+                }
+                for name, ref in step.arguments.items()
             ],
         })
 
@@ -58,7 +69,9 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
                 name, content_type = asset
                 self.send_bytes((STATIC / name).read_bytes(), content_type)
             elif self.path == "/project":
-                data = json.dumps({"steps": graph, "input": default_input}).encode()
+                data = json.dumps({
+                    "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
+                }).encode()
                 self.send_bytes(data, "application/json")
             elif self.path == "/history" or self.path.startswith("/history/"):
                 try:

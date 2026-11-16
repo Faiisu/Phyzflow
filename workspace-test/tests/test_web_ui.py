@@ -32,6 +32,7 @@ class WebUITests(unittest.TestCase):
                 self.assertNotEqual(actual, sample["output"])
                 self.assertEqual(actual, {"category": "billing", "priority": "standard"})
 
+                page.get_by_role("tab", name="History").click()
                 history = page.get_by_role("region", name="Run history")
                 history.get_by_role("button", name="Refresh history").click()
                 history.get_by_text("Succeeded", exact=True).click()
@@ -91,6 +92,7 @@ class WebUITests(unittest.TestCase):
                 page.goto(url)
                 button = page.get_by_role("button", name="Run flow")
                 expect(button).to_be_enabled()
+                page.get_by_role("tab", name="Run").click()
                 page.locator("#input").fill(json.dumps({"text": secret}))
                 button.click()
                 predict = page.locator(".node").filter(has=page.get_by_role("heading", name="Predict", exact=True))
@@ -101,6 +103,7 @@ class WebUITests(unittest.TestCase):
                 (root / "finish").touch()
                 reopened = browser.new_page()
                 reopened.goto(url)
+                reopened.get_by_role("tab", name="History").click()
                 history = reopened.get_by_role("region", name="Run history")
                 expect(history).to_be_visible()
                 deadline = monotonic() + 5
@@ -125,9 +128,11 @@ class WebUITests(unittest.TestCase):
                 reopened.goto(url)
                 button = reopened.get_by_role("button", name="Run flow")
                 expect(button).to_be_enabled()
+                reopened.get_by_role("tab", name="Run").click()
                 reopened.locator("#input").fill(json.dumps({"text": secret}))
                 button.click()
                 expect(reopened.locator("#result pre")).to_contain_text(secret)
+                reopened.get_by_role("tab", name="History").click()
                 history = reopened.get_by_role("region", name="Run history")
                 history.get_by_role("button", name="Refresh history").click()
                 expect(history.get_by_text("Failed", exact=True)).to_be_visible()
@@ -162,7 +167,27 @@ class WebUITests(unittest.TestCase):
                 expect(button).to_be_enabled()
                 expect(page.get_by_text("Depends on Prepare, Predict", exact=True)).to_have_count(1)
                 expect(page.get_by_text("Depends on Prepare", exact=True)).to_have_count(1)
-                expect(page.get_by_text("ticket_demo/entrypoint.py:4", exact=True)).to_be_visible()
+                inspector = page.get_by_role("region", name="Node inspector")
+                expect(inspector.get_by_text("ticket_demo/entrypoint.py:4", exact=True)).to_be_visible()
+                outline = page.get_by_role("complementary", name="Flow outline")
+                outline.get_by_role("button", name="02 Predict").click()
+                expect(page.get_by_role("button", name="Inspect Predict")).to_have_attribute("aria-pressed", "true")
+                select_decide = page.get_by_role("button", name="Inspect Decide")
+                select_decide.focus()
+                select_decide.press("Enter")
+                expect(select_decide).to_have_attribute("aria-pressed", "true")
+                expect(outline.get_by_role("button", name="03 Decide")).to_have_attribute("aria-pressed", "true")
+                expect(inspector.get_by_text("category", exact=False)).to_contain_text("Predict")
+                expect(inspector.get_by_text("Run output", exact=True)).to_be_visible()
+                page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=url)
+                inspector.get_by_role("button", name="Copy location").click()
+                expect(inspector.get_by_role("button", name="Location copied")).to_be_visible()
+                self.assertEqual(
+                    page.evaluate("navigator.clipboard.readText()"),
+                    f"{root / 'ticket_demo' / 'entrypoint.py'}:12",
+                )
+                page.get_by_role("tab", name="Inspector").press("ArrowRight")
+                expect(page.get_by_role("tab", name="Run")).to_have_attribute("aria-selected", "true")
                 expect(page.locator("#input")).to_have_value(json.dumps(sample["input"], indent=2))
 
                 button.click()
@@ -172,6 +197,9 @@ class WebUITests(unittest.TestCase):
                 self.assertEqual(json.loads(page.locator("#result pre").inner_text()), sample["output"])
                 expect(button).to_be_enabled()
 
+                page.locator("#input").fill(json.dumps(sample["failure_input"]))
+                page.get_by_role("button", name="Reset input").click()
+                expect(page.locator("#input")).to_have_value(json.dumps(sample["input"], indent=2))
                 page.locator("#input").fill(json.dumps(sample["failure_input"]))
                 button.click()
                 expect(page.get_by_role("status")).to_have_text("Failed")
@@ -184,9 +212,17 @@ class WebUITests(unittest.TestCase):
                 screenshot = os.environ.get("WORKSPACE_TEST_SCREENSHOT")
                 if screenshot:
                     page.screenshot(path=screenshot)
-                    page.set_viewport_size({"width": 390, "height": 844})
+                page.set_viewport_size({"width": 390, "height": 844})
+                self.assertTrue(page.evaluate("document.documentElement.scrollWidth === innerWidth"))
+                self.assertTrue(page.locator("#graph").evaluate(
+                    """graph => {
+                      const nodes = [...graph.querySelectorAll(".node")];
+                      return nodes.every((node, index) =>
+                        index === 0 || node.offsetTop > nodes[index - 1].offsetTop);
+                    }"""
+                ))
+                if screenshot:
                     page.screenshot(path=screenshot.replace(".png", "-mobile.png"), full_page=True)
-                    self.assertTrue(page.evaluate("document.documentElement.scrollWidth === innerWidth"))
 
             original = source.stat()
             source.write_text(source.read_text().replace('"billing"', '"support"'))

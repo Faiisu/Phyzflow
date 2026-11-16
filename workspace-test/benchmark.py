@@ -16,7 +16,7 @@ DEMO_PROJECT = Path(__file__).resolve().parent
 TRAINED_PROJECT = DEMO_PROJECT / "deployment-trial"
 UI_RUNS = """
 async ({warmup, runs, output}) => {
-  const button = document.querySelector("button");
+  const button = document.querySelector("#run-flow");
   const result = document.querySelector("#result");
   const durations = [];
 
@@ -89,6 +89,7 @@ raise SystemExit(status)
     with local_ui(project, [sys.executable, "-c", measure_cli]) as (url, process), browser_page() as page:
         page.goto(url)
         expect(page.get_by_role("button", name="Run flow")).to_be_enabled()
+        page.get_by_role("tab", name="Run").click()
         page.locator("#input").fill(json.dumps(sample["input"]))
         durations = page.evaluate(UI_RUNS, {
             "warmup": warmup, "runs": runs, "output": sample["output"],
