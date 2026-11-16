@@ -1,0 +1,26 @@
+{
+  "access": [
+    "I forgot my password and cannot log in",
+    "My account login is locked",
+    "The password reset email never arrived",
+    "I cannot access my account after signing out",
+    "Please reset the login for my user account",
+    "My authentication code is invalid"
+  ],
+  "billing": [
+    "There is a duplicate charge on my invoice",
+    "Please refund the last payment",
+    "The credit card was billed twice",
+    "I need a copy of the monthly invoice",
+    "My invoice lists the wrong subscription amount",
+    "The payment receipt includes an extra charge"
+  ],
+  "technical": [
+    "The app crashes when I open a document",
+    "A blank screen appears after the update",
+    "The application freezes instead of saving changes",
+    "The app shows an error and the screen goes blank",
+    "The file upload fails with a server error",
+    "The dashboard is stuck loading"
+  ]
+}
