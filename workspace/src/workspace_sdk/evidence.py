@@ -1,9 +1,12 @@
 from contextvars import ContextVar
+from itertools import islice
 import json
+from math import isfinite
 from typing import Any
 
 
 active_reasons: ContextVar[list[str] | None] = ContextVar("active_reasons", default=None)
+active_metrics: ContextVar[dict[str, dict[str, int | float]] | None] = ContextVar("active_metrics", default=None)
 
 
 def record_reason(reason: str) -> None:
@@ -11,6 +14,27 @@ def record_reason(reason: str) -> None:
     reasons = active_reasons.get()
     if reasons is not None and type(reason) is str and len(reasons) < 10:
         reasons.append(reason[:512])
+
+
+def record_metrics(stage: str, values: dict[str, int | float]) -> None:
+    """Report numeric aggregates with fixed labels.
+
+    A node can report up to eight groups. Each call checks the first eight
+    entries and keeps only supported numeric values.
+    """
+    groups = active_metrics.get()
+    if groups is None or type(stage) is not str or not 1 <= len(stage) <= 48 or type(values) is not dict:
+        return
+    if stage not in groups and len(groups) >= 8:
+        return
+    metrics = {
+        name: value
+        for name, value in islice(values.items(), 8)
+        if type(name) is str and 1 <= len(name) <= 48
+        and ((type(value) is int and value.bit_length() <= 53) or (type(value) is float and isfinite(value)))
+    }
+    if metrics:
+        groups[stage] = metrics
 
 
 def capture_sample(value: Any) -> str | None:

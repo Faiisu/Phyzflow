@@ -7,6 +7,8 @@ from queue import Empty, Full, Queue
 from threading import Event, current_thread
 from time import perf_counter_ns, sleep
 
+from workspace_sdk import record_metrics
+
 from nodes.create_batch.entrypoint import Batch, Event as Reading
 
 from .scoring import score, watch_sheet_process
@@ -158,24 +160,43 @@ def stream_pipeline(batch: Batch) -> dict:
     io_counts = Counter(item.thread for item in prepared.values())
     cpu_counts = Counter(item.pid for item in scored.values())
     dead_letters = {event_id: item.reason for event_id, item in prepared.items() if item.reason}
+    ingress_metrics = ingress.metrics()
+    scoring_metrics = ready.metrics()
+    io_overlap = peak_overlap((item.started_ns, item.finished_ns) for item in prepared.values())
+    cpu_overlap = peak_overlap((item.started_ns, item.finished_ns) for item in scored.values())
+    ingress_wait = p95_ms(item.started_ns - item.queued_ns for item in prepared.values())
+    scoring_wait = p95_ms(item.started_ns - prepared[key].finished_ns for key, item in scored.items())
+    record_queue_metrics("Ingress queue", ingress_metrics, ingress_wait)
+    record_metrics("I/O workers", {"Peak overlap": io_overlap})
+    record_queue_metrics("Scoring queue", scoring_metrics, scoring_wait)
+    record_metrics("CPU workers", {"Peak overlap": cpu_overlap})
     return {
         "scores": scored,
         "dead_letters": dead_letters,
         "metrics": {
             "elapsed_ms": round(elapsed * 1000, 2),
             "records_per_second": round(len(prepared) / elapsed, 1),
-            "queues": {"ingress": ingress.metrics(), "ready_to_score": ready.metrics()},
+            "queues": {"ingress": ingress_metrics, "ready_to_score": scoring_metrics},
             "io_records_by_thread": dict(sorted(io_counts.items())),
             "scored_by_process": {str(pid): count for pid, count in sorted(cpu_counts.items())},
-            "peak_io_overlap": peak_overlap((item.started_ns, item.finished_ns) for item in prepared.values()),
-            "peak_cpu_overlap": peak_overlap((item.started_ns, item.finished_ns) for item in scored.values()),
+            "peak_io_overlap": io_overlap,
+            "peak_cpu_overlap": cpu_overlap,
             "peak_cpu_inflight": peak_inflight,
             "extra_attempts": sum(max(0, item.attempts - 1) for item in prepared.values()),
             "recovered_after_retry": sum(item.attempts > 1 and item.reason is None for item in prepared.values()),
-            "p95_ingress_wait_ms": p95_ms(item.started_ns - item.queued_ns for item in prepared.values()),
+            "p95_ingress_wait_ms": ingress_wait,
             "p95_io_ms": p95_ms(item.finished_ns - item.started_ns for item in prepared.values()),
-            "p95_ready_wait_ms": p95_ms(item.started_ns - prepared[key].finished_ns for key, item in scored.items()),
+            "p95_ready_wait_ms": scoring_wait,
             "p95_cpu_ms": p95_ms(item.finished_ns - item.started_ns for item in scored.values()),
             "p95_scored_event_ms": p95_ms(item.finished_ns - prepared[key].queued_ns for key, item in scored.items()),
         },
     }
+
+
+def record_queue_metrics(stage: str, metrics: dict[str, int], wait_ms: float) -> None:
+    record_metrics(stage, {
+        "Capacity": metrics["capacity"],
+        "Peak depth": metrics["peak_depth"],
+        "Blocked enqueues": metrics["blocked_puts"],
+        "p95 wait (ms)": wait_ms,
+    })

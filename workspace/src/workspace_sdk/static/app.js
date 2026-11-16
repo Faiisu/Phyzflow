@@ -555,8 +555,12 @@ const executionStatus = document.querySelector("#execution-status");
 const executionStarted = document.querySelector("#execution-started");
 const executionFinished = document.querySelector("#execution-finished");
 const executionDuration = document.querySelector("#execution-duration");
+const executionMetrics = document.querySelector("#execution-metrics");
+const executionMetricGroups = document.querySelector("#execution-metric-groups");
 const currentNodeTiming = new Map();
+const completedRunStates = ["succeeded", "failed"];
 let currentRunId = null;
+let currentRunFinished = false;
 let executionHistory = null;
 
 function selectInspectorTab(selected) {
@@ -603,6 +607,10 @@ function renderInspectorExecution() {
   currentRunButton.hidden = !executionHistory;
   executionTiming.hidden = !timing;
   executionNote.hidden = Boolean(timing);
+  const completed = executionHistory
+    ? completedRunStates.includes(executionHistory.status)
+    : currentRunFinished;
+  renderExecutionMetrics(completed ? timing?.metrics : null);
 
   if (!timing) {
     executionNote.textContent = executionHistory?.message ?? (executionHistory
@@ -621,6 +629,26 @@ function renderInspectorExecution() {
   executionDuration.textContent = skipped ? "Not measured" : formatDuration(timing.duration_ms) || (running ? "Running" : "Unavailable");
 }
 
+function renderExecutionMetrics(metrics) {
+  const groups = Object.entries(metrics ?? {}).map(([name, values], index) => {
+    const group = element("div", "", "execution-metric-group");
+    const title = element("h4", name);
+    title.id = `execution-metric-group-${index}`;
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-labelledby", title.id);
+    const list = element("dl");
+    for (const [label, value] of Object.entries(values)) {
+      const row = element("div");
+      row.append(element("dt", label), element("dd", String(value)));
+      list.append(row);
+    }
+    group.append(title, list);
+    return group;
+  });
+  executionMetrics.hidden = groups.length === 0;
+  executionMetricGroups.replaceChildren(...groups);
+}
+
 currentRunButton.addEventListener("click", () => {
   executionHistory = null;
   renderInspectorExecution();
@@ -631,8 +659,9 @@ function trackInspectorExecution(message) {
   if (!message.step_id) {
     if (message.status === "running") {
       currentRunId = message.run_id;
-      renderInspectorExecution();
     }
+    currentRunFinished = completedRunStates.includes(message.status);
+    renderInspectorExecution();
     return;
   }
 
@@ -643,6 +672,7 @@ function trackInspectorExecution(message) {
   } else if (message.status !== "skipped") {
     timing.finished_at = message.time;
     timing.duration_ms = message.duration_ms;
+    timing.metrics = message.metrics;
   }
   currentNodeTiming.set(message.step_id, timing);
 }
@@ -1119,6 +1149,7 @@ form.addEventListener("submit", async event => {
   result.replaceChildren();
   setStatus("running");
   currentRunId = null;
+  currentRunFinished = false;
   currentNodeTiming.clear();
   for (const entry of nodes.values()) {
     const { node, state, duration } = entry;

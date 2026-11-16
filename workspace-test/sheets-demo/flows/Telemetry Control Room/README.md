@@ -5,6 +5,12 @@ sheet in the `sheets-demo` Workspace and click **Run flow**. The Run panel shows
 alert delivery, and queue and worker metrics. Double-click any graph node to inspect its Python
 package. The workload uses the Python standard library and runs in the existing project environment.
 
+After a run completes, select **Run Parallel Pipeline** and open **Execution** in the Node
+inspector to compare queue wait times and worker overlap. Selecting a different run in History
+shows that run's measurements. The pipeline opts in by calling `workspace_sdk.record_metrics`
+from the executing node with fixed stage and metric labels and numeric aggregates. It can report
+up to eight groups of eight values per node without enabling input or output samples.
+
 From the repository root, using the sheet project's installed SDK:
 
 ```sh

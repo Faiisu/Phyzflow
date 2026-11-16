@@ -8,7 +8,7 @@ from types import ModuleType
 from typing import Any, Callable
 from uuid import uuid4
 
-from .evidence import active_reasons, capture_sample
+from .evidence import active_metrics, active_reasons, capture_sample
 from .flow import Flow, Input, Output
 from .project import ordered_steps, source_location
 
@@ -115,7 +115,10 @@ def run(
             argument_metadata["input_sample"] = capture_sample(arguments)
         emit("running", **location, **argument_metadata)
         reasons: list[str] | None = [] if include_metadata else None
+        metrics: dict[str, dict[str, int | float]] | None = {} if include_metadata else None
         reason_scope = active_reasons.set(reasons)
+        metrics_scope = active_metrics.set(metrics)
+        evidence: dict[str, Any] = {}
         started = perf_counter_ns() if on_event is not None else None
         try:
             try:
@@ -124,6 +127,11 @@ def run(
                 if started is not None:
                     location["duration_ms"] = (perf_counter_ns() - started) / 1_000_000
                 active_reasons.reset(reason_scope)
+                active_metrics.reset(metrics_scope)
+                if reasons:
+                    evidence["reasons"] = reasons.copy()
+                if metrics:
+                    evidence["metrics"] = metrics.copy()
         except Exception as error:
             unsuccessful.add(step.id)
             trace = traceback.TracebackException.from_exception(error)
@@ -132,21 +140,17 @@ def run(
             if include_metadata:
                 diagnostics["diagnostic_error_type"] = diagnostic_error_type(error)
                 diagnostics["error_frames"] = list(diagnostic_frames(trace))
-            if reasons:
-                diagnostics["reasons"] = reasons.copy()
             location.update(file=frame.filename, line=frame.lineno)
             emit(
                 "failed", **location,
                 error_type=type(error).__name__, traceback="".join(trace.format()),
-                **diagnostics,
+                **diagnostics, **evidence,
             )
         else:
             metadata: dict[str, Any] = {"output": summarize(outputs[step.id])} if include_metadata else {}
             if collect_samples:
                 metadata["output_sample"] = capture_sample(outputs[step.id])
-            if reasons:
-                metadata["reasons"] = reasons.copy()
-            emit("succeeded", **location, **metadata)
+            emit("succeeded", **location, **metadata, **evidence)
 
     status = "failed" if unsuccessful else "succeeded"
     output = outputs.get(flow.output.step_id)

@@ -447,10 +447,15 @@ canvas { position: absolute; inset: 0; pointer-events: none; }
 .execution-run { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem .65rem; }
 #execution-run-label { font: .72rem/1.4 var(--mono); }
 #execution-note { margin-top: .4rem; font-size: .75rem; }
-#execution-timing { display: grid; gap: .38rem; margin: .7rem 0 0; }
-#execution-timing > div { display: grid; grid-template-columns: 4.4rem minmax(0, 1fr); gap: .4rem; }
-#execution-timing dt { color: var(--muted); font-size: .75rem; }
-#execution-timing dd { margin: 0; font: .72rem/1.4 var(--mono); }
+#inspector-execution dl { display: grid; gap: .38rem; margin: .5rem 0 0; }
+#inspector-execution dl > div { display: grid; grid-template-columns: 4.4rem minmax(0, 1fr); gap: .4rem; }
+#inspector-execution dt { color: var(--muted); font-size: .75rem; }
+#inspector-execution dd { margin: 0; font: .72rem/1.4 var(--mono); }
+#execution-metrics { margin-top: .9rem; }
+#execution-metrics > p { font-size: .72rem; }
+.execution-metric-group { margin-top: .65rem; padding-top: .55rem; border-top: 1px solid var(--line); }
+.execution-metric-group h4 { margin: 0; font-size: .78rem; }
+#inspector-execution .execution-metric-group dl > div { grid-template-columns: minmax(0, 1fr) auto; }
 .inspector-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
 .inspector-links h3 { color: var(--muted); font-size: .73rem; }
 .inspector-links ul { list-style: none; padding: 0; margin-top: .4rem; }

@@ -1,11 +1,58 @@
 import unittest
+from typing import cast
 
 import torch
 
-from workspace_sdk import Flow, Output, Step, run
+from workspace_sdk import Flow, Output, Step, record_metrics, run
 
 
 class RunnerTests(unittest.TestCase):
+    def test_operational_metrics_are_bounded_and_scoped_to_reporting_nodes(self):
+        def report():
+            record_metrics("x" * 49, {"Count": 1})
+            record_metrics("Queue", cast(dict[str, int | float], {
+                "Capacity": 0, "Wait": 1.25, "Raw": "private", "Infinite": float("inf"),
+                "Invalid count": True, "Large count": 2**53, "x" * 49: 10,
+                "Blocked": 4, "Overflow": 1,
+            }))
+            for index in range(20):
+                record_metrics(f"Worker {index}", {"Overlap": index})
+            return "private payload"
+
+        def inspect(received):
+            self.assertEqual(received, "private payload")
+            return None
+
+        flow = Flow(
+            inputs=(),
+            steps=(Step("Report", report, {}), Step("Inspect", inspect, {"received": Output("Report")})),
+            output=Output("Inspect"),
+        )
+        for include_metadata in (True, False):
+            with self.subTest(include_metadata=include_metadata):
+                events = []
+                self.assertEqual(run(flow, {}, events.append, include_metadata=include_metadata).status, "succeeded")
+                reported = [event for event in events if "metrics" in event]
+                if include_metadata:
+                    self.assertEqual([event["step_id"] for event in reported], ["Report"])
+                    metrics = reported[0]["metrics"]
+                    self.assertEqual(list(metrics), ["Queue", *(f"Worker {index}" for index in range(7))])
+                    self.assertEqual(metrics["Queue"], {"Capacity": 0, "Wait": 1.25, "Blocked": 4})
+                else:
+                    self.assertEqual(reported, [])
+                self.assertFalse(any("output_sample" in event or "input_sample" in event for event in events))
+
+    def test_failed_node_reports_metrics_collected_before_the_error(self):
+        def check():
+            record_metrics("Queue", {"Blocked": 3})
+            raise RuntimeError("private failure")
+
+        flow = Flow(inputs=(), steps=(Step("Check", check, {}),), output=Output("Check"))
+        events = []
+        self.assertEqual(run(flow, {}, events.append, include_metadata=True).status, "failed")
+        failed = next(event for event in events if event.get("step_id") == "Check" and event["status"] == "failed")
+        self.assertEqual(failed["metrics"], {"Queue": {"Blocked": 3}})
+
     def test_sample_capture_leaves_unsupported_objects_untouched(self):
         class MutatingList(list):
             def __iter__(self):
