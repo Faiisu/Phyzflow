@@ -48,6 +48,7 @@ def serve(
             ],
         })
 
+    node_files_by_id = {step["id"]: step["file"] for step in graph}
     fixture = root / "sample.json"
     default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
     history = RunHistory(root)
@@ -205,7 +206,15 @@ def serve(
                 nonlocal connected
                 if connected:
                     if message.get("file"):
-                        message = {**message, "file": relative_source(root, message["file"])}
+                        file = relative_source(root, message["file"])
+                        message = {**message, "file": file}
+                        if message["status"] == "failed" and file is not None and message.get("step_id") in node_files_by_id:
+                            try:
+                                path = node_source_path(root, node_files_by_id[message["step_id"]], file)
+                            except (OSError, RuntimeError):
+                                pass
+                            else:
+                                message["source_target"] = path.relative_to(root).as_posix()
                     data = json.dumps(message, allow_nan=False).encode() + b"\n"
                     try:
                         self.wfile.write(data)

@@ -59,15 +59,33 @@
               <span id="inspector-duration" class="node-duration" hidden></span>
             </span>
           </div>
+          <p id="inspector-blocked-by" hidden></p>
           <p id="inspector-description" hidden></p>
           <div class="source-row">
             <code id="inspector-source"></code>
             <button type="button" id="copy-source" class="text-button">Copy location</button>
           </div>
           <button type="button" id="open-node-files" class="text-button" aria-haspopup="dialog">View files</button>
-          <div class="inspector-links">
+          <div class="inspector-tabs" role="tablist" aria-label="Node details">
+            <button type="button" role="tab" id="inspector-connections-tab" aria-controls="inspector-connections" aria-selected="true">Connections</button>
+            <button type="button" role="tab" id="inspector-execution-tab" aria-controls="inspector-execution" aria-selected="false" tabindex="-1">Execution</button>
+          </div>
+          <div class="inspector-links" id="inspector-connections" role="tabpanel" aria-labelledby="inspector-connections-tab" tabindex="0">
             <div><h3>Inputs</h3><ul id="inspector-inputs"></ul></div>
             <div><h3>Feeds</h3><ul id="inspector-feeds"></ul></div>
+          </div>
+          <div id="inspector-execution" role="tabpanel" aria-labelledby="inspector-execution-tab" tabindex="0" hidden>
+            <div class="execution-run">
+              <p id="execution-run-label" class="muted"></p>
+              <button type="button" id="execution-current-run" class="text-button" hidden>Show current run</button>
+            </div>
+            <p id="execution-note" class="muted"></p>
+            <dl id="execution-timing" hidden>
+              <div><dt>Status</dt><dd id="execution-status"></dd></div>
+              <div><dt>Started</dt><dd id="execution-started"></dd></div>
+              <div><dt>Finished</dt><dd id="execution-finished"></dd></div>
+              <div><dt>Duration</dt><dd id="execution-duration"></dd></div>
+            </dl>
           </div>
         </div>
       </div>
@@ -153,6 +171,8 @@
   <div id="panel-zoom" class="overlay canvas-controls">
     <span id="graph-summary"></span>
     <button type="button" id="center-graph" class="text-button" disabled>Center</button>
+    <button type="button" id="fit-graph" class="text-button" disabled>Fit graph</button>
+    <button type="button" id="fit-selection" class="text-button" disabled>Fit selection</button>
     <div class="zoom-controls" role="group" aria-label="Graph zoom">
       <button type="button" id="zoom-out" aria-label="Zoom out" title="Zoom out" disabled>−</button>
       <button type="button" id="zoom-reset" aria-label="Reset zoom to 100%" title="Reset zoom to 100%" disabled>

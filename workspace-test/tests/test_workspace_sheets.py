@@ -226,13 +226,18 @@ class WorkspaceSheetTests(unittest.TestCase):
                 directory = root / "flows" / name
                 directory.mkdir(parents=True)
                 (directory / "flow.py").write_text(
-                    "from steps import finish\n"
+                    "from steps import finish, prepare\n"
                     "from workspace_sdk import Flow, Input, Output, Step\n"
-                    "flow = Flow(('text',), (Step('Finish', finish, {'text': Input('text')}),), Output('Finish'))\n"
+                    "flow = Flow(('text',), (\n"
+                    "    Step('Prepare', prepare, {'text': Input('text')}),\n"
+                    "    Step('Finish', finish, {'text': Output('Prepare')}),\n"
+                    "), Output('Finish'))\n"
                 )
                 (directory / "steps.py").write_text(
                     "from pathlib import Path\n"
                     "from time import sleep\n"
+                    "def prepare(text):\n"
+                    "    return text\n"
                     "def finish(text):\n"
                     "    while not Path('release').exists():\n"
                     "        sleep(0.02)\n"
@@ -254,6 +259,8 @@ class WorkspaceSheetTests(unittest.TestCase):
                 second = page.frame_locator('iframe[title="Second flow"]')
                 first.get_by_role("button", name="Run flow").click()
                 expect(first_tab).to_contain_text("Running")
+                first.get_by_role("button", name="Inspect Finish", exact=True).click()
+                first.get_by_role("button", name="Zoom in", exact=True).click()
                 first_path = page.locator('iframe[title="First flow"]').get_attribute("src")
                 self.assertEqual(first_path, "/flows/0/view/")
                 first_url = urljoin(url, first_path)
@@ -263,18 +270,33 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(second_tab).to_have_attribute("aria-selected", "true")
                 second.get_by_role("button", name="Run flow").click()
                 expect(second_tab).to_contain_text("Running")
-                expect(second.locator(".node .state")).to_have_text("Running")
+                expect(second.locator(".node").filter(has=second.get_by_role("heading", name="Finish")).locator(".state")).to_have_text("Running")
                 second_path = page.locator('iframe[title="Second flow"]').get_attribute("src")
                 self.assertEqual(second_path, "/flows/1/view/")
                 second_url = urljoin(url, second_path)
                 self.assertEqual(page.request.get(f"{second_url}project").json()["zoom"], zoom)
                 expect(first_tab).to_contain_text("Running")
 
+                def delay_stop_response(route):
+                    response = route.fetch()
+                    sleep(0.3)
+                    route.fulfill(response=response)
+
+                page.route("**/flows/0/stop", delay_stop_response)
                 page.get_by_role("button", name="Stop First").click()
                 expect(first_tab).to_contain_text("Stopped")
                 expect(second_tab).to_have_attribute("aria-selected", "true")
                 expect(second_tab).to_contain_text("Running")
                 self.assertEqual(page.request.get(first_url).status, 503)
+                first_tab.click()
+                expect(page.locator("#notice-message")).to_have_text("Stopped · Run snapshot")
+                expect(first.get_by_role("status")).to_have_text("Stopped")
+                expect(first.get_by_role("button", name="Inspect Finish", exact=True)).to_have_attribute("aria-pressed", "true")
+                expect(first.locator("#zoom-level")).to_have_text("125%")
+                expect(first.locator(".node .state")).to_have_text(["Succeeded", "Running"])
+                expect(first.get_by_role("button", name="Run flow")).to_be_disabled()
+                expect(first.locator("#result .error")).to_have_count(0)
+                second_tab.click()
 
                 # Keep the event stream idle past the upstream connection timeout.
                 sleep(2.2)
@@ -284,7 +306,10 @@ class WorkspaceSheetTests(unittest.TestCase):
                 self.assertEqual(len(page.request.get(f"{second_url}history").json()), 1)
 
                 first_tab.click()
+                expect(first.locator(".node .state")).to_have_text(["Succeeded", "Running"])
                 page.get_by_role("button", name="Open flow").click()
+                expect(first.get_by_role("status")).to_have_text("Ready")
+                expect(first.locator(".node .state")).to_have_text(["Idle", "Idle"])
                 (root / "flows" / "First" / "release").touch()
                 first.get_by_role("button", name="Run flow").click()
                 expect(first_tab).to_contain_text("Succeeded")

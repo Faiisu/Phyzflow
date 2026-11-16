@@ -9,7 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .evidence import active_reasons, capture_sample
-from .flow import Flow, Input
+from .flow import Flow, Input, Output
 from .project import ordered_steps, source_location
 
 
@@ -95,9 +95,12 @@ def run(
     for step in steps:
         path, line = source_location(step.function)
         location: dict[str, str | int | float | None] = {"step_id": step.id, "file": path, "line": line}
-        if any(getattr(ref, "step_id", None) in unsuccessful for ref in step.arguments.values()):
+        blocked_by = list(dict.fromkeys(
+            ref.step_id for ref in step.arguments.values() if isinstance(ref, Output) and ref.step_id in unsuccessful
+        ))
+        if blocked_by:
             unsuccessful.add(step.id)
-            emit("skipped", **location)
+            emit("skipped", **location, blocked_by=blocked_by)
             continue
 
         arguments = {

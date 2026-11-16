@@ -1,5 +1,9 @@
 const graph = document.querySelector("#graph");
 const canvas = graph.querySelector("canvas");
+const edgeLabels = document.createElement("div");
+edgeLabels.className = "edge-labels";
+edgeLabels.setAttribute("aria-hidden", "true");
+graph.append(edgeLabels);
 const graphPlane = document.querySelector("#graph-plane");
 const graphViewport = document.querySelector(".graph-scroll");
 const zoomIn = document.querySelector("#zoom-in");
@@ -7,6 +11,8 @@ const zoomOut = document.querySelector("#zoom-out");
 const zoomReset = document.querySelector("#zoom-reset");
 const zoomLevel = document.querySelector("#zoom-level");
 const centerGraph = document.querySelector("#center-graph");
+const fitGraph = document.querySelector("#fit-graph");
+const fitSelection = document.querySelector("#fit-selection");
 const narrowGraph = window.matchMedia("(max-width: 600px)");
 const form = document.querySelector("#run-form");
 const input = document.querySelector("#input");
@@ -40,12 +46,18 @@ const refreshHistoryButton = document.querySelector("#refresh-history");
 const nodes = new Map();
 const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped" };
 let activeNode = null;
+let stopPhase = null;
+let runInProgress = false;
+let projectReady = false;
+let deferredRunError = null;
 let graphZoom = 100;
 let zoomSettings = null;
 let wheelZoom = null;
 const minimumZoom = 50;
 const maximumZoom = 200;
 const zoomStep = 25;
+let zoomFloor = minimumZoom;
+let edgeExtent = 0;
 
 function layoutSize(element) {
   const style = getComputedStyle(element);
@@ -61,7 +73,7 @@ function graphAnchor(x = graphViewport.clientWidth / 2, y = graphViewport.client
 }
 
 function clampZoom(zoom) {
-  return Math.max(minimumZoom, Math.min(maximumZoom, zoom));
+  return Math.max(zoomFloor, Math.min(maximumZoom, zoom));
 }
 
 function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
@@ -70,6 +82,7 @@ function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
   const { graphX, graphY } = anchor ?? graphAnchor();
 
   graphZoom = clampZoom(nextZoom);
+  if (graphZoom >= minimumZoom) zoomFloor = minimumZoom;
   const scale = graphZoom / 100;
   graph.style.minWidth = `${width}px`;
   graph.style.minHeight = `${height}px`;
@@ -87,12 +100,13 @@ function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
   graphViewport.scrollLeft = left + (center ? scaledWidth / 2 : graphX * scale) - (anchor?.x ?? graphViewport.clientWidth / 2);
   graphViewport.scrollTop = top + (center ? scaledHeight / 2 : graphY * scale) - (anchor?.y ?? graphViewport.clientHeight / 2);
 
-  const label = `${Math.round(graphZoom)}%`;
+  const label = graphZoom < 1 ? "<1%" : `${Math.round(graphZoom)}%`;
   if (zoomLevel.textContent !== label) zoomLevel.textContent = label;
   zoomIn.disabled = graphZoom >= maximumZoom;
-  zoomOut.disabled = graphZoom <= minimumZoom;
+  zoomOut.disabled = graphZoom <= zoomFloor;
   zoomReset.disabled = graphZoom === 100;
   centerGraph.disabled = false;
+  fitGraph.disabled = nodes.size === 0;
 }
 
 function cancelWheelZoom() {
@@ -110,6 +124,64 @@ zoomIn.addEventListener("click", () => setZoom(graphZoom + zoomStep));
 zoomOut.addEventListener("click", () => setZoom(graphZoom - zoomStep));
 zoomReset.addEventListener("click", () => setZoom(100));
 centerGraph.addEventListener("click", () => setZoom(graphZoom, true));
+
+function graphBounds(elements) {
+  const graphRect = graph.getBoundingClientRect();
+  const ratio = 100 / graphZoom;
+  const rectangles = elements.map(element => element.getBoundingClientRect());
+  return {
+    left: (Math.min(...rectangles.map(rect => rect.left)) - graphRect.left) * ratio,
+    top: (Math.min(...rectangles.map(rect => rect.top)) - graphRect.top) * ratio,
+    right: (Math.max(...rectangles.map(rect => rect.right)) - graphRect.left) * ratio,
+    bottom: (Math.max(...rectangles.map(rect => rect.bottom)) - graphRect.top) * ratio,
+  };
+}
+
+function frameGraphBounds(bounds, fit = false) {
+  const rect = selector => document.querySelector(selector).getBoundingClientRect();
+  const viewport = graphViewport.getBoundingClientRect();
+  const toolbar = rect("#panel-toolbar");
+  const outlinePanel = rect("#panel-outline");
+  const sidebar = rect(".overlay-stack");
+  const controls = rect("#panel-zoom");
+  const panelMenu = rect("#panel-switcher > summary");
+  const width = viewport.width;
+  const top = toolbar.height ? toolbar.bottom - viewport.top : 0;
+  const bottom = Math.min(controls.height ? controls.top : viewport.bottom, panelMenu.top) - viewport.top;
+  const areas = [
+    { left: 0, right: width, top: Math.max(top, outlinePanel.bottom - viewport.top, sidebar.bottom - viewport.top), bottom },
+    { left: outlinePanel.width ? outlinePanel.right - viewport.left : 0,
+      right: sidebar.height ? sidebar.left - viewport.left : width, top, bottom },
+  ];
+  const margin = 16;
+  const zoomFor = area => 100 * Math.min(
+    (area.right - area.left - 2 * margin) / (bounds.right - bounds.left),
+    (area.bottom - area.top - 2 * margin) / (bounds.bottom - bounds.top),
+  );
+  const available = areas.reduce((best, area) => zoomFor(area) > zoomFor(best) ? area : best);
+  const area = zoomFor(available) > 0 ? available : { left: 0, right: width, top, bottom };
+  let zoom = graphZoom;
+  if (fit) {
+    zoom = Math.max(0.001, zoomFor(area));
+    // A large graph can need a wider overview than the manual zoom range.
+    zoomFloor = Math.min(minimumZoom, zoom);
+  }
+  cancelWheelZoom();
+  layoutGraph(zoom, false, {
+    x: (area.left + area.right) / 2,
+    y: (area.top + area.bottom) / 2,
+    graphX: (bounds.left + bounds.right) / 2,
+    graphY: (bounds.top + bounds.bottom) / 2,
+  });
+}
+
+fitGraph.addEventListener("click", () => {
+  const bounds = graphBounds([...Array.from(nodes.values(), item => item.node), ...edgeLabels.children]);
+  if (narrowGraph.matches) bounds.right = Math.max(bounds.right, edgeExtent);
+  else bounds.bottom = Math.max(bounds.bottom, edgeExtent);
+  frameGraphBounds(bounds, true);
+});
+fitSelection.addEventListener("click", () => frameGraphBounds(graphBounds([nodes.get(activeNode).node]), true));
 
 function animateWheelZoom(time) {
   const { start, from, target, anchor } = wheelZoom;
@@ -285,7 +357,7 @@ function sourceIsDirty() {
 function updateSourceDirty() {
   const dirty = sourceIsDirty();
   document.documentElement.toggleAttribute("data-unsaved-source", dirty);
-  saveNodeSource.disabled = !dirty || savingSource || Boolean(nodeSourceRequest);
+  saveNodeSource.disabled = !dirty || savingSource || Boolean(nodeSourceRequest) || stopPhase === "stopped";
 }
 
 function canLeaveSource() {
@@ -331,8 +403,8 @@ async function requestSource(index, data, signal) {
   return result;
 }
 
-async function openSource(index, path) {
-  if (!canLeaveSource()) return;
+async function openSource(index, path, line = null) {
+  if (stopPhase === "stopped" || !canLeaveSource()) return;
   nodeSourceRequest?.abort();
   const request = new AbortController();
   nodeSourceRequest = request;
@@ -349,6 +421,20 @@ async function openSource(index, path) {
     nodeSourceInput.scrollTop = nodeSourceInput.scrollLeft = 0;
     highlightSource();
     nodeSourceMessage.textContent = "";
+    if (Number.isInteger(line) && line > 0) {
+      const lines = nodeSourceInput.value.split("\n", line);
+      if (lines.length === line) {
+        const end = lines.join("\n").length;
+        const lineHeight = parseFloat(getComputedStyle(nodeSourceInput).lineHeight);
+        nodeSourceInput.focus();
+        nodeSourceInput.setSelectionRange(end - lines.at(-1).length, end);
+        nodeSourceInput.scrollTop = Math.max(0, (line - 1) * lineHeight - nodeSourceInput.clientHeight / 3);
+        syncSourceScroll();
+        nodeSourceMessage.textContent = `Line ${line} selected.`;
+      } else {
+        nodeSourceMessage.textContent = `Line ${line} is unavailable in the current file.`;
+      }
+    }
     for (const button of nodeFilesTree.querySelectorAll("[data-file]")) {
       button.setAttribute("aria-current", String(button.dataset.file === path));
     }
@@ -357,7 +443,7 @@ async function openSource(index, path) {
   } finally {
     if (nodeSourceRequest === request) {
       nodeSourceRequest = null;
-      nodeSourceInput.readOnly = false;
+      nodeSourceInput.readOnly = stopPhase === "stopped";
       updateSourceDirty();
     }
   }
@@ -371,7 +457,7 @@ nodeSourceInput.addEventListener("input", () => {
 });
 nodeSourceForm.addEventListener("submit", async event => {
   event.preventDefault();
-  if (savingSource || nodeSourceRequest || !sourceIsDirty()) return;
+  if (stopPhase === "stopped" || savingSource || nodeSourceRequest || !sourceIsDirty()) return;
   const { index, path, revision } = currentSource;
   const source = nodeSourceInput.value;
   savingSource = true;
@@ -388,7 +474,7 @@ nodeSourceForm.addEventListener("submit", async event => {
     nodeSourceMessage.textContent = error.message;
   } finally {
     savingSource = false;
-    nodeSourceInput.readOnly = false;
+    nodeSourceInput.readOnly = stopPhase === "stopped";
     updateSourceDirty();
   }
 });
@@ -418,7 +504,8 @@ function fileTree(entries, parent, source, index) {
   return list;
 }
 
-async function showNodeFiles(step, index) {
+async function showNodeFiles(id, index, source, line = null) {
+  if (stopPhase === "stopped" || !canLeaveSource()) return;
   nodeFilesRequest?.abort();
   nodeSourceRequest?.abort();
   nodeSourceRequest = null;
@@ -428,7 +515,7 @@ async function showNodeFiles(step, index) {
   nodeSourceMessage.textContent = "Select a Python or JSON file.";
   const request = new AbortController();
   nodeFilesRequest = request;
-  nodeFilesHeading.textContent = `${step.id} files`;
+  nodeFilesHeading.textContent = `${id} files`;
   nodeFilesPath.hidden = true;
   nodeFilesTree.replaceChildren();
   nodeFilesMessage.textContent = "Loading files…";
@@ -444,10 +531,10 @@ async function showNodeFiles(step, index) {
     }
     nodeFilesPath.textContent = path === "." ? "Flow directory" : path;
     nodeFilesPath.hidden = false;
-    nodeFilesTree.replaceChildren(fileTree(entries, path === "." ? "" : path, step.source, index));
+    nodeFilesTree.replaceChildren(fileTree(entries, path === "." ? "" : path, source, index));
     nodeFilesMessage.textContent = truncated ? "Showing part of this folder tree." : "";
-    const entrypoint = [...nodeFilesTree.querySelectorAll("[data-file]")].find(button => button.dataset.file === step.source);
-    entrypoint?.click();
+    const listed = [...nodeFilesTree.querySelectorAll("[data-file]")].some(button => button.dataset.file === source);
+    if (listed || line !== null) await openSource(index, source, line);
   } catch (error) {
     if (!request.signal.aborted) nodeFilesMessage.textContent = "Could not load the node files. Close this view and try again.";
   }
@@ -459,11 +546,145 @@ function formatDuration(value) {
   return `${value.toFixed(value < 1 ? 3 : 2)} ms`;
 }
 
+const inspectorTabs = [...document.querySelectorAll(".inspector-tabs [role=tab]")];
+const executionRunLabel = document.querySelector("#execution-run-label");
+const currentRunButton = document.querySelector("#execution-current-run");
+const executionNote = document.querySelector("#execution-note");
+const executionTiming = document.querySelector("#execution-timing");
+const executionStatus = document.querySelector("#execution-status");
+const executionStarted = document.querySelector("#execution-started");
+const executionFinished = document.querySelector("#execution-finished");
+const executionDuration = document.querySelector("#execution-duration");
+const currentNodeTiming = new Map();
+let currentRunId = null;
+let executionHistory = null;
+
+function selectInspectorTab(selected) {
+  for (const tab of inspectorTabs) {
+    const active = tab === selected;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    document.getElementById(tab.getAttribute("aria-controls")).hidden = !active;
+  }
+}
+
+for (const [index, tab] of inspectorTabs.entries()) {
+  tab.addEventListener("click", () => selectInspectorTab(tab));
+  tab.addEventListener("keydown", event => {
+    const target = {
+      ArrowLeft: inspectorTabs.at(index - 1),
+      ArrowRight: inspectorTabs[(index + 1) % inspectorTabs.length],
+      Home: inspectorTabs[0],
+      End: inspectorTabs.at(-1),
+    }[event.key];
+    if (!target) return;
+    event.preventDefault();
+    selectInspectorTab(target);
+    target.focus();
+  });
+}
+
+function showExecutionTime(container, timestamp, fallback) {
+  if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) {
+    container.textContent = fallback;
+    return;
+  }
+  const time = element("time", timestamp.replace("T", " ").replace(/(?:\+00:00|Z)$/, " UTC"));
+  time.dateTime = timestamp;
+  container.replaceChildren(time);
+}
+
+function renderInspectorExecution() {
+  const timing = executionHistory
+    ? executionHistory.steps?.find(step => step.id === activeNode)
+    : currentNodeTiming.get(activeNode);
+  const runId = executionHistory?.id ?? currentRunId;
+  executionRunLabel.textContent = runId ? `${executionHistory ? "Saved run" : "Current run"} · ${runId}` : "";
+  currentRunButton.hidden = !executionHistory;
+  executionTiming.hidden = !timing;
+  executionNote.hidden = Boolean(timing);
+
+  if (!timing) {
+    executionNote.textContent = executionHistory?.message ?? (executionHistory
+      ? "This node has no execution record in the selected run."
+      : currentRunId ? "No execution event received for this node." : "Run the flow or select a saved run.");
+    return;
+  }
+
+  executionStatus.textContent = labels[timing.status] ?? "Unavailable";
+  const skipped = timing.status === "skipped";
+  const running = timing.status === "running";
+  showExecutionTime(executionStarted, skipped ? null : timing.started_at, skipped ? "Not run" : "Unavailable");
+  // Older saved runs recorded the last event time but omitted the start timestamp.
+  const finished = skipped || running ? null : timing.finished_at ?? timing.time;
+  showExecutionTime(executionFinished, finished, skipped ? "Not run" : running ? "Running" : "Unavailable");
+  executionDuration.textContent = skipped ? "Not measured" : formatDuration(timing.duration_ms) || (running ? "Running" : "Unavailable");
+}
+
+currentRunButton.addEventListener("click", () => {
+  executionHistory = null;
+  renderInspectorExecution();
+});
+
+function trackInspectorExecution(message) {
+  if (!message.run_id) return;
+  if (!message.step_id) {
+    if (message.status === "running") {
+      currentRunId = message.run_id;
+      renderInspectorExecution();
+    }
+    return;
+  }
+
+  const timing = currentNodeTiming.get(message.step_id) ?? {};
+  timing.status = message.status;
+  if (message.status === "running") {
+    timing.started_at = message.time;
+  } else if (message.status !== "skipped") {
+    timing.finished_at = message.time;
+    timing.duration_ms = message.duration_ms;
+  }
+  currentNodeTiming.set(message.step_id, timing);
+}
+
 function showInspectorState(value, duration = "") {
   inspectorState.textContent = labels[value] ?? "Idle";
   inspectorState.dataset.state = value ?? "idle";
   inspectorDuration.textContent = duration;
   inspectorDuration.hidden = !duration;
+  const skipped = document.querySelector("#inspector-blocked-by");
+  const blockers = nodes.get(activeNode)?.blockedBy ?? [];
+  skipped.textContent = blockers.length ? blockedByText(blockers, id => nodes.get(id)?.node.dataset.state) : "";
+  skipped.hidden = !blockers.length;
+  renderInspectorExecution();
+}
+
+function blockedByText(blockers, statusFor) {
+  const names = blockers.map(id => {
+    const status = labels[statusFor(id)];
+    return status ? `${id} (${status})` : id;
+  });
+  return `Blocked by ${names.join(", ")}`;
+}
+
+function focusGraphNode(id) {
+  const { node, select } = nodes.get(id);
+  select.click();
+  frameGraphBounds(graphBounds([node]));
+  select.focus({ preventScroll: true });
+}
+
+function dependencyButton(id) {
+  const button = element("button", id, "inspector-dependency");
+  button.type = "button";
+  button.addEventListener("click", () => focusGraphNode(id));
+  return button;
+}
+
+function inputBindings(step, source) {
+  return step.arguments
+    .filter(argument => argument.kind === "node" && argument.source === source)
+    .map(argument => argument.name);
 }
 
 function inspectNode(step, project) {
@@ -474,8 +695,9 @@ function inspectNode(step, project) {
     previous.outlineSelect.setAttribute("aria-pressed", "false");
   }
   activeNode = step.id;
+  fitSelection.disabled = false;
   const { node, select, outlineSelect, index, duration } = nodes.get(step.id);
-  openNodeFiles.onclick = () => showNodeFiles(step, index);
+  openNodeFiles.onclick = () => showNodeFiles(step.id, index, step.source);
   node.classList.add("is-selected");
   select.setAttribute("aria-pressed", "true");
   outlineSelect.setAttribute("aria-pressed", "true");
@@ -504,11 +726,16 @@ function inspectNode(step, project) {
 
   const inputs = step.arguments.map(argument => {
     const item = element("li", argument.name);
-    const source = argument.kind === "node" ? argument.source : `Run input · ${argument.source}`;
-    item.append(element("small", source));
+    item.append(argument.kind === "node"
+      ? dependencyButton(argument.source)
+      : element("small", `Run input · ${argument.source}`));
     return item;
   });
-  const feeds = project.steps.filter(next => next.dependencies.includes(step.id)).map(next => element("li", next.id));
+  const feeds = project.steps.filter(next => next.dependencies.includes(step.id)).map(next => {
+    const item = element("li", "");
+    item.append(dependencyButton(next.id), element("small", inputBindings(next, step.id).join(", ")));
+    return item;
+  });
   if (step.id === project.output) feeds.push(element("li", "Run output"));
   document.querySelector("#inspector-inputs").replaceChildren(...(inputs.length ? inputs : [element("li", "None")]));
   document.querySelector("#inspector-feeds").replaceChildren(...(feeds.length ? feeds : [element("li", "None")]));
@@ -529,9 +756,6 @@ function positionGraph(project) {
     node.style.setProperty("--lane", row);
     node.classList.toggle("has-input", step.dependencies.length > 0);
     node.classList.toggle("has-output", producers.has(step.id));
-    const source = step.source?.split(/[/\\]/).at(-1);
-    const file = element("p", locationText({ file: source, line: step.line }), "node-source");
-    file.title = locationText(step);
     const state = element("p", "Idle", "state badge");
     const duration = element("span", "", "node-duration");
     duration.hidden = true;
@@ -543,7 +767,7 @@ function positionGraph(project) {
     select.setAttribute("aria-label", `Inspect ${step.id}`);
     select.setAttribute("aria-pressed", "false");
     select.addEventListener("click", () => inspectNode(step, project));
-    node.addEventListener("dblclick", () => showNodeFiles(step, index));
+    node.addEventListener("dblclick", () => showNodeFiles(step.id, index, step.source));
     const outlineSelect = element("button", "", "outline-node");
     outlineSelect.type = "button";
     outlineSelect.setAttribute("aria-pressed", "false");
@@ -558,7 +782,6 @@ function positionGraph(project) {
     node.append(
       element("p", number, "node-index"),
       element("h3", step.id),
-      file,
       metrics,
       select,
     );
@@ -593,7 +816,6 @@ function drawEdges(steps) {
   ctx.scale(scale, scale);
   const vertical = narrowGraph.matches;
   if (vertical) ctx.transform(0, 1, 1, 0, 0, 0);
-  ctx.lineWidth = 1.6;
   ctx.lineJoin = "round";
   const frames = new Map(steps.map(step => {
     const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = nodes.get(step.id).node;
@@ -604,40 +826,67 @@ function drawEdges(steps) {
       outside: vertical ? offsetLeft + offsetWidth : offsetTop + offsetHeight,
     }];
   }));
-  const bypass = Math.max(0, ...Array.from(frames.values(), frame => frame.outside)) + 32;
-  for (const step of steps) {
-    const downstream = nodes.get(step.id);
-    const to = frames.get(step.id);
-    for (const id of step.dependencies) {
-      const upstream = nodes.get(id);
-      const from = frames.get(id);
-      const x1 = from.end + 3;
-      const x2 = to.start - 4;
-      const y1 = from.middle;
-      const y2 = to.middle;
-      const color = activeNode === step.id || activeNode === id ? "#ff9b88" : "#838896";
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      if (downstream.column - upstream.column > 1) {
-        ctx.lineTo(x1 + 11, y1);
-        ctx.lineTo(x1 + 11, bypass);
-        ctx.lineTo(x2 - 11, bypass);
-        ctx.lineTo(x2 - 11, y2);
-        ctx.lineTo(x2, y2);
-      } else {
-        const midpoint = (x1 + x2) / 2;
-        ctx.bezierCurveTo(midpoint, y1, midpoint, y2, x2, y2);
-      }
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - 6, y2 - 4);
-      ctx.lineTo(x2 - 6, y2 + 4);
-      ctx.fill();
+  const edges = steps.flatMap(step => step.dependencies.map(source => ({
+    step, source,
+    active: activeNode === step.id || activeNode === source,
+    bypass: nodes.get(step.id).column - nodes.get(source).column > 1,
+  })));
+  const selected = edges.filter(edge => edge.active);
+  const routeStart = Math.max(0, ...Array.from(frames.values(), frame => frame.outside)) + 12;
+  const routeEnd = (vertical ? width : height) - 20;
+  const selectedBypasses = selected.filter(edge => edge.bypass);
+  const gap = Math.min(18, (routeEnd - routeStart) / Math.max(1, selectedBypasses.length));
+  const lanes = new Map(selectedBypasses.map((edge, index) => [edge, routeStart + gap * index]));
+  const mutedBypass = routeStart + gap * selectedBypasses.length;
+  edgeExtent = edges.some(edge => edge.bypass) ? mutedBypass + 1 : 0;
+  const destinationLabels = new Map();
+  const tags = [];
+  for (const edge of [...edges.filter(edge => !edge.active), ...selected]) {
+    const from = frames.get(edge.source);
+    const to = frames.get(edge.step.id);
+    const x1 = from.end + 3;
+    const x2 = to.start - 4;
+    const y1 = from.middle;
+    const y2 = to.middle;
+    const color = edge.active ? "#ff9b88" : "#73788770";
+    ctx.lineWidth = edge.active ? 2.2 : 1.4;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    const midpoint = (x1 + x2) / 2;
+    const lane = lanes.get(edge) ?? mutedBypass;
+    if (edge.bypass) {
+      ctx.lineTo(x1 + 11, y1);
+      ctx.lineTo(x1 + 11, lane);
+      ctx.lineTo(x2 - 11, lane);
+      ctx.lineTo(x2 - 11, y2);
+      ctx.lineTo(x2, y2);
+    } else {
+      ctx.bezierCurveTo(midpoint, y1, midpoint, y2, x2, y2);
     }
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - 6, y2 - 4);
+    ctx.lineTo(x2 - 6, y2 + 4);
+    ctx.fill();
+    if (!edge.active) continue;
+    const boundary = edge.bypass ? lane : (y1 + y2) / 2;
+    let direction = edge.bypass ? x2 - 29 : midpoint;
+    if (vertical && edge.bypass) {
+      const labelIndex = destinationLabels.get(edge.step.id) ?? 0;
+      destinationLabels.set(edge.step.id, labelIndex + 1);
+      direction = Math.max(x1 + 18, direction - labelIndex * 17);
+    }
+    const bindings = inputBindings(edge.step, edge.source).join(", ");
+    const tag = element("span", bindings, "edge-label");
+    tag.classList.toggle("edge-label-above", !vertical && !edge.bypass);
+    tag.style.left = `${vertical ? boundary : direction}px`;
+    tag.style.top = `${vertical ? direction : boundary}px`;
+    tags.push(tag);
   }
+  edgeLabels.replaceChildren(...tags);
 }
 
 function setStatus(value, label = labels[value]) {
@@ -646,6 +895,8 @@ function setStatus(value, label = labels[value]) {
 }
 
 function showMessage(message) {
+  if (stopPhase === "stopped") return;
+  trackInspectorExecution(message);
   if (message.history_error) {
     result.append(element("p", message.history_error, "error"));
     return;
@@ -666,7 +917,9 @@ function showMessage(message) {
     setStatus(message.status);
     return;
   }
-  const { node, state, duration } = nodes.get(message.step_id);
+  const entry = nodes.get(message.step_id);
+  const { node, state, duration, index } = entry;
+  entry.blockedBy = message.blocked_by;
   node.dataset.state = message.status;
   state.textContent = labels[message.status];
   duration.textContent = formatDuration(message.duration_ms);
@@ -674,13 +927,25 @@ function showMessage(message) {
   if (activeNode === message.step_id) showInspectorState(message.status, duration.textContent);
   if (message.status === "failed") {
     const error = element("article", "", "error");
+    const actions = element("div", "", "error-actions");
+    const focus = element("button", "Focus node", "text-button");
+    focus.type = "button";
+    focus.addEventListener("click", () => focusGraphNode(message.step_id));
+    actions.append(focus);
+    if (message.source_target) {
+      const source = element("button", "Open source", "text-button open-error-source");
+      source.type = "button";
+      source.addEventListener("click", () => showNodeFiles(message.step_id, index, message.source_target, message.line));
+      actions.append(source);
+    }
     const trace = document.createElement("details");
     trace.open = true;
     trace.append(element("summary", "Traceback"), element("pre", message.traceback));
     error.append(
       element("h3", `${message.step_id} failed`),
       element("strong", message.error_type),
-      element("p", `${message.file}:${message.line}`),
+      element("p", locationText(message)),
+      actions,
       trace,
     );
     result.append(error);
@@ -712,8 +977,11 @@ function showSample(container, label, sample) {
 let historySelection = 0;
 let selectedRunId = null;
 async function showHistoryRun(id) {
+  if (stopPhase === "stopped") return;
   const selection = ++historySelection;
   selectedRunId = id;
+  executionHistory = { id, message: "Loading saved run…" };
+  renderInspectorExecution();
   for (const button of historyList.querySelectorAll(".history-run")) {
     button.setAttribute("aria-current", String(button.dataset.runId === id));
   }
@@ -723,6 +991,10 @@ async function showHistoryRun(id) {
     if (!response.ok) throw new Error("Could not load this run.");
     const run = await response.json();
     if (selection !== historySelection) return;
+    if (executionHistory?.id === id) {
+      executionHistory = run;
+      renderInspectorExecution();
+    }
     historyDetail.replaceChildren(
       element("h3", "Saved run"),
       element("p", run.id, "run-id"),
@@ -732,6 +1004,7 @@ async function showHistoryRun(id) {
     );
     showMetadata(historyDetail, "Run input", run.input);
     showMetadata(historyDetail, "Run output", run.output);
+    const runSteps = new Map(run.steps.map(step => [step.id, step]));
     for (const step of run.steps) {
       const node = element("article", "", "history-node");
       node.append(
@@ -740,6 +1013,9 @@ async function showHistoryRun(id) {
       );
       const duration = formatDuration(step.duration_ms);
       if (duration) node.append(element("p", duration, "node-duration"));
+      if (step.blocked_by?.length) {
+        node.append(element("p", blockedByText(step.blocked_by, id => runSteps.get(id)?.status)));
+      }
       showMetadata(node, "Input", step.input);
       showMetadata(node, "Output", step.output);
       if (step.reasons?.length) {
@@ -758,12 +1034,17 @@ async function showHistoryRun(id) {
     }
   } catch (error) {
     if (selection === historySelection) {
+      if (executionHistory?.id === id) {
+        executionHistory.message = error.message;
+        renderInspectorExecution();
+      }
       historyDetail.replaceChildren(element("p", error.message, "error"));
     }
   }
 }
 
 async function refreshHistory() {
+  if (stopPhase === "stopped") return;
   refreshHistoryButton.disabled = true;
   try {
     const response = await fetch("history");
@@ -779,6 +1060,7 @@ async function refreshHistory() {
       const select = element("button", "", "history-run");
       select.type = "button";
       select.dataset.runId = run.id;
+      select.disabled = stopPhase === "stopped";
       select.setAttribute("aria-current", String(run.id === selectedRunId));
       const state = element("strong", labels[run.status], "badge");
       state.dataset.state = run.status;
@@ -793,7 +1075,7 @@ async function refreshHistory() {
   } catch (error) {
     historyList.replaceChildren(element("p", error.message, "error"));
   } finally {
-    refreshHistoryButton.disabled = false;
+    refreshHistoryButton.disabled = stopPhase === "stopped";
   }
 }
 
@@ -801,14 +1083,46 @@ refreshHistoryButton.addEventListener("click", refreshHistory);
 refreshHistory();
 button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ block: "nearest" }));
 
+function updateRunControls() {
+  button.disabled = runInput.disabled = !projectReady || runInProgress || Boolean(stopPhase);
+}
+
+function showRunStreamError(message) {
+  setStatus("failed");
+  result.append(element("p", message, "error run-stream-error"));
+}
+
+window.addEventListener("workspace-stop", event => {
+  const { phase, discardUnsaved } = event.detail;
+  stopPhase = phase;
+  updateRunControls();
+  if (phase === "stopped") {
+    setStatus("stopped", "Stopped");
+    result.querySelector(".run-stream-error")?.remove();
+    resetInput.disabled = openNodeFiles.disabled = refreshHistoryButton.disabled = true;
+    for (const control of document.querySelectorAll(".history-run, .open-error-source")) control.disabled = true;
+    nodeSourceInput.readOnly = true;
+    saveNodeSource.disabled = true;
+    if (discardUnsaved && nodeFilesDialog.open) nodeFilesDialog.close();
+  } else if (!phase && deferredRunError) {
+    showRunStreamError(deferredRunError);
+  }
+  if (phase !== "stopping") deferredRunError = null;
+});
+
 form.addEventListener("submit", async event => {
   event.preventDefault();
+  if (stopPhase || runInProgress || !projectReady) return;
+  runInProgress = true;
+  updateRunControls();
   setPanel("run", true);
   result.replaceChildren();
-  button.disabled = true;
-  runInput.disabled = true;
   setStatus("running");
-  for (const { node, state, duration } of nodes.values()) {
+  currentRunId = null;
+  currentNodeTiming.clear();
+  for (const entry of nodes.values()) {
+    const { node, state, duration } = entry;
+    entry.blockedBy = undefined;
     delete node.dataset.state;
     state.textContent = "Idle";
     duration.textContent = "";
@@ -843,10 +1157,11 @@ form.addEventListener("submit", async event => {
     }
     if (!receivedResult) throw new Error("The run ended before returning a result.");
   } catch (error) {
-    showMessage({ error: error.message });
+    if (stopPhase === "stopping") deferredRunError = error.message;
+    else if (!stopPhase) showRunStreamError(error.message);
   } finally {
-    button.disabled = false;
-    runInput.disabled = false;
+    runInProgress = false;
+    updateRunControls();
   }
 });
 
@@ -866,9 +1181,9 @@ try {
     input.value = sample;
     input.focus();
   });
-  resetInput.disabled = false;
-  runInput.disabled = false;
-  button.disabled = false;
+  resetInput.disabled = stopPhase === "stopped";
+  projectReady = true;
+  updateRunControls();
 } catch (error) {
   setPanel("run", true);
   result.replaceChildren();

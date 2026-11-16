@@ -1,0 +1,13 @@
+{
+  "input": {
+    "config": {
+      "events": 240,
+      "seed": 42,
+      "io_workers": 4,
+      "cpu_workers": 3,
+      "queue_capacity": 6,
+      "score_rounds": 320,
+      "simulate": "none"
+    }
+  }
+}

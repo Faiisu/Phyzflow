@@ -32,6 +32,12 @@ class RunHistory:
                 for key in ("status", "time", "duration_ms", "input", "output", "reasons", "input_sample", "output_sample")
                 if key in event
             })
+            if event["status"] == "running":
+                step["started_at"] = event["time"]
+            elif event["status"] in ("succeeded", "failed"):
+                step["finished_at"] = event["time"]
+            if "blocked_by" in event:
+                step["blocked_by"] = event["blocked_by"]
             if "error_frames" in event:
                 step["error_type"] = event["diagnostic_error_type"]
                 step["error_frames"] = [

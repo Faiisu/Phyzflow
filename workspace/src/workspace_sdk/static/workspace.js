@@ -46,6 +46,8 @@ function showNotice() {
   const reloadError = active?.reloadError ?? "";
   reloadMessage.hidden = !reloadError;
   if (reloadMessage.textContent !== reloadError) reloadMessage.textContent = reloadError;
+  const snapshot = Boolean(active?.frameStopped);
+  notice.classList.toggle("is-snapshot", snapshot);
   if (!active) {
     notice.hidden = false;
     const message = "Create a sheet to get started.";
@@ -53,12 +55,12 @@ function showNotice() {
     reopen.hidden = true;
     return;
   }
-  notice.hidden = Boolean(active.frame) && active.status !== "unavailable" && !active.error;
+  notice.hidden = Boolean(active.frame) && !snapshot && active.status !== "unavailable" && !active.error;
   if (notice.hidden) return;
   const message = active.error ?? {
     opening: "Opening the flow…",
     stopping: "Stopping the flow…",
-    stopped: "Flow stopped.",
+    stopped: snapshot ? "Stopped · Run snapshot" : "Flow stopped.",
     unavailable: "The flow process is unavailable.",
   }[active.status] ?? "Open this flow to get started.";
   if (noticeMessage.textContent !== message) noticeMessage.textContent = message;
@@ -88,17 +90,18 @@ async function command(sheet, action) {
 function showFrame(sheet, revision) {
   const prefix = revision ? `/revision/${revision}` : "";
   const url = `/flows/${sheet.index}${prefix}/view/`;
-  if (!sheet.frame || sheet.frame.getAttribute("src") !== url) {
+  if (!sheet.frame || sheet.frameStopped || sheet.frame.getAttribute("src") !== url) {
     const frame = document.createElement("iframe");
     frame.title = `${sheet.name} flow`;
     frame.src = url;
     sheet.frame = frame;
+    sheet.frameStopped = false;
     sheet.view.replaceChildren(frame);
   }
 }
 
 async function openFlow(sheet, action = "open") {
-  if (sheet.pending || (action === "reload" && !mayReplaceView(sheet))) return;
+  if (sheet.pending || ((action === "reload" || sheet.frameStopped) && !mayReplaceView(sheet))) return;
   sheet.pending = true;
   sheet.version++;
   sheet.error = null;
@@ -125,18 +128,31 @@ async function openFlow(sheet, action = "open") {
   }
 }
 
+function notifyFrameOfStop(sheet, phase, discardUnsaved = false) {
+  // Both frames are same-origin. Notify synchronously before closing the run stream.
+  sheet.frame?.contentWindow?.dispatchEvent(new CustomEvent("workspace-stop", {
+    detail: { phase, discardUnsaved },
+  }));
+}
+
+function retainStoppedFrame(sheet, discardUnsaved) {
+  sheet.frameStopped = Boolean(sheet.frame);
+  notifyFrameOfStop(sheet, "stopped", discardUnsaved);
+}
+
 async function stopFlow(sheet) {
   if (sheet.pending || !mayReplaceView(sheet)) return;
   sheet.pending = true;
   sheet.version++;
   sheet.reloadError = null;
   updateStatus(sheet, "stopping");
+  notifyFrameOfStop(sheet, "stopping");
   try {
     await command(sheet, "stop");
-    sheet.view.replaceChildren();
-    sheet.frame = null;
+    retainStoppedFrame(sheet, true);
     updateStatus(sheet, "stopped");
   } catch (error) {
+    notifyFrameOfStop(sheet, null);
     sheet.error = error.message;
     updateStatus(sheet, "unavailable");
   } finally {
@@ -195,7 +211,7 @@ function makeSheet(flow, index) {
   views.prepend(view);
   tabs.append(group);
 
-  const sheet = { index, name: flow.name, tab, indicator, stop, group, view, frame: null, pending: false, version: 0, revision: flow.revision };
+  const sheet = { index, name: flow.name, tab, indicator, stop, group, view, frame: null, frameStopped: false, pending: false, version: 0, revision: flow.revision };
   updateStatus(sheet, flow.status);
   tab.addEventListener("click", () => selectSheet(sheet));
   stop.addEventListener("click", () => stopFlow(sheet));
@@ -315,7 +331,7 @@ async function pollStatus() {
     const { flows } = await getWorkspace();
     syncSheets(flows);
     for (const sheet of sheets.filter(Boolean)) {
-      if (flows[sheet.index] && !sheet.pending && sheet.version === versions[sheet.index]) {
+      if (flows[sheet.index] && !sheet.frameStopped && !sheet.pending && sheet.version === versions[sheet.index]) {
         const { status, revision } = flows[sheet.index];
         if (revision !== sheet.revision && status !== "unavailable" && status !== "stopped" && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
@@ -323,10 +339,7 @@ async function pollStatus() {
           sheet.reloadError = null;
           if (sheet.frame) showFrame(sheet, revision);
         }
-        if (status === "stopped" && sheet.frame && !hasUnsavedSource(sheet)) {
-          sheet.view.replaceChildren();
-          sheet.frame = null;
-        }
+        if (status === "stopped") retainStoppedFrame(sheet, false);
         if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
         updateStatus(sheet, status);
       }
