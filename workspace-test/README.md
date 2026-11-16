@@ -8,7 +8,7 @@ Use the sample project to verify installation, flow execution, debugging, and de
 
 The first workload is support-ticket classification. The development environment is Python 3.12. The [deployment workload](deployment-trial/README.md) runs a trained model in a Linux ARM64 CPU container with Python 3.12.
 
-From the repository root, install the SDK and its sample consumer into a new environment:
+With `uv` available on your PATH, install the SDK and its sample consumer into a new environment from the repository root:
 
 ```sh
 uv venv --python 3.12
@@ -30,6 +30,34 @@ From the same directory, start the Web UI and open the printed loopback URL:
 
 Run the prefilled sample, then replace the input with `{"text":"Debug failure"}` and run again. Open the traceback in Run details to find the failing predictor helper. After editing project source, stop and restart the UI to load the changes.
 
+### Add and debug a node
+
+In `workspace-test/`, create the `ticket_demo/routing/` directory with an empty `__init__.py`. Add `ticket_demo/routing/queues.py`:
+
+```python
+def route(prepared: str, decision: dict[str, str]) -> dict[str, str]:
+    if prepared == "debug routing":
+        raise ValueError("No support queue is configured for this ticket.")
+    queue = f"{decision['category']}-{decision['priority']}"
+    return {**decision, "queue": queue}
+```
+
+In `flow.py`, import the new function with `from ticket_demo.routing.queues import route`. Append this step to the `steps` tuple after `Decide` and change the flow output to `Output("Route")`:
+
+```python
+Step("Route", route, {"prepared": Output("Prepare"), "decision": Output("Decide")}),
+```
+
+Stop the previous UI with Ctrl+C. Check and run the edited flow, then start the UI again:
+
+```sh
+../.venv/bin/workspace check
+../.venv/bin/workspace run '{"text":"Urgent: duplicate invoice"}'
+../.venv/bin/workspace ui
+```
+
+The output now includes `"queue":"billing-urgent"`. In the UI, run the prefilled ticket and check that output. Then run `{"text":"Debug routing"}` and use Run details to identify the failed node, the exception, and the file and line where it originated.
+
 ### Recover a completed run
 
 You can close the browser tab while a run is in progress. Leave the `workspace ui` process running, then reopen its URL. In **Run history**, select a saved run to see its status, duration, source version, and node summaries. Use **Refresh history** if the run finishes after you reopen the page.
@@ -38,7 +66,7 @@ Workspace saves completed runs in `.workspace/runs/` inside the project, so the 
 
 ### Diagnose an incorrect result
 
-From `workspace-test/`, start the evidence demo in its own project directory:
+Stop the previous UI with Ctrl+C. From `workspace-test/`, start the evidence demo in its own project directory:
 
 ```sh
 cd evidence-demo
@@ -56,9 +84,11 @@ Open the printed URL and run the prefilled ticket. Its category should be `techn
 
 To store a reason in your own node, call `record_reason("…")` from `workspace_sdk` with an explanation safe to save. To also store examples, set `capture_samples=True` on that node's `Step`. Only enable capture where the values are safe to retain. Each JSON example is limited to 4 KiB. Oversized or unsupported values retain their metadata and show that a sample is unavailable. History keeps up to ten reasons per node, each up to 512 characters.
 
+From the repository root, follow [Deploy and verify](deployment-trial/README.md#deploy-and-verify) to try the trained model on Docker.
+
 ## Acceptance tests and overhead baseline
 
-To run the verification suite and benchmark, install Google Chrome and the optional test dependencies. From the repository root:
+Run the verification suite and demo benchmark in a checkout with the original sample flow, before the node exercise or in a separate checkout. Install Google Chrome and the optional test dependencies. From the repository root:
 
 ```sh
 uv pip install ./workspace './workspace-test[verification]'

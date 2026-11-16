@@ -4,16 +4,21 @@ The target is a Linux ARM64 CPU container on CPython 3.12. The image trains a sc
 
 ## Deploy and verify
 
-Install the Workspace SDK in a local environment with access to a Docker engine that can run Linux ARM64 images. From the repository root:
+Use a Docker engine that can run Linux ARM64 images. From the repository root, reuse the `.venv` from the [local demo](../README.md#local-demo) or install the SDK in a new environment:
 
 ```sh
 uv venv --python 3.12
 uv pip install ./workspace
-cd workspace-test/deployment-trial
-../../.venv/bin/workspace deploy --sdk ../../workspace --context colima
 ```
 
-Omit `--context colima` when the selected Docker context already points to the target engine. The default host port is 8080. Use `--port 0` to let Docker choose a free port, or `--port` with an explicit port.
+From the repository root:
+
+```sh
+cd workspace-test/deployment-trial
+../../.venv/bin/workspace deploy --sdk ../../workspace
+```
+
+The command uses the selected Docker context. Add `--context colima` if the target engine is Colima and its context is not selected. The default host port is 8080. Use `--port 0` to let Docker choose a free port, or `--port` with an explicit port.
 
 The command builds the Dockerfile and runs `workspace check` on the exact image. If the project includes a `smoke_test.py`, the image must include it in the working directory. The smoke test calls the same prediction handler used in service, from a candidate container with no published ports or external network. Once the checks pass, the command serves that image on the host's IPv4 loopback address. The final JSON reports `build_id`, `container_id`, and `url`. Build and check output goes to standard error.
 
@@ -42,9 +47,11 @@ The HTTP 500 response includes `run_id`. In the container logs, find the JSON re
 
 ```sh
 container_id=REPLACE_WITH_CONTAINER_ID
-docker --context colima logs "$container_id"
-docker --context colima stop "$container_id"
+docker logs "$container_id"
+docker stop "$container_id"
 ```
+
+Use the same Docker context for these commands. If you passed `--context colima` during deployment, add it after `docker` in both commands.
 
 The Docker integration test builds the serving image and exercises the CLI and HTTP endpoint. Run it from this directory with the same local environment and Docker context:
 
