@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+source_dir="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
+launcher="$source_dir/release/macos"
+output="${1:-$source_dir/dist}"
+mkdir -p "$output"
+output="$(CDPATH= cd -- "$output" && pwd -P)"
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+
+uv build --wheel --out-dir "$staging" "$source_dir"
+wheel="$(basename "$staging"/workspace_sdk-*.whl)"
+version="${wheel#workspace_sdk-}"
+version="${version%%-*}"
+app="$staging/Workspace.app"
+/usr/bin/osacompile -o "$app" "$launcher/Workspace.applescript"
+info="$app/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleIdentifier -string local.workspace-sdk.launcher "$info"
+/usr/bin/plutil -replace CFBundleShortVersionString -string "$version" "$info"
+/usr/bin/plutil -replace CFBundleDocumentTypes -json '[{"CFBundleTypeRole":"Viewer","LSItemContentTypes":["public.folder"]}]' "$info"
+resources="$app/Contents/Resources"
+cp "$staging"/workspace_sdk-*.whl "$launcher/launch.py" "$resources/"
+install -m 755 "$launcher/open-workspace" "$resources/open-workspace"
+/usr/bin/codesign --force --sign - "$app"
+/usr/bin/codesign --verify "$app"
+
+release="$output/Workspace-$version-macos-$(uname -m).zip"
+/usr/bin/ditto -c -k --keepParent "$app" "$staging/app.zip"
+mv "$staging/app.zip" "$release"
+printf '%s\n' "$release"

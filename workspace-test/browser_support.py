@@ -32,10 +32,12 @@ def show_panel(page, name):
 
 
 @contextmanager
-def local_ui(project: Path, command=None, *, port: int | None = 0):
+def local_ui(project: Path, command=None, *, port: int | None = 0, single_flow: bool = False):
     executable = Path(sys.executable).with_name("workspace")
     command = [str(executable)] if command is None else command
     options = ["--port", str(port)] if port is not None else []
+    if single_flow:
+        options.append("--single-flow")
     process = subprocess.Popen(
         [*command, "ui", *options],
         cwd=project,

@@ -86,7 +86,7 @@ status = main()
 print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, flush=True)
 raise SystemExit(status)
 """
-    with local_ui(project, [sys.executable, "-c", measure_cli]) as (url, process), browser_page() as page:
+    with local_ui(project, [sys.executable, "-c", measure_cli], single_flow=True) as (url, process), browser_page() as page:
         page.goto(url)
         expect(page.get_by_role("button", name="Run flow")).to_be_enabled()
         show_panel(page, "Run")

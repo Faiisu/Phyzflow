@@ -106,7 +106,9 @@ From the repository root, follow [Deploy and verify](deployment-trial/README.md#
 
 ## Multiple flows in one workspace
 
-Put each flow under `flows/<sheet-name>/flow.py` in the workspace directory. Optionally put a `sample.json` and a `pyproject.toml` with Workspace source paths beside each flow. The directory name becomes the sheet label. If the workspace root also has a `flow.py`, it appears as the Main sheet.
+Open `workspace ui` from your workspace directory and select **+** in the bottom bar. Enter a sheet name and select **Create sheet**. Workspace writes a runnable starter to `flows/<sheet-name>/flow.py` and opens it in the new tab. Edit the file in your IDE, then select **Reload flow** to load the new version. If that sheet is running, wait for it to finish or stop it before reloading. See [project folders and CLI commands](../workspace/README.md#work-on-a-selected-project-from-the-cli) for the agent workflow.
+
+You can also add flow directories directly. Put each entry point under `flows/<sheet-name>/flow.py`, with an optional `sample.json` and `pyproject.toml` beside it. The directory name becomes the sheet label. A root `flow.py` appears as the **Main** sheet. To open just the flow in the current directory, use `workspace ui --single-flow`.
 
 Try two independent sheets from the repository root:
 
@@ -116,6 +118,8 @@ cd workspace-test/sheets-demo
 ```
 
 Use the bottom tabs to switch sheets. The Workspace and all sheet views use the same browser address and port. Run either flow from its toolbar and watch its tab status while viewing another sheet. Select **Stop** on a running sheet to terminate that sheet's Python process. Select the stopped sheet and **Open flow** to start it again. A terminated run does not produce a completed history record. Each sheet keeps its completed runs in its own `.workspace/runs/` directory.
+
+Select **×** next to a sheet's **Stop** button and confirm **Delete sheet**. Workspace stops that sheet's process and moves its entire folder to `.workspace/deleted-flows/<archive-id>/<sheet-name>/`. To restore it, move the sheet folder back under `flows/` and restart the Workspace UI. The root **Main** sheet has no delete button.
 
 ## Acceptance tests and overhead baseline
 

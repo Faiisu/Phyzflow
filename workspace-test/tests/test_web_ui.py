@@ -26,7 +26,7 @@ class WebUITests(unittest.TestCase):
             for speed, duration in ((2, 0), (1, 400)):
                 with self.subTest(speed=speed, duration=duration):
                     (root / "setting.json").write_text(json.dumps({"zoom": {"speed": speed, "smooth_ms": duration}}))
-                    with local_ui(root) as (url, _):
+                    with local_ui(root, single_flow=True) as (url, _):
                         page.goto(url)
                         expect(page.get_by_role("button", name="Zoom in")).to_be_enabled()
                         predict = page.get_by_role("button", name="Inspect Predict")
@@ -85,7 +85,7 @@ class WebUITests(unittest.TestCase):
             for filename in ("flow.py", "sample.json"):
                 copy2(fixture / filename, root)
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 page.goto(url)
                 expect(page.get_by_role("button", name="Run flow")).to_be_enabled()
                 graph = page.get_by_role("region", name="Flow dependencies")
@@ -132,7 +132,7 @@ class WebUITests(unittest.TestCase):
                 copy2(PROJECT / filename, root)
             copytree(PROJECT / "ticket_demo", root / "ticket_demo")
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 page.goto(url)
                 expect(page.get_by_role("button", name="Zoom in")).to_be_enabled()
                 page.add_style_tag(content="""
@@ -162,7 +162,7 @@ class WebUITests(unittest.TestCase):
                 copy2(PROJECT / filename, root)
             copytree(PROJECT / "ticket_demo", root / "ticket_demo")
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 page.goto(url)
                 zoom_in = page.get_by_role("button", name="Zoom in")
                 zoom_out = page.get_by_role("button", name="Zoom out")
@@ -216,7 +216,7 @@ class WebUITests(unittest.TestCase):
             for filename in ("flow.py", "sample.json"):
                 copy2(fixture / filename, root)
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 page.goto(url)
                 page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("status")).to_have_text("Succeeded")
@@ -278,7 +278,7 @@ class WebUITests(unittest.TestCase):
                 "), Output('Predict'))\n"
             )
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 # The running UI has already imported the original node.
                 source.write_text("\n" + source.read_text().split("    try:\n")[0] + "    return text\n")
                 page.goto(url)
@@ -316,7 +316,7 @@ class WebUITests(unittest.TestCase):
                 expect(history.get_by_text("Duration", exact=False)).to_be_visible()
                 version = history.locator(".source-version").inner_text()
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 reopened.goto(url)
                 button = reopened.get_by_role("button", name="Run flow")
                 expect(button).to_be_enabled()
@@ -353,7 +353,7 @@ class WebUITests(unittest.TestCase):
             )
             py_compile.compile(str(source), doraise=True)
 
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 page.goto(url)
                 button = page.get_by_role("button", name="Run flow")
                 expect(button).to_be_enabled()
@@ -418,7 +418,7 @@ class WebUITests(unittest.TestCase):
             original = source.stat()
             source.write_text(source.read_text().replace('"billing"', '"support"'))
             os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
-            with local_ui(root) as (url, _):
+            with local_ui(root, single_flow=True) as (url, _):
                 page.goto(url)
                 page.get_by_role("button", name="Run flow").click()
                 expect(page.locator("#result pre")).to_contain_text('"support"')

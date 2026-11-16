@@ -17,6 +17,32 @@
   <footer class="sheet-bar">
     <span id="workspace-name" class="workspace-name">Workspace</span>
     <div id="sheet-tabs" class="sheet-tabs" role="tablist" aria-label="Flows"></div>
+    <button type="button" id="new-sheet" aria-label="New sheet" title="New sheet" disabled>+</button>
+    <button type="button" id="reload-flow" disabled>Reload flow</button>
+    <span id="reload-message" role="status" hidden></span>
   </footer>
+  <dialog id="create-sheet" class="sheet-dialog" aria-labelledby="create-sheet-title">
+    <form>
+      <h1 id="create-sheet-title">New sheet</h1>
+      <label for="sheet-title">Sheet name</label>
+      <input id="sheet-title" name="name" required maxlength="64" autofocus>
+      <p id="create-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-sheet">Cancel</button>
+        <button type="submit">Create sheet</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="delete-sheet" class="sheet-dialog" aria-labelledby="delete-sheet-title" aria-describedby="delete-sheet-message">
+    <form>
+      <h1 id="delete-sheet-title">Delete sheet?</h1>
+      <p id="delete-sheet-message"></p>
+      <p class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" autofocus>Cancel</button>
+        <button type="submit">Delete sheet</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>
