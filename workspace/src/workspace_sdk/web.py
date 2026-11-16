@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from inspect import getdoc
@@ -11,12 +12,16 @@ from .flow import Flow, Output
 from .history import RunHistory
 from .project import ordered_steps, relative_source, source_location
 from .runner import run
+from .ui_settings import ZoomSettings
 
 
 STATIC = Path(__file__).with_name("static")
 
 
-def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) -> None:
+def serve(
+    flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
+    *, zoom: ZoomSettings, on_ready: Callable[[str], None] | None = None,
+) -> None:
     graph = []
     for step in ordered_steps(flow):
         file, line = source_location(step.function)
@@ -43,8 +48,13 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
     default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
     history = RunHistory(root)
     run_lock = Lock()
+    run_status = "ready"
 
     class Handler(BaseHTTPRequestHandler):
+        def log_request(self, code="-", size="-"):
+            if self.path != "/status":
+                super().log_request(code, size)
+
         def send_bytes(self, data, content_type):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
@@ -71,8 +81,11 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
             elif self.path == "/project":
                 data = json.dumps({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
+                    "zoom": zoom,
                 }).encode()
                 self.send_bytes(data, "application/json")
+            elif self.path == "/status":
+                self.send_bytes(json.dumps({"status": run_status}).encode(), "application/json")
             elif self.path == "/history" or self.path.startswith("/history/"):
                 try:
                     data = history.list_runs() if self.path == "/history" else history.read(
@@ -89,6 +102,7 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
                 self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self):
+            nonlocal run_status
             origin = self.headers.get("Origin")
             if not self.local_request() or origin not in (None, f"http://{self.headers.get('Host')}"):
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -115,11 +129,15 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
                 return
 
             try:
+                run_status = "running"
                 self.stream_run(inputs)
             finally:
+                if run_status == "running":
+                    run_status = "failed"
                 run_lock.release()
 
         def stream_run(self, inputs):
+            nonlocal run_status
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -155,11 +173,17 @@ def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) ->
                     self.log_error("Could not save run history for %s.", result.id)
                     send({"history_error": "This run could not be saved to history."})
                 send({"result": {"status": result.status, "output": result.output}})
+                run_status = result.status
             except (TypeError, ValueError) as error:
                 send({"error": str(error)})
+                run_status = "failed"
 
     with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
-        print(f"Workspace UI: http://127.0.0.1:{server.server_port}", flush=True)
+        address = f"http://127.0.0.1:{server.server_port}"
+        if on_ready is None:
+            print(f"Workspace UI: {address}", flush=True)
+        else:
+            on_ready(address)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

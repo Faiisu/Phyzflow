@@ -9,21 +9,35 @@ from playwright.sync_api import sync_playwright
 
 
 @contextmanager
-def browser_page():
+def browser_page(*, show_scrollbars=False):
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel="chrome")
+        browser = playwright.chromium.launch(
+            channel="chrome", ignore_default_args=["--hide-scrollbars"] if show_scrollbars else None,
+        )
         try:
             yield browser.new_page(viewport={"width": 1440, "height": 900})
         finally:
             browser.close()
 
 
+def show_panel(page, name):
+    switcher = page.locator("#panel-switcher")
+    switch = switcher.locator("summary")
+    if switcher.get_attribute("open") is None:
+        switch.click()
+    toggle = switcher.get_by_role("button", name=name, exact=True)
+    if toggle.get_attribute("aria-pressed") == "false":
+        toggle.click()
+    switch.click()
+
+
 @contextmanager
-def local_ui(project: Path, command=None):
+def local_ui(project: Path, command=None, *, port: int | None = 0):
     executable = Path(sys.executable).with_name("workspace")
     command = [str(executable)] if command is None else command
+    options = ["--port", str(port)] if port is not None else []
     process = subprocess.Popen(
-        [*command, "ui", "--port", "0"],
+        [*command, "ui", *options],
         cwd=project,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

@@ -76,7 +76,7 @@ def python_runs(project, sample, mode, warmup, runs):
 
 def live_ui_runs(project, sample, warmup, runs):
     from playwright.sync_api import expect
-    from browser_support import browser_page, local_ui
+    from browser_support import browser_page, local_ui, show_panel
 
     # The benchmark wrapper measures the CLI process without adding a profiling route.
     measure_cli = """
@@ -89,7 +89,7 @@ raise SystemExit(status)
     with local_ui(project, [sys.executable, "-c", measure_cli]) as (url, process), browser_page() as page:
         page.goto(url)
         expect(page.get_by_role("button", name="Run flow")).to_be_enabled()
-        page.get_by_role("tab", name="Run").click()
+        show_panel(page, "Run")
         page.locator("#input").fill(json.dumps(sample["input"]))
         durations = page.evaluate(UI_RUNS, {
             "warmup": warmup, "runs": runs, "output": sample["output"],

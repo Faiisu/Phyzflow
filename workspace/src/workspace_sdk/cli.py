@@ -7,6 +7,7 @@ import traceback
 
 from .project import ValidationError, load_project
 from .runner import run
+from .ui_settings import load_ui_settings
 
 
 def report_event(event):
@@ -25,7 +26,7 @@ def main() -> int:
     run_parser = commands.add_parser("run", help="Validate and run the current flow.")
     run_parser.add_argument("input", help="A JSON object with the flow inputs.")
     ui_command = commands.add_parser("ui", help="Serve the flow UI on localhost.")
-    ui_command.add_argument("--port", type=int, default=8765)
+    ui_command.add_argument("--port", type=int, help="Override the port from setting.json (default: 18080).")
     deploy_parser = commands.add_parser("deploy", help="Validate and serve a Linux ARM64 build.")
     deploy_parser.add_argument("--sdk", type=Path, required=True, help="Path to the Workspace SDK source.")
     deploy_parser.add_argument("--context", help="Local Docker context.")
@@ -37,6 +38,25 @@ def main() -> int:
         from .deploy import deploy
 
         return deploy(root, args.sdk.resolve(), args.context, args.port)
+
+    if args.command == "ui":
+        try:
+            args.ui_settings = load_ui_settings(root, args.port)
+        except (OSError, ValueError) as error:
+            print(f"UI settings: {error}", file=sys.stderr)
+            return 1
+
+    if args.command == "ui" and (root / "flows").is_dir():
+        from .workspace_ui import discover_flows, serve_workspace
+
+        flows = discover_flows(root)
+        if flows:
+            try:
+                serve_workspace(root, flows, args.ui_settings)
+            except (OSError, ValueError) as error:
+                print(f"Web UI: {error}", file=sys.stderr)
+                return 1
+            return 0
 
     loaded_sources: dict[Path, str] | None = {} if args.command == "ui" else None
     with ExitStack() as project:
@@ -57,7 +77,7 @@ def run_command(args, flow, root, loaded_sources):
         from .web import serve
 
         try:
-            serve(flow, root, args.port, loaded_sources)
+            serve(flow, root, args.ui_settings.port, loaded_sources, zoom=args.ui_settings.zoom)
         except (OSError, ValueError) as error:
             print(f"Web UI: {error}", file=sys.stderr)
             return 1

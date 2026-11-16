@@ -1,15 +1,23 @@
 const graph = document.querySelector("#graph");
 const canvas = graph.querySelector("canvas");
+const graphPlane = document.querySelector("#graph-plane");
+const graphViewport = document.querySelector(".graph-scroll");
+const zoomIn = document.querySelector("#zoom-in");
+const zoomOut = document.querySelector("#zoom-out");
+const zoomReset = document.querySelector("#zoom-reset");
+const zoomLevel = document.querySelector("#zoom-level");
+const centerGraph = document.querySelector("#center-graph");
 const narrowGraph = window.matchMedia("(max-width: 600px)");
 const form = document.querySelector("#run-form");
 const input = document.querySelector("#input");
 const button = document.querySelector("#run-flow");
+const runInput = document.querySelector("#run-input");
 const resetInput = document.querySelector("#reset-input");
 const status = document.querySelector("#status");
 const result = document.querySelector("#result");
 const outline = document.querySelector("#outline-list");
-const tablist = document.querySelector(".dock-tabs");
-const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+const panelSwitcher = document.querySelector("#panel-switcher");
+const panelToggles = [...panelSwitcher.querySelectorAll("button[aria-controls]")];
 const inspectorState = document.querySelector("#inspector-state");
 const copySource = document.querySelector("#copy-source");
 const historyList = document.querySelector("#history-list");
@@ -18,32 +26,171 @@ const refreshHistoryButton = document.querySelector("#refresh-history");
 const nodes = new Map();
 const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped" };
 let activeNode = null;
+let graphZoom = 100;
+let zoomSettings = null;
+let wheelZoom = null;
+const minimumZoom = 50;
+const maximumZoom = 200;
+const zoomStep = 25;
 
-function showPanel(name) {
-  for (const tab of tabs) {
-    const active = tab.id === `tab-${name}`;
-    tab.tabIndex = active ? 0 : -1;
-    tab.setAttribute("aria-selected", String(active));
-    document.getElementById(tab.getAttribute("aria-controls")).hidden = !active;
-  }
+function layoutSize(element) {
+  const style = getComputedStyle(element);
+  return { width: parseFloat(style.width), height: parseFloat(style.height) };
 }
 
-for (const tab of tabs) {
-  tab.addEventListener("click", () => showPanel(tab.id.slice(4)));
+function graphAnchor(x = graphViewport.clientWidth / 2, y = graphViewport.clientHeight / 2) {
+  return {
+    x, y,
+    graphX: (graphViewport.scrollLeft + x - (parseFloat(graph.style.left) || 0)) * 100 / graphZoom,
+    graphY: (graphViewport.scrollTop + y - (parseFloat(graph.style.top) || 0)) * 100 / graphZoom,
+  };
 }
 
-tablist.addEventListener("keydown", event => {
-  const index = tabs.indexOf(event.target);
-  let next;
-  if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
-  else if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-  else if (event.key === "Home") next = 0;
-  else if (event.key === "End") next = tabs.length - 1;
-  else return;
+function clampZoom(zoom) {
+  return Math.max(minimumZoom, Math.min(maximumZoom, zoom));
+}
+
+function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
+  // Use fractional outer dimensions so scrollbar visibility cannot resize the graph.
+  const { width, height } = layoutSize(graphViewport);
+  const { graphX, graphY } = anchor ?? graphAnchor();
+
+  graphZoom = clampZoom(nextZoom);
+  const scale = graphZoom / 100;
+  graph.style.minWidth = `${width}px`;
+  graph.style.minHeight = `${height}px`;
+  const graphSize = layoutSize(graph);
+  const scaledWidth = graphSize.width * scale;
+  const scaledHeight = graphSize.height * scale;
+  // Leave a viewport of room on each side so the graph can pan under the panels.
+  const left = width + Math.max(0, (width - scaledWidth) / 2);
+  const top = height + Math.max(0, (height - scaledHeight) / 2);
+  graphPlane.style.width = `${2 * width + Math.max(width, scaledWidth)}px`;
+  graphPlane.style.height = `${2 * height + Math.max(height, scaledHeight)}px`;
+  graph.style.left = `${left}px`;
+  graph.style.top = `${top}px`;
+  graph.style.transform = `scale(${scale})`;
+  graphViewport.scrollLeft = left + (center ? scaledWidth / 2 : graphX * scale) - (anchor?.x ?? graphViewport.clientWidth / 2);
+  graphViewport.scrollTop = top + (center ? scaledHeight / 2 : graphY * scale) - (anchor?.y ?? graphViewport.clientHeight / 2);
+
+  const label = `${Math.round(graphZoom)}%`;
+  if (zoomLevel.textContent !== label) zoomLevel.textContent = label;
+  zoomIn.disabled = graphZoom >= maximumZoom;
+  zoomOut.disabled = graphZoom <= minimumZoom;
+  zoomReset.disabled = graphZoom === 100;
+  centerGraph.disabled = false;
+}
+
+function cancelWheelZoom() {
+  if (!wheelZoom) return;
+  cancelAnimationFrame(wheelZoom.frame);
+  wheelZoom = null;
+}
+
+function setZoom(zoom, center = false) {
+  cancelWheelZoom();
+  layoutGraph(zoom, center);
+}
+
+zoomIn.addEventListener("click", () => setZoom(graphZoom + zoomStep));
+zoomOut.addEventListener("click", () => setZoom(graphZoom - zoomStep));
+zoomReset.addEventListener("click", () => setZoom(100));
+centerGraph.addEventListener("click", () => setZoom(graphZoom, true));
+
+function animateWheelZoom(time) {
+  const { start, from, target, anchor } = wheelZoom;
+  const progress = Math.max(0, Math.min(1, (time - start) / zoomSettings.smooth_ms));
+  const zoom = progress === 1 ? target : from + (target - from) * (1 - (1 - progress) ** 3);
+  layoutGraph(zoom, false, anchor);
+  if (progress === 1) wheelZoom = null;
+  else wheelZoom.frame = requestAnimationFrame(animateWheelZoom);
+}
+
+graphViewport.addEventListener("wheel", event => {
+  if (!zoomSettings || event.ctrlKey || event.metaKey || !event.deltaY) return;
   event.preventDefault();
-  tabs[next].click();
-  tabs[next].focus();
+  const pixelUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graphViewport.clientHeight : 1;
+  const factor = Math.exp(-event.deltaY * pixelUnit * zoomSettings.speed * 0.002);
+  const pendingTarget = wheelZoom?.target ?? graphZoom;
+  const sameDirection = (pendingTarget - graphZoom) * (factor - 1) > 0;
+  const target = clampZoom((sameDirection ? pendingTarget : graphZoom) * factor);
+  const bounds = graphViewport.getBoundingClientRect();
+  const anchor = graphAnchor(event.clientX - bounds.left, event.clientY - bounds.top);
+
+  cancelWheelZoom();
+  if (target === graphZoom) return;
+  if (zoomSettings.smooth_ms === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    layoutGraph(target, false, anchor);
+    return;
+  }
+  // Apply half the change in scale immediately, then ease to the target.
+  const immediate = Math.sqrt(graphZoom * target);
+  layoutGraph(immediate, false, anchor);
+  wheelZoom = { start: performance.now(), from: graphZoom, target, anchor, frame: requestAnimationFrame(animateWheelZoom) };
+}, { passive: false });
+
+let pan = null;
+graphViewport.addEventListener("pointerdown", event => {
+  if (pan || event.button !== 0 || event.target.closest(".node")) return;
+  cancelWheelZoom();
+  graphViewport.setPointerCapture(event.pointerId);
+  graphViewport.classList.add("is-panning");
+  pan = {
+    id: event.pointerId,
+    x: event.clientX + graphViewport.scrollLeft,
+    y: event.clientY + graphViewport.scrollTop,
+  };
+  event.preventDefault();
 });
+
+graphViewport.addEventListener("pointermove", event => {
+  if (pan?.id !== event.pointerId) return;
+  graphViewport.scrollLeft = pan.x - event.clientX;
+  graphViewport.scrollTop = pan.y - event.clientY;
+});
+
+graphViewport.addEventListener("lostpointercapture", event => {
+  if (pan?.id !== event.pointerId) return;
+  pan = null;
+  graphViewport.classList.remove("is-panning");
+});
+
+function setPanel(name, visible) {
+  const id = `panel-${name}`;
+  const panel = document.getElementById(id);
+  panel.hidden = !visible;
+  panelToggles.find(toggle => toggle.getAttribute("aria-controls") === id)
+    .setAttribute("aria-pressed", String(visible));
+  return panel;
+}
+
+for (const toggle of panelToggles) {
+  toggle.addEventListener("click", () => {
+    const visible = toggle.getAttribute("aria-pressed") === "false";
+    const panel = setPanel(toggle.getAttribute("aria-controls").slice(6), visible);
+    if (visible) panel.scrollIntoView({ block: "nearest" });
+  });
+}
+
+document.addEventListener("pointerdown", event => {
+  if (panelSwitcher.open && !panelSwitcher.contains(event.target)) panelSwitcher.open = false;
+});
+
+panelSwitcher.addEventListener("keydown", event => {
+  if (event.key !== "Escape" || !panelSwitcher.open) return;
+  panelSwitcher.open = false;
+  panelSwitcher.querySelector("summary").focus();
+});
+
+for (const button of document.querySelectorAll("[data-close-panel]")) {
+  button.addEventListener("click", () => {
+    setPanel(button.dataset.closePanel, false);
+    panelSwitcher.querySelector("summary").focus();
+  });
+}
+
+if (window.matchMedia("(max-width: 720px)").matches) setPanel("outline", false);
+if (narrowGraph.matches) setPanel("inspector", false);
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -69,7 +216,6 @@ function inspectNode(step, project) {
   node.classList.add("is-selected");
   select.setAttribute("aria-pressed", "true");
   outlineSelect.setAttribute("aria-pressed", "true");
-  showPanel("inspector");
   document.querySelector("#inspector-empty").hidden = true;
   document.querySelector("#inspector-detail").hidden = false;
   document.querySelector("#inspector-name").textContent = step.id;
@@ -157,37 +303,50 @@ function positionGraph(project) {
   const count = steps.reduce((total, step) => total + step.dependencies.length, 0);
   document.querySelector("#graph-summary").textContent =
     `${steps.length} ${steps.length === 1 ? "node" : "nodes"} / ${count} ${count === 1 ? "edge" : "edges"}`;
+  layoutGraph(graphZoom, true);
   if (steps.length) inspectNode(steps[0], project);
-  new ResizeObserver(() => drawEdges(steps)).observe(graph);
+  const graphObserver = new ResizeObserver(() => {
+    layoutGraph();
+    drawEdges(steps);
+  });
+  graphObserver.observe(graph);
+  graphObserver.observe(graphViewport, { box: "border-box" });
 }
 
 function drawEdges(steps) {
-  const bounds = graph.getBoundingClientRect();
+  const width = graph.offsetWidth;
+  const height = graph.offsetHeight;
   const scale = window.devicePixelRatio || 1;
-  canvas.style.width = `${bounds.width}px`;
-  canvas.style.height = `${bounds.height}px`;
-  canvas.width = Math.ceil(bounds.width * scale);
-  canvas.height = Math.ceil(bounds.height * scale);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  canvas.width = Math.ceil(width * scale);
+  canvas.height = Math.ceil(height * scale);
   const ctx = canvas.getContext("2d");
   ctx.scale(scale, scale);
   const vertical = narrowGraph.matches;
   if (vertical) ctx.transform(0, 1, 1, 0, 0, 0);
   ctx.lineWidth = 1.6;
   ctx.lineJoin = "round";
-  const frames = new Map(steps.map(step => [step.id, nodes.get(step.id).node.getBoundingClientRect()]));
-  const bypass = Math.max(0, ...Array.from(frames.values(), frame =>
-    vertical ? frame.right - bounds.left : frame.bottom - bounds.top
-  )) + 32;
+  const frames = new Map(steps.map(step => {
+    const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = nodes.get(step.id).node;
+    return [step.id, {
+      start: vertical ? offsetTop : offsetLeft,
+      end: vertical ? offsetTop + offsetHeight : offsetLeft + offsetWidth,
+      middle: vertical ? offsetLeft + offsetWidth / 2 : offsetTop + offsetHeight / 2,
+      outside: vertical ? offsetLeft + offsetWidth : offsetTop + offsetHeight,
+    }];
+  }));
+  const bypass = Math.max(0, ...Array.from(frames.values(), frame => frame.outside)) + 32;
   for (const step of steps) {
     const downstream = nodes.get(step.id);
     const to = frames.get(step.id);
     for (const id of step.dependencies) {
       const upstream = nodes.get(id);
       const from = frames.get(id);
-      const x1 = (vertical ? from.bottom - bounds.top : from.right - bounds.left) + 3;
-      const x2 = (vertical ? to.top - bounds.top : to.left - bounds.left) - 4;
-      const y1 = vertical ? from.left + from.width / 2 - bounds.left : from.top + from.height / 2 - bounds.top;
-      const y2 = vertical ? to.left + to.width / 2 - bounds.left : to.top + to.height / 2 - bounds.top;
+      const x1 = from.end + 3;
+      const x2 = to.start - 4;
+      const y1 = from.middle;
+      const y2 = to.middle;
       const color = activeNode === step.id || activeNode === id ? "#ff9b88" : "#838896";
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
@@ -290,7 +449,7 @@ async function showHistoryRun(id) {
   }
   historyDetail.replaceChildren(element("p", "Loading run…"));
   try {
-    const response = await fetch(`/history/${id}`);
+    const response = await fetch(`history/${id}`);
     if (!response.ok) throw new Error("Could not load this run.");
     const run = await response.json();
     if (selection !== historySelection) return;
@@ -335,7 +494,7 @@ async function showHistoryRun(id) {
 async function refreshHistory() {
   refreshHistoryButton.disabled = true;
   try {
-    const response = await fetch("/history");
+    const response = await fetch("history");
     if (!response.ok) throw new Error("Could not load run history.");
     const runs = await response.json();
     if (!runs.length) {
@@ -368,13 +527,14 @@ async function refreshHistory() {
 
 refreshHistoryButton.addEventListener("click", refreshHistory);
 refreshHistory();
-button.addEventListener("click", () => showPanel("run"));
+button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ block: "nearest" }));
 
 form.addEventListener("submit", async event => {
   event.preventDefault();
-  showPanel("run");
+  setPanel("run", true);
   result.replaceChildren();
   button.disabled = true;
+  runInput.disabled = true;
   setStatus("running");
   for (const { node, state } of nodes.values()) {
     delete node.dataset.state;
@@ -386,7 +546,7 @@ form.addEventListener("submit", async event => {
     if (payload === null || Array.isArray(payload) || typeof payload !== "object") {
       throw new Error("Enter a JSON object, then run the flow again.");
     }
-    const response = await fetch("/run", {
+    const response = await fetch("run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -412,13 +572,15 @@ form.addEventListener("submit", async event => {
     showMessage({ error: error.message });
   } finally {
     button.disabled = false;
+    runInput.disabled = false;
   }
 });
 
 try {
-  const response = await fetch("/project");
+  const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
+  zoomSettings = project.zoom;
   const name = document.querySelector("#project-name");
   name.textContent = project.name;
   name.title = project.name;
@@ -431,9 +593,10 @@ try {
     input.focus();
   });
   resetInput.disabled = false;
+  runInput.disabled = false;
   button.disabled = false;
 } catch (error) {
-  showPanel("run");
+  setPanel("run", true);
   result.replaceChildren();
   showMessage({ error: error.message });
 }

@@ -28,7 +28,25 @@ From the same directory, start the Web UI and open the printed loopback URL:
 ../.venv/bin/workspace ui
 ```
 
-Select a node on the canvas or in Flow outline to see its inputs, downstream nodes, and source location in Inspector. Use Run flow in the toolbar to run the prefilled sample. In the Run tab, replace the input with `{"text":"Debug failure"}` and run again. Open the traceback in Run details to find the failing predictor helper. After editing project source, stop and restart the UI to load the changes.
+The UI listens at `http://127.0.0.1:18080` by default. To change the port, place `setting.json` in the directory where you start Workspace:
+
+```json
+{
+  "port": 18080,
+  "zoom": {
+    "speed": 1.0,
+    "smooth_ms": 160
+  }
+}
+```
+
+Restart the UI after editing the file. Use `workspace ui --port <number>` to override the port for one launch, or `workspace ui --port 0` to let the OS pick an available port.
+
+Scroll up or down over the canvas to zoom around the pointer. Each wheel event changes the zoom immediately, including when you reverse direction. Set `zoom.speed` to a multiplier greater than 0 and at most 10 (default 1.0). Set `zoom.smooth_ms` to the duration of the remaining animation in milliseconds (0–1000, default 160). Set it to 0 to apply the entire change immediately. All sheets use the workspace root settings.
+
+Drag empty canvas space to move the flow. Use **Panels** to show or hide each overlay independently, and **Center** in the zoom controls to bring the graph back to the middle. Select a node on the canvas or in Flow outline to see its inputs, downstream nodes, and source location in Inspector.
+
+Use Run flow in the toolbar to run the prefilled sample. In the Run panel, replace the input with `{"text":"Debug failure"}` and run again. Open the traceback in Run details to find the failing predictor helper. After editing project source, stop and restart the UI to load the changes.
 
 ### Add and debug a node
 
@@ -60,7 +78,7 @@ The output now includes `"queue":"billing-urgent"`. In the UI, run the prefilled
 
 ### Recover a completed run
 
-You can close the browser tab while a run is in progress. Leave the `workspace ui` process running, then reopen its URL. Open the **History** tab and select a saved run to see its status, duration, source version, and node summaries. Use **Refresh history** if the run finishes after you reopen the page.
+You can close the browser tab while a run is in progress. Leave the `workspace ui` process running, then reopen its URL. Open **History** from **Panels** and select a saved run to see its status, duration, source version, and node summaries. Use **Refresh history** if the run finishes after you reopen the page.
 
 Workspace saves completed runs in `.workspace/runs/` inside the project, so the same history is available after restarting the UI. Each source version identifies the project Python code loaded by Workspace, including uncommitted edits. History stores input and output metadata such as value type and tensor shape, dtype, and device. Saved failures show the exception type and project stack locations. Request values and exception messages are absent from history by default.
 
@@ -73,7 +91,7 @@ cd evidence-demo
 ../../.venv/bin/workspace ui
 ```
 
-Open the printed URL and run the prefilled ticket. Its category should be `technical`. The flow reports **Succeeded**, but the output says `billing`. Open the **History** tab, select **Refresh history**, and open the successful run to find the first node that returned the wrong value.
+Open the printed URL and run the prefilled ticket. Its category should be `technical`. The flow reports **Succeeded**, but the output says `billing`. Open **History** from **Panels**, select **Refresh history**, and open the successful run to find the first node that returned the wrong value.
 
 <details>
 <summary>Check the diagnosis</summary>
@@ -85,6 +103,19 @@ Open the printed URL and run the prefilled ticket. Its category should be `techn
 To store a reason in your own node, call `record_reason("…")` from `workspace_sdk` with an explanation safe to save. To also store examples, set `capture_samples=True` on that node's `Step`. Only enable capture where the values are safe to retain. Each JSON example is limited to 4 KiB. Oversized or unsupported values retain their metadata and show that a sample is unavailable. History keeps up to ten reasons per node, each up to 512 characters.
 
 From the repository root, follow [Deploy and verify](deployment-trial/README.md#deploy-and-verify) to try the trained model on Docker.
+
+## Multiple flows in one workspace
+
+Put each flow under `flows/<sheet-name>/flow.py` in the workspace directory. Optionally put a `sample.json` and a `pyproject.toml` with Workspace source paths beside each flow. The directory name becomes the sheet label. If the workspace root also has a `flow.py`, it appears as the Main sheet.
+
+Try two independent sheets from the repository root:
+
+```sh
+cd workspace-test/sheets-demo
+../../.venv/bin/workspace ui
+```
+
+Use the bottom tabs to switch sheets. The Workspace and all sheet views use the same browser address and port. Run either flow from its toolbar and watch its tab status while viewing another sheet. Select **Stop** on a running sheet to terminate that sheet's Python process. Select the stopped sheet and **Open flow** to start it again. A terminated run does not produce a completed history record. Each sheet keeps its completed runs in its own `.workspace/runs/` directory.
 
 ## Acceptance tests and overhead baseline
 
