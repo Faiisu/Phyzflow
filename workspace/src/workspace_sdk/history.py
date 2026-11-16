@@ -29,7 +29,7 @@ class RunHistory:
             })
             step.update({
                 key: event[key]
-                for key in ("status", "time", "input", "output", "reasons", "input_sample", "output_sample")
+                for key in ("status", "time", "duration_ms", "input", "output", "reasons", "input_sample", "output_sample")
                 if key in event
             })
             if "error_frames" in event:

@@ -19,6 +19,7 @@ const outline = document.querySelector("#outline-list");
 const panelSwitcher = document.querySelector("#panel-switcher");
 const panelToggles = [...panelSwitcher.querySelectorAll("button[aria-controls]")];
 const inspectorState = document.querySelector("#inspector-state");
+const inspectorDuration = document.querySelector("#inspector-duration");
 const copySource = document.querySelector("#copy-source");
 const openNodeFiles = document.querySelector("#open-node-files");
 const nodeFilesDialog = document.querySelector("#node-files");
@@ -28,6 +29,8 @@ const nodeFilesTree = document.querySelector("#node-files-tree");
 const nodeFilesMessage = document.querySelector("#node-files-message");
 const nodeSourceForm = document.querySelector("#node-source-form");
 const nodeSourceInput = document.querySelector("#node-source-input");
+const nodeCodeEditor = document.querySelector("#node-code-editor");
+const nodeSourceHighlight = document.querySelector("#node-source-highlight");
 const nodeSourceName = document.querySelector("#node-source-name");
 const nodeSourceMessage = document.querySelector("#node-source-message");
 const saveNodeSource = document.querySelector("#save-node-source");
@@ -210,6 +213,66 @@ function element(tag, text, className) {
   return node;
 }
 
+function sourceLanguage(path) {
+  if (path.endsWith(".py")) return "python";
+  if (path.endsWith(".json")) return "json";
+  return null;
+}
+
+function appendSyntaxTokens(parent, tokens) {
+  for (const token of tokens) {
+    if (typeof token === "string") {
+      parent.append(token);
+    } else {
+      const span = element("span", "", "token");
+      span.classList.add(token.type, ...[token.alias ?? []].flat());
+      appendSyntaxTokens(span, [token.content].flat());
+      parent.append(span);
+    }
+  }
+}
+
+function highlightCode(code, text, language) {
+  const prism = window.Prism;
+  const grammar = prism?.languages[language];
+  if (!grammar) {
+    code.textContent = text;
+    return false;
+  }
+  const preview = document.createDocumentFragment();
+  appendSyntaxTokens(preview, prism.tokenize(text, grammar));
+  code.replaceChildren(preview);
+  return true;
+}
+
+function jsonOutput(text) {
+  const code = element("code", "");
+  highlightCode(code, text, "json");
+  const pre = element("pre", "", "json-output");
+  pre.append(code);
+  return pre;
+}
+
+function syncSourceScroll() {
+  nodeSourceHighlight.style.width = `${nodeSourceInput.clientWidth + 2}px`;
+  nodeSourceHighlight.style.height = `${nodeSourceInput.clientHeight + 2}px`;
+  nodeSourceHighlight.scrollTop = nodeSourceInput.scrollTop;
+  nodeSourceHighlight.scrollLeft = nodeSourceInput.scrollLeft;
+}
+
+let highlightFrame;
+function highlightSource() {
+  if (!currentSource) return;
+  const text = nodeSourceInput.value;
+  const preview = text.endsWith("\n") ? `${text}\n` : text;
+  const highlighted = highlightCode(nodeSourceHighlight.firstElementChild, preview, sourceLanguage(currentSource.path));
+  nodeCodeEditor.toggleAttribute("data-highlighted", highlighted);
+  syncSourceScroll();
+}
+
+nodeSourceInput.addEventListener("scroll", syncSourceScroll);
+new ResizeObserver(syncSourceScroll).observe(nodeSourceInput);
+
 let nodeFilesRequest;
 let nodeSourceRequest;
 let currentSource = null;
@@ -262,7 +325,7 @@ async function requestSource(index, data, signal) {
   if (!response.ok) {
     const fallback = response.status === 409
       ? "The flow was reloaded. Copy any unsaved changes before reopening this file."
-      : "Could not access the Python file.";
+      : "Could not access the source file.";
     throw new Error(result.error ?? fallback);
   }
   return result;
@@ -283,6 +346,8 @@ async function openSource(index, path) {
     nodeSourceName.textContent = path;
     nodeSourceInput.value = source;
     nodeSourceForm.hidden = false;
+    nodeSourceInput.scrollTop = nodeSourceInput.scrollLeft = 0;
+    highlightSource();
     nodeSourceMessage.textContent = "";
     for (const button of nodeFilesTree.querySelectorAll("[data-file]")) {
       button.setAttribute("aria-current", String(button.dataset.file === path));
@@ -300,6 +365,8 @@ async function openSource(index, path) {
 
 nodeSourceInput.addEventListener("input", () => {
   updateSourceDirty();
+  cancelAnimationFrame(highlightFrame);
+  highlightFrame = requestAnimationFrame(highlightSource);
   nodeSourceMessage.textContent = "";
 });
 nodeSourceForm.addEventListener("submit", async event => {
@@ -332,7 +399,7 @@ function fileTree(entries, parent, source, index) {
     const path = parent ? `${parent}/${entry.name}` : entry.name;
     const item = element("li", "");
     if (entry.children === null) {
-      const editable = path.endsWith(".py");
+      const editable = sourceLanguage(path) !== null;
       const file = element(editable ? "button" : "code", entry.name, path === source ? "node-entrypoint" : "node-file");
       if (editable) {
         file.type = "button";
@@ -358,7 +425,7 @@ async function showNodeFiles(step, index) {
   currentSource = null;
   updateSourceDirty();
   nodeSourceForm.hidden = true;
-  nodeSourceMessage.textContent = "Select a Python file.";
+  nodeSourceMessage.textContent = "Select a Python or JSON file.";
   const request = new AbortController();
   nodeFilesRequest = request;
   nodeFilesHeading.textContent = `${step.id} files`;
@@ -386,9 +453,17 @@ async function showNodeFiles(step, index) {
   }
 }
 
-function showInspectorState(value) {
+function formatDuration(value) {
+  if (!Number.isFinite(value)) return "";
+  if (value > 0 && value < 0.001) return "<0.001 ms";
+  return `${value.toFixed(value < 1 ? 3 : 2)} ms`;
+}
+
+function showInspectorState(value, duration = "") {
   inspectorState.textContent = labels[value] ?? "Idle";
   inspectorState.dataset.state = value ?? "idle";
+  inspectorDuration.textContent = duration;
+  inspectorDuration.hidden = !duration;
 }
 
 function inspectNode(step, project) {
@@ -399,7 +474,7 @@ function inspectNode(step, project) {
     previous.outlineSelect.setAttribute("aria-pressed", "false");
   }
   activeNode = step.id;
-  const { node, select, outlineSelect, index } = nodes.get(step.id);
+  const { node, select, outlineSelect, index, duration } = nodes.get(step.id);
   openNodeFiles.onclick = () => showNodeFiles(step, index);
   node.classList.add("is-selected");
   select.setAttribute("aria-pressed", "true");
@@ -407,7 +482,7 @@ function inspectNode(step, project) {
   document.querySelector("#inspector-empty").hidden = true;
   document.querySelector("#inspector-detail").hidden = false;
   document.querySelector("#inspector-name").textContent = step.id;
-  showInspectorState(node.dataset.state);
+  showInspectorState(node.dataset.state, duration.textContent);
 
   const description = document.querySelector("#inspector-description");
   description.textContent = step.description;
@@ -458,6 +533,10 @@ function positionGraph(project) {
     const file = element("p", locationText({ file: source, line: step.line }), "node-source");
     file.title = locationText(step);
     const state = element("p", "Idle", "state badge");
+    const duration = element("span", "", "node-duration");
+    duration.hidden = true;
+    const metrics = element("div", "", "node-metrics");
+    metrics.append(state, duration);
     const number = String(index + 1).padStart(2, "0");
     const select = element("button", "", "inspect-node");
     select.type = "button";
@@ -480,14 +559,14 @@ function positionGraph(project) {
       element("p", number, "node-index"),
       element("h3", step.id),
       file,
-      state,
+      metrics,
       select,
     );
     if (step.dependencies.length) {
       node.append(element("p", `Depends on ${step.dependencies.join(", ")}`, "sr-only"));
     }
     graph.append(node);
-    nodes.set(step.id, { node, column, state, select, outlineSelect, index });
+    nodes.set(step.id, { node, column, state, duration, select, outlineSelect, index });
   }
   const count = steps.reduce((total, step) => total + step.dependencies.length, 0);
   document.querySelector("#graph-summary").textContent =
@@ -579,7 +658,7 @@ function showMessage(message) {
   if (message.result) {
     setStatus(message.result.status);
     if (message.result.status === "succeeded") {
-      result.append(element("h3", "Output"), element("pre", JSON.stringify(message.result.output, null, 2)));
+      result.append(element("h3", "Output"), jsonOutput(JSON.stringify(message.result.output, null, 2)));
     }
     return;
   }
@@ -587,10 +666,12 @@ function showMessage(message) {
     setStatus(message.status);
     return;
   }
-  const { node, state } = nodes.get(message.step_id);
+  const { node, state, duration } = nodes.get(message.step_id);
   node.dataset.state = message.status;
   state.textContent = labels[message.status];
-  if (activeNode === message.step_id) showInspectorState(message.status);
+  duration.textContent = formatDuration(message.duration_ms);
+  duration.hidden = !duration.textContent;
+  if (activeNode === message.step_id) showInspectorState(message.status, duration.textContent);
   if (message.status === "failed") {
     const error = element("article", "", "error");
     const trace = document.createElement("details");
@@ -613,7 +694,7 @@ function locationText(location) {
 
 function showMetadata(container, label, metadata) {
   if (metadata != null) {
-    container.append(element("p", label), element("pre", JSON.stringify(metadata, null, 2)));
+    container.append(element("p", label), jsonOutput(JSON.stringify(metadata, null, 2)));
   }
 }
 
@@ -623,7 +704,7 @@ function showSample(container, label, sample) {
     if (sample === null) {
       container.append(element("p", "No JSON sample available."));
     } else {
-      container.append(element("pre", sample));
+      container.append(jsonOutput(sample));
     }
   }
 }
@@ -657,6 +738,8 @@ async function showHistoryRun(id) {
         element("h4", `${step.id} · ${labels[step.status]}`),
         element("p", locationText(step.source)),
       );
+      const duration = formatDuration(step.duration_ms);
+      if (duration) node.append(element("p", duration, "node-duration"));
       showMetadata(node, "Input", step.input);
       showMetadata(node, "Output", step.output);
       if (step.reasons?.length) {
@@ -725,9 +808,11 @@ form.addEventListener("submit", async event => {
   button.disabled = true;
   runInput.disabled = true;
   setStatus("running");
-  for (const { node, state } of nodes.values()) {
+  for (const { node, state, duration } of nodes.values()) {
     delete node.dataset.state;
     state.textContent = "Idle";
+    duration.textContent = "";
+    duration.hidden = true;
   }
   showInspectorState();
   try {

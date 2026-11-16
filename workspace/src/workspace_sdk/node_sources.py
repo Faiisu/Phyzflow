@@ -1,5 +1,6 @@
 """Inspect and edit existing source files within a node's folder."""
 
+from codecs import BOM_UTF8
 from hashlib import sha256
 from io import BytesIO
 from os import scandir
@@ -11,6 +12,7 @@ from typing import TypedDict
 
 
 MAX_SOURCE_BYTES = 128 * 1024
+SOURCE_EXTENSIONS = {".py", ".json"}
 
 
 class SourceChanged(RuntimeError):
@@ -70,7 +72,7 @@ def node_source_path(root: Path, filename: str | None, relative: str) -> Path:
     location = node_location(root, filename)
     path = Path(relative)
     if (
-        location is None or path.is_absolute() or path.suffix != ".py"
+        location is None or path.is_absolute() or path.suffix not in SOURCE_EXTENSIONS
         or any(part.startswith(".") or part == "__pycache__" for part in path.parts)
     ):
         raise FileNotFoundError
@@ -88,7 +90,7 @@ def read_node_source(path: Path) -> bytes:
     with path.open("rb") as stream:
         content = stream.read(MAX_SOURCE_BYTES + 1)
     if len(content) > MAX_SOURCE_BYTES:
-        raise ValueError("The editor supports Python files up to 128 KiB.")
+        raise ValueError("The editor supports source files up to 128 KiB.")
     return content
 
 
@@ -98,7 +100,10 @@ def source_revision(content: bytes) -> str:
 
 def edit_node_source(path: Path, source: str | None, revision: str | None) -> dict[str, str]:
     content = read_node_source(path)
-    encoding, _ = detect_encoding(BytesIO(content).readline)
+    if path.suffix == ".py":
+        encoding, _ = detect_encoding(BytesIO(content).readline)
+    else:
+        encoding = "utf-8-sig" if content.startswith(BOM_UTF8) else "utf-8"
     text = content.decode(encoding)
     if source is None:
         return {"source": text.replace("\r\n", "\n").replace("\r", "\n"), "revision": source_revision(content)}
@@ -109,7 +114,7 @@ def edit_node_source(path: Path, source: str | None, revision: str | None) -> di
         source = source.replace("\r\n", "\n").replace("\n", "\r\n")
     updated = source.encode(encoding)
     if len(updated) > MAX_SOURCE_BYTES:
-        raise ValueError("The editor supports Python files up to 128 KiB.")
+        raise ValueError("The editor supports source files up to 128 KiB.")
     if updated == content:
         return {"revision": source_revision(content)}
     with NamedTemporaryFile(dir=path.parent, prefix=".workspace-edit-", delete=False) as stream:

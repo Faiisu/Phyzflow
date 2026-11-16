@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#24262b">
   <title>Workspace | Flow editor</title>
   <link rel="stylesheet" href="app.css">
+  <script src="prism-syntax.js" data-manual></script>
   <script type="module" src="app.js"></script>
 </head>
 <body>
@@ -53,7 +54,10 @@
         <div id="inspector-detail" hidden>
           <div class="inspector-title">
             <strong id="inspector-name"></strong>
-            <span id="inspector-state" class="badge"></span>
+            <span class="inspector-metrics">
+              <span id="inspector-state" class="badge"></span>
+              <span id="inspector-duration" class="node-duration" hidden></span>
+            </span>
           </div>
           <p id="inspector-description" hidden></p>
           <div class="source-row">
@@ -123,9 +127,12 @@
               <label for="node-source-input" id="node-source-name"></label>
               <button type="submit" id="save-node-source" class="primary-button" disabled>Save</button>
             </div>
-            <textarea id="node-source-input" aria-label="Python source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+            <div id="node-code-editor" class="code-editor">
+              <pre id="node-source-highlight" aria-hidden="true"><code></code></pre>
+              <textarea id="node-source-input" aria-label="Source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+            </div>
           </form>
-          <p id="node-source-message" class="muted" role="status">Select a Python file.</p>
+          <p id="node-source-message" class="muted" role="status">Select a Python or JSON file.</p>
         </section>
       </div>
     </div>

@@ -82,6 +82,7 @@ def serve(
                 "/": ("index.html", "text/html; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
             }.get(self.path)
             if asset:
                 name, content_type = asset
@@ -175,11 +176,11 @@ def serve(
                     path = node_source_path(root, graph[index]["file"], relative)
                     result = edit_node_source(path, source, revision)
             except FileNotFoundError:
-                self.send_source({"error": "This Python file is unavailable in the node folder."}, HTTPStatus.NOT_FOUND)
+                self.send_source({"error": "This source file is unavailable in the node folder."}, HTTPStatus.NOT_FOUND)
             except SourceChanged:
                 self.send_source({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
             except (UnicodeError, SyntaxError):
-                self.send_source({"error": "Could not read or write the file's Python encoding."}, HTTPStatus.BAD_REQUEST)
+                self.send_source({"error": "Could not read or write the file in its original encoding."}, HTTPStatus.BAD_REQUEST)
             except ValueError as error:
                 self.send_source({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             except (OSError, RuntimeError):

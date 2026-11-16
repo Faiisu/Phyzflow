@@ -73,7 +73,7 @@ function hasUnsavedSource(sheet) {
 }
 
 function mayReplaceView(sheet) {
-  return !hasUnsavedSource(sheet) || window.confirm("Discard unsaved Python changes in this sheet?");
+  return !hasUnsavedSource(sheet) || window.confirm("Discard unsaved source changes in this sheet?");
 }
 
 async function command(sheet, action) {

@@ -25,7 +25,7 @@ from .web import STATIC, serve
 
 VIEW_PATH = re.compile(
     r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view"
-    r"(/(?:app\.css|app\.js|project|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+    r"(/(?:app\.css|app\.js|prism-syntax\.js|project|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
 
 
@@ -268,10 +268,12 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                             return
                         upstream = HTTPConnection(worker.url.removeprefix("http://"), timeout=2)
                         upstream.connect()
+                        connection = upstream.sock
                         upstream.request(self.command, path, body=body, headers=headers)
                         response = upstream.getresponse()
-                        if upstream.sock is not None:
-                            upstream.sock.settimeout(None)
+                        # HTTP/1.0 can detach the socket from HTTPConnection after the headers.
+                        if connection is not None:
+                            connection.settimeout(None)
                 except (OSError, HTTPException):
                     self.send_error(HTTPStatus.BAD_GATEWAY, "The flow process is unavailable.")
                     return

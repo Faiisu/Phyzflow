@@ -4,6 +4,7 @@ from shutil import copytree
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from time import sleep
 import unittest
 from urllib.parse import urljoin
 from urllib.request import urlopen
@@ -95,6 +96,8 @@ class WorkspaceSheetTests(unittest.TestCase):
                 helper = node.parent / "helpers" / "format.py"
                 helper.parent.mkdir()
                 helper.write_text("VALUE = 1\n")
+                config = node.with_name("config.json")
+                config.write_text('{"enabled": true, "label": "<img src=x>"}\n')
                 sibling = node.parent.parent / "other"
                 sibling.mkdir()
                 (sibling / "private.py").write_text("SECRET = 2\n")
@@ -115,9 +118,25 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(files.get_by_text("private.py", exact=True)).to_have_count(0)
                 expect(files.get_by_text("linked.py", exact=True)).to_have_count(0)
                 expect(files.get_by_text("__pycache__", exact=True)).to_have_count(0)
-                editor = files.get_by_role("textbox", name="Python source code")
+                editor = files.get_by_role("textbox", name="Source code")
                 saved = node.read_text()
                 expect(editor).to_have_value(saved)
+                highlight = files.locator("#node-source-highlight")
+                expect(highlight.locator(".token.keyword").first).to_have_text("def")
+                expect(highlight.locator(".token.string").filter(has_text="Hello from Workspace")).to_be_visible()
+                files.get_by_role("button", name="config.json", exact=True).click()
+                expect(editor).to_have_value(config.read_text())
+                expect(highlight.locator(".token.property").first).to_have_text('"enabled"')
+                expect(highlight.locator(".token.boolean")).to_have_text("true")
+                expect(highlight.locator("img")).to_have_count(0)
+                self.assertIn("<img src=x>", highlight.text_content() or "")
+                new_config = '{"enabled": false, "count": 42}\n'
+                editor.fill(new_config)
+                expect(highlight.locator(".token.boolean")).to_have_text("false")
+                expect(highlight.locator(".token.number")).to_have_text("42")
+                files.get_by_role("button", name="Save", exact=True).click()
+                expect(files.locator("#node-source-message")).to_contain_text("Saved.")
+                self.assertEqual(config.read_text(), new_config)
                 files.get_by_role("button", name="format.py", exact=True).click()
                 expect(editor).to_have_value("VALUE = 1\n")
                 files.get_by_role("button", name="entrypoint.py", exact=True).click()
@@ -156,6 +175,7 @@ class WorkspaceSheetTests(unittest.TestCase):
                 flow.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name=name)).to_contain_text("Succeeded")
                 self.assertEqual(json.loads(flow.locator("#result pre").inner_text()), {"message": "Edited in the browser"})
+                expect(flow.locator("#result .token.property")).to_have_text('"message"')
 
                 page.get_by_role("button", name="New sheet").click()
                 title.fill(name.upper())
@@ -256,6 +276,8 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(second_tab).to_contain_text("Running")
                 self.assertEqual(page.request.get(first_url).status, 503)
 
+                # Keep the event stream idle past the upstream connection timeout.
+                sleep(2.2)
                 (root / "flows" / "Second" / "release").touch()
                 expect(second_tab).to_contain_text("Succeeded")
                 self.assertEqual(json.loads(second.locator("#result pre").inner_text()), {"result": "Second flow"})

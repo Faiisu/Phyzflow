@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import sys
+from time import perf_counter_ns
 import traceback
 from types import ModuleType
 from typing import Any, Callable
@@ -93,7 +94,7 @@ def run(
     emit("running", **input_metadata)
     for step in steps:
         path, line = source_location(step.function)
-        location = {"step_id": step.id, "file": path, "line": line}
+        location: dict[str, str | int | float | None] = {"step_id": step.id, "file": path, "line": line}
         if any(getattr(ref, "step_id", None) in unsuccessful for ref in step.arguments.values()):
             unsuccessful.add(step.id)
             emit("skipped", **location)
@@ -112,10 +113,13 @@ def run(
         emit("running", **location, **argument_metadata)
         reasons: list[str] | None = [] if include_metadata else None
         reason_scope = active_reasons.set(reasons)
+        started = perf_counter_ns() if on_event is not None else None
         try:
             try:
                 outputs[step.id] = step.function(**arguments)
             finally:
+                if started is not None:
+                    location["duration_ms"] = (perf_counter_ns() - started) / 1_000_000
                 active_reasons.reset(reason_scope)
         except Exception as error:
             unsuccessful.add(step.id)
@@ -127,8 +131,9 @@ def run(
                 diagnostics["error_frames"] = list(diagnostic_frames(trace))
             if reasons:
                 diagnostics["reasons"] = reasons.copy()
+            location.update(file=frame.filename, line=frame.lineno)
             emit(
-                "failed", step_id=step.id, file=frame.filename, line=frame.lineno,
+                "failed", **location,
                 error_type=type(error).__name__, traceback="".join(trace.format()),
                 **diagnostics,
             )
