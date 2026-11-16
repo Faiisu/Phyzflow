@@ -1,6 +1,9 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import sys
 import traceback
+from types import ModuleType
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -15,10 +18,55 @@ class RunResult:
     output: Any
 
 
+def summarize(value: Any) -> dict[str, Any]:
+    value_type = type(value)
+    tensor = getattr(sys.modules.get("torch"), "Tensor", None)
+    parameter = getattr(sys.modules.get("torch.nn"), "Parameter", None)
+    if value_type is tensor or value_type is parameter:
+        metadata: dict[str, Any] = {"type": "tensor", "dtype": str(value.dtype), "device": str(value.device)}
+        if not value.is_nested:
+            metadata["shape"] = list(value.shape)
+        return metadata
+    if value_type is getattr(sys.modules.get("numpy"), "ndarray", None):
+        return {"type": "ndarray", "shape": list(value.shape), "dtype": value.dtype.type.__name__}
+    if value_type is getattr(sys.modules.get("pandas"), "DataFrame", None):
+        return {"type": "DataFrame", "shape": list(value.shape)}
+    if value_type in (str, int, float, bool, bytes, dict, list, tuple, type(None)):
+        return {"type": value_type.__name__}
+    return {"type": "object"}
+
+
+def diagnostic_error_type(error: Exception) -> str:
+    for cls in type(error).__mro__:
+        scope = sys.modules.get(cls.__module__)
+        names = cls.__qualname__.split(".")
+        for name in names:
+            if not isinstance(scope, (ModuleType, type)):
+                break
+            scope = vars(scope).get(name)
+        if scope is cls:
+            return names[-1]
+    return "Exception"
+
+
+def diagnostic_frames(trace: traceback.TracebackException) -> Iterator[dict[str, str | int | None]]:
+    cause = trace.__cause__
+    if cause is None and not trace.__suppress_context__:
+        cause = trace.__context__
+    if cause is not None:
+        yield from diagnostic_frames(cause)
+    for frame in trace.stack:
+        yield {"file": frame.filename, "line": frame.lineno}
+    for child in trace.exceptions or ():
+        yield from diagnostic_frames(child)
+
+
 def run(
     flow: Flow,
     inputs: dict[str, Any],
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    include_metadata: bool = False,
 ) -> RunResult:
     """Execute a flow and emit run and step events to the optional observer."""
     steps = ordered_steps(flow)
@@ -38,7 +86,10 @@ def run(
                 **details,
             })
 
-    emit("running")
+    input_metadata = {}
+    if include_metadata:
+        input_metadata["input"] = {name: summarize(inputs[name]) for name in flow.inputs}
+    emit("running", **input_metadata)
     for step in steps:
         path, line = source_location(step.function)
         location = {"step_id": step.id, "file": path, "line": line}
@@ -51,20 +102,31 @@ def run(
             name: inputs[ref.name] if isinstance(ref, Input) else outputs[ref.step_id]
             for name, ref in step.arguments.items()
         }
-        emit("running", **location)
+        argument_metadata = {}
+        if include_metadata:
+            argument_metadata["input"] = {name: summarize(value) for name, value in arguments.items()}
+        emit("running", **location, **argument_metadata)
         try:
             outputs[step.id] = step.function(**arguments)
         except Exception as error:
             unsuccessful.add(step.id)
             trace = traceback.TracebackException.from_exception(error)
             frame = trace.stack[-1]
+            diagnostics = {}
+            if include_metadata:
+                diagnostics["diagnostic_error_type"] = diagnostic_error_type(error)
+                diagnostics["error_frames"] = list(diagnostic_frames(trace))
             emit(
                 "failed", step_id=step.id, file=frame.filename, line=frame.lineno,
                 error_type=type(error).__name__, traceback="".join(trace.format()),
+                **diagnostics,
             )
         else:
-            emit("succeeded", **location)
+            metadata = {"output": summarize(outputs[step.id])} if include_metadata else {}
+            emit("succeeded", **location, **metadata)
 
     status = "failed" if unsuccessful else "succeeded"
-    emit(status)
-    return RunResult(run_id, status, outputs.get(flow.output.step_id))
+    output = outputs.get(flow.output.step_id)
+    metadata = {"output": summarize(output)} if include_metadata and status == "succeeded" else {}
+    emit(status, **metadata)
+    return RunResult(run_id, status, output)

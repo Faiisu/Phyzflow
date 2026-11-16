@@ -38,9 +38,10 @@ def main() -> int:
 
         return deploy(root, args.sdk.resolve(), args.context, args.port)
 
+    loaded_sources: dict[Path, str] | None = {} if args.command == "ui" else None
     with ExitStack() as project:
         try:
-            flow = project.enter_context(load_project(root))
+            flow = project.enter_context(load_project(root, loaded_sources))
         except ValidationError as error:
             print(f"Validation: {error}", file=sys.stderr)
             return 1
@@ -48,15 +49,15 @@ def main() -> int:
             print("Flow import failed.", file=sys.stderr)
             traceback.print_exception(error)
             return 1
-        return run_command(args, flow, root)
+        return run_command(args, flow, root, loaded_sources)
 
 
-def run_command(args, flow, root):
+def run_command(args, flow, root, loaded_sources):
     if args.command == "ui":
         from .web import serve
 
         try:
-            serve(flow, root, args.port)
+            serve(flow, root, args.port, loaded_sources)
         except (OSError, ValueError) as error:
             print(f"Web UI: {error}", file=sys.stderr)
             return 1

@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from graphlib import CycleError, TopologicalSorter
+from hashlib import sha256
 from importlib.machinery import PathFinder, SourceFileLoader
 import importlib.util
 from inspect import signature
@@ -22,6 +23,14 @@ def source_location(function: Callable) -> tuple[str | None, int | None]:
     if isinstance(code, CodeType):
         return code.co_filename, code.co_firstlineno
     return None, None
+
+
+def relative_source(root: Path, filename: str | None) -> str | None:
+    if filename:
+        path = Path(filename)
+        if path.is_relative_to(root):
+            return str(path.relative_to(root))
+    return filename
 
 
 def ordered_steps(flow: Flow) -> tuple[Step, ...]:
@@ -63,7 +72,7 @@ def validate_bindings(flow: Flow, steps: tuple[Step, ...]) -> None:
             raise ValidationError(f"Invalid arguments for {step.id}{location}: {error}") from error
 
 
-def check_source(root: Path, flow_path: Path) -> dict[Path, CodeType]:
+def check_source(root: Path, flow_path: Path) -> dict[Path, tuple[CodeType, str]]:
     config_path = root / "pyproject.toml"
     sources = []
     if config_path.is_file():
@@ -97,7 +106,11 @@ def check_source(root: Path, flow_path: Path) -> dict[Path, CodeType]:
         if not path.resolve().is_relative_to(root):
             raise ValidationError(f"Source configuration: {path} is outside the project.")
         try:
-            code[path] = compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
+            data = path.read_bytes()
+            code[path] = (
+                compile(data, str(path), "exec", dont_inherit=True),
+                sha256(data).hexdigest(),
+            )
         except SyntaxError as error:
             raise ValidationError(f"Syntax: {path}:{error.lineno}: {error.msg}") from error
         except OSError as error:
@@ -106,33 +119,51 @@ def check_source(root: Path, flow_path: Path) -> dict[Path, CodeType]:
 
 
 class CheckedSourceLoader(SourceFileLoader):
-    def __init__(self, name: str, path: str, code: CodeType):
-        super().__init__(name, path)
-        self.code = code
+    def __init__(
+        self, name: str, path: Path, checked: tuple[CodeType, str] | None,
+        loaded_sources: dict[Path, str] | None,
+    ):
+        super().__init__(name, str(path))
+        self.source_path = path
+        self.checked = checked
+        self.loaded_sources = loaded_sources
 
     def get_code(self, fullname: str) -> CodeType:
-        return self.code
+        if self.checked is None:
+            source = self.get_data(self.path)
+            code = self.source_to_code(source, self.path)
+            digest = sha256(source).hexdigest()
+        else:
+            code, digest = self.checked
+        if self.loaded_sources is not None:
+            self.loaded_sources[self.source_path] = digest
+        return code
 
 
 @contextmanager
-def load_project(root: Path) -> Iterator[Flow]:
+def load_project(root: Path, loaded_sources: dict[Path, str] | None = None) -> Iterator[Flow]:
     root = root.resolve()
-    path = root / "flow.py"
+    path = (root / "flow.py").resolve()
     code = check_source(root, path)
+    environment = Path(sys.prefix).resolve()
 
     class CheckedProjectFinder:
         def find_spec(self, fullname, search_path=None, target=None):
             spec = PathFinder.find_spec(fullname, search_path, target)
-            if spec and isinstance(spec.loader, SourceFileLoader):
-                checked = code.get(Path(spec.origin).resolve())
-                if checked is not None:
-                    # Use the checked source even when an older bytecode cache still matches.
-                    spec.loader = CheckedSourceLoader(fullname, spec.origin, checked)
+            if spec and spec.origin and isinstance(spec.loader, SourceFileLoader):
+                origin = Path(spec.origin).resolve()
+                checked = code.get(origin)
+                local_source = origin.is_relative_to(root) and not origin.is_relative_to(environment)
+                if checked is not None or (loaded_sources is not None and local_source):
+                    # Compile the source we fingerprint, bypassing cached bytecode.
+                    spec.loader = CheckedSourceLoader(fullname, origin, checked, loaded_sources)
             return spec
 
     name = "_workspace_flow"
-    loader = CheckedSourceLoader(name, str(path), code[path.resolve()])
+    loader = CheckedSourceLoader(name, path, code[path], loaded_sources)
     spec = importlib.util.spec_from_file_location(name, path, loader=loader)
+    if spec is None:
+        raise ValidationError(f"Entrypoint: could not load {path}.")
     module = importlib.util.module_from_spec(spec)
     finder = CheckedProjectFinder()
     sys.path.insert(0, str(root))

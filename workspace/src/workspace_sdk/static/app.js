@@ -5,6 +5,9 @@ const input = document.querySelector("#input");
 const button = form.querySelector("button");
 const status = document.querySelector("#status");
 const result = document.querySelector("#result");
+const historyList = document.querySelector("#history-list");
+const historyDetail = document.querySelector("#history-detail");
+const refreshHistoryButton = document.querySelector("#refresh-history");
 const nodes = new Map();
 const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped" };
 
@@ -90,6 +93,10 @@ function setStatus(value, label = labels[value]) {
 }
 
 function showMessage(message) {
+  if (message.history_error) {
+    result.append(element("p", message.history_error, "error"));
+    return;
+  }
   if (message.error) {
     setStatus("failed");
     result.append(element("p", message.error, "error"));
@@ -123,6 +130,91 @@ function showMessage(message) {
     result.append(error);
   }
 }
+
+function locationText(location) {
+  if (!location.file) return "Source unavailable";
+  return location.line == null ? location.file : `${location.file}:${location.line}`;
+}
+
+function showMetadata(container, label, metadata) {
+  if (metadata != null) {
+    container.append(element("p", label), element("pre", JSON.stringify(metadata, null, 2)));
+  }
+}
+
+let historySelection = 0;
+async function showHistoryRun(id) {
+  const selection = ++historySelection;
+  historyDetail.replaceChildren(element("p", "Loading run…"));
+  try {
+    const response = await fetch(`/history/${id}`);
+    if (!response.ok) throw new Error("Could not load this run.");
+    const run = await response.json();
+    if (selection !== historySelection) return;
+    historyDetail.replaceChildren(
+      element("h3", "Saved run"),
+      element("p", run.id),
+      element("p", "Source version"),
+      element("code", run.source_version, "source-version"),
+      element("p", `Duration ${run.duration_ms.toFixed(2)} ms`),
+    );
+    showMetadata(historyDetail, "Run input", run.input);
+    showMetadata(historyDetail, "Run output", run.output);
+    for (const step of run.steps) {
+      const node = element("article", "", "history-node");
+      node.append(
+        element("h4", `${step.id} · ${labels[step.status]}`),
+        element("p", locationText(step.source)),
+      );
+      showMetadata(node, "Input", step.input);
+      showMetadata(node, "Output", step.output);
+      if (step.error_type) {
+        const stack = element("ul", "", "stack-locations");
+        for (const frame of step.error_frames) stack.append(element("li", locationText(frame)));
+        node.append(element("strong", step.error_type), stack);
+      }
+      historyDetail.append(node);
+    }
+  } catch (error) {
+    if (selection === historySelection) {
+      historyDetail.replaceChildren(element("p", error.message, "error"));
+    }
+  }
+}
+
+async function refreshHistory() {
+  refreshHistoryButton.disabled = true;
+  try {
+    const response = await fetch("/history");
+    if (!response.ok) throw new Error("Could not load run history.");
+    const runs = await response.json();
+    if (!runs.length) {
+      historyList.replaceChildren(element("p", "No saved runs yet."));
+      return;
+    }
+    const list = element("ul", "");
+    for (const run of runs) {
+      const item = element("li", "");
+      const select = element("button", "", "history-run");
+      select.type = "button";
+      select.append(
+        element("strong", labels[run.status]),
+        element("span", new Date(run.started_at).toLocaleString()),
+      );
+      select.addEventListener("click", () => showHistoryRun(run.id));
+      item.append(select);
+      list.append(item);
+    }
+    historyList.replaceChildren(list);
+  } catch (error) {
+    historyList.replaceChildren(element("p", error.message, "error"));
+  } finally {
+    refreshHistoryButton.disabled = false;
+  }
+}
+
+refreshHistoryButton.addEventListener("click", refreshHistory);
+refreshHistory();
 
 form.addEventListener("submit", async event => {
   event.preventDefault();

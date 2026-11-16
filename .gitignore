@@ -1,6 +1,7 @@
 __pycache__/
 *.egg-info/
 .venv/
+.workspace/
 build/
 dist/
 /workspace-test/deployment-trial/model.pkl

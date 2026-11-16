@@ -3,16 +3,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from threading import Lock
+from time import perf_counter
+from typing import Any
 
 from .flow import Flow, Output
-from .project import ordered_steps, source_location
+from .history import RunHistory
+from .project import ordered_steps, relative_source, source_location
 from .runner import run
 
 
 STATIC = Path(__file__).with_name("static")
 
 
-def serve(flow: Flow, root: Path, port: int) -> None:
+def serve(flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str]) -> None:
     graph = []
     for step in ordered_steps(flow):
         file, line = source_location(step.function)
@@ -27,6 +30,7 @@ def serve(flow: Flow, root: Path, port: int) -> None:
 
     fixture = root / "sample.json"
     default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
+    history = RunHistory(root)
     run_lock = Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -34,11 +38,12 @@ def serve(flow: Flow, root: Path, port: int) -> None:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
 
         def local_request(self):
-            return self.headers.get("Host") == f"127.0.0.1:{self.server.server_port}"
+            return self.headers.get("Host") == f"127.0.0.1:{server.server_port}"
 
         def do_GET(self):
             if not self.local_request():
@@ -55,6 +60,18 @@ def serve(flow: Flow, root: Path, port: int) -> None:
             elif self.path == "/project":
                 data = json.dumps({"steps": graph, "input": default_input}).encode()
                 self.send_bytes(data, "application/json")
+            elif self.path == "/history" or self.path.startswith("/history/"):
+                try:
+                    data = history.list_runs() if self.path == "/history" else history.read(
+                        self.path.removeprefix("/history/")
+                    )
+                except (OSError, ValueError):
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not read run history.")
+                    return
+                if data is None:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                else:
+                    self.send_bytes(json.dumps(data).encode(), "application/json")
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -93,25 +110,37 @@ def serve(flow: Flow, root: Path, port: int) -> None:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-
             connected = True
+            try:
+                self.end_headers()
+            except OSError:
+                connected = False
+
+            events: list[dict[str, Any]] = []
 
             def send(message):
                 nonlocal connected
                 if connected:
                     if message.get("file"):
-                        path = Path(message["file"])
-                        if path.is_relative_to(root):
-                            message = {**message, "file": str(path.relative_to(root))}
+                        message = {**message, "file": relative_source(root, message["file"])}
                     data = json.dumps(message, allow_nan=False).encode() + b"\n"
                     try:
                         self.wfile.write(data)
-                    except (BrokenPipeError, ConnectionResetError):
+                    except OSError:
                         connected = False
 
+            def record_event(event):
+                events.append(event)
+                send(event)
+
             try:
-                result = run(flow, inputs, send)
+                started = perf_counter()
+                result = run(flow, inputs, record_event, include_metadata=True)
+                try:
+                    history.save(events, loaded_sources, (perf_counter() - started) * 1000)
+                except OSError:
+                    self.log_error("Could not save run history for %s.", result.id)
+                    send({"history_error": "This run could not be saved to history."})
                 send({"result": {"status": result.status, "output": result.output}})
             except (TypeError, ValueError) as error:
                 send({"error": str(error)})
