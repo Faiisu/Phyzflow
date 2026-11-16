@@ -3,10 +3,30 @@
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import os
+from pathlib import Path
+import sys
 
 from workspace_sdk import run
 
 from flow import flow
+
+
+BUILD_ID = os.environ.get("WORKSPACE_BUILD_ID", "local-trial")
+
+
+def report_failure(event: dict) -> None:
+    if event["status"] != "failed" or "step_id" not in event:
+        return
+    file = Path(event["file"])
+    print(json.dumps({
+        "build_id": BUILD_ID,
+        "run_id": event["run_id"],
+        "step_id": event["step_id"],
+        "file": str(file.relative_to(Path.cwd(), walk_up=True)),
+        "line": event["line"],
+        "error_type": event["error_type"],
+    }), file=sys.stderr, flush=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -19,6 +39,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if self.path == "/health":
+            self.send_json(HTTPStatus.OK, {"status": "ready"})
+        else:
+            self.send_json(HTTPStatus.NOT_FOUND, {"error": "Use POST /predict."})
 
     def do_POST(self) -> None:
         if self.path != "/predict":
@@ -42,11 +68,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Provide a non-empty text string."})
             return
 
-        result = run(flow, {"text": text})
+        result = run(flow, {"text": text}, report_failure)
         if result.status == "failed":
-            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Prediction failed."})
+            self.send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "Prediction failed.", "run_id": result.id},
+            )
             return
         self.send_json(HTTPStatus.OK, result.output)
+
+    def log_error(self, format: str, *args: object) -> None:
+        self.log_message("HTTP protocol error.")
 
     def log_request(self, code="-", size="-") -> None:
         self.log_message("HTTP %s", code)

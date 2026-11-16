@@ -26,9 +26,18 @@ def main() -> int:
     run_parser.add_argument("input", help="A JSON object with the flow inputs.")
     ui_command = commands.add_parser("ui", help="Serve the flow UI on localhost.")
     ui_command.add_argument("--port", type=int, default=8765)
+    deploy_parser = commands.add_parser("deploy", help="Validate and serve a Linux ARM64 build.")
+    deploy_parser.add_argument("--sdk", type=Path, required=True, help="Path to the Workspace SDK source.")
+    deploy_parser.add_argument("--context", help="Local Docker context.")
+    deploy_parser.add_argument("--port", type=int, default=8080, help="Loopback port, or 0 for an available port.")
     args = parser.parse_args()
 
     root = Path.cwd().resolve()
+    if args.command == "deploy":
+        from .deploy import deploy
+
+        return deploy(root, args.sdk.resolve(), args.context, args.port)
+
     with ExitStack() as project:
         try:
             flow = project.enter_context(load_project(root))

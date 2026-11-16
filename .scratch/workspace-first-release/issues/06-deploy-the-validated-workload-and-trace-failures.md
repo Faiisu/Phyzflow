@@ -4,9 +4,13 @@
 
 **Blocked by:** 02 (Reject invalid flows before execution), 05 (Prove the first workload on one deployment target)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `workspace deploy` validates the exact build it will promote in the target Python environment. The first workload has a smoke test that uses the same request handling and response serialization as live traffic.
-- [ ] A verified build returns the expected response to a real request. Broken syntax, a broken import, and a failing smoke test each prevent opening traffic and produce an actionable diagnostic.
-- [ ] A request that deliberately fails in a node can be traced to the deployed build, run, node, and source file.
-- [ ] Stored diagnostics exclude raw request payloads and request-derived exception text by default.
+- [x] `workspace deploy` validates the exact build it will promote in the target Python environment. The first workload has a smoke test that uses the same request handling and response serialization as live traffic.
+- [x] A verified build returns the expected response to a real request. Broken syntax, a broken import, and a failing smoke test each prevent opening traffic and produce an actionable diagnostic.
+- [x] A request that deliberately fails in a node can be traced to the deployed build, run, node, and source file.
+- [x] Stored diagnostics exclude raw request payloads and request-derived exception text by default.
+
+## Verification
+
+Ran the Docker integration tests on the local Colima Linux ARM64 engine. The CLI served the exact validated and smoke-tested image and returned the expected prediction. Syntax and import errors were rejected even when the test image declared an entrypoint override. A forced smoke-test failure also left the requested host port closed. A failed prediction matched the response run ID to the deployed build, Predict node, and source location in the container logs. A synthetic request value was absent from both node-failure diagnostics and malformed HTTP logs. The type check and all five existing acceptance tests passed. See [deployment instructions](../../../workspace-test/deployment-trial/README.md).

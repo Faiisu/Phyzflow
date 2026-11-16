@@ -6,7 +6,7 @@ Use the sample project to verify installation, flow execution, debugging, and de
 
 ## Local demo
 
-The first workload is support-ticket classification. The development environment is Python 3.12. The candidate deployment target is a single Linux CPU container with Python 3.12. That target will be verified separately with the real-model workload.
+The first workload is support-ticket classification. The development environment is Python 3.12. The [deployment workload](deployment-trial/README.md) runs a trained model in a Linux ARM64 CPU container with Python 3.12.
 
 From the repository root, install the SDK and its sample consumer into a new environment:
 

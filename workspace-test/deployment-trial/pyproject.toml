@@ -1,0 +1,2 @@
+[tool.workspace]
+sources = ["serve.py", "train_model.py", "smoke_test.py"]

@@ -17,6 +17,8 @@ def prepare(text: str) -> str:
 
 
 def predict(prepared: str) -> str:
+    if prepared.startswith("debug failure:"):
+        raise RuntimeError(prepared)
     return str(load_classifier().predict([prepared])[0])
 
 
