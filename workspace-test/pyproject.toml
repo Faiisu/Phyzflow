@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workspace-ticket-demo"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["workspace-sdk==0.1.0"]
+
+[project.optional-dependencies]
+verification = ["playwright==1.65.2", "torch==2.15.0"]
+
+[tool.setuptools]
+packages = ["ticket_demo"]
+
+[tool.workspace]
+sources = ["flow.py", "ticket_demo"]
