@@ -1,0 +1,4 @@
+{
+  "input": {"text": "Urgent: duplicate invoice charge"},
+  "output": {"category": "billing", "priority": "urgent"}
+}

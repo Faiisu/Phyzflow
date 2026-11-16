@@ -4,8 +4,12 @@
 
 **Blocked by:** 04 (Verify object passing and benchmark the demo), 05 (Prove the first workload on one deployment target)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Measure the proven workload directly, through the Runner alone, and through the Runner with the live UI using the documented demo benchmark method and equivalent inputs.
-- [ ] Record p50 and p95 latency and peak memory after warm-up along with the environment and measurement scope.
-- [ ] Set measurable limits for added p95 latency and peak memory for both Runner modes relative to direct execution so the release check can apply them unchanged.
+- [x] Measure the proven workload directly, through the Runner alone, and through the Runner with the live UI using the documented demo benchmark method and equivalent inputs.
+- [x] Record p50 and p95 latency and peak memory after warm-up along with the environment and measurement scope.
+- [x] Set measurable limits for added p95 latency and peak memory for both Runner modes relative to direct execution so the release check can apply them unchanged.
+
+## Verification
+
+All three modes returned the expected held-out prediction in three consecutive rounds on Apple M2 with the trained scikit-learn model. Each mode used 20 warm-up runs and 100 timed runs per round. The [reference benchmark](../../../workspace-test/deployment-trial/README.md#benchmark-the-trained-workload) records the environment, scope, p50, p95, and peak RSS of each round. The release limits relative to direct execution are 0.25 ms added p95 and 8 MiB added peak RSS for the Runner, and 5.0 ms added p95 and 16 MiB added peak RSS for the Runner with live UI. The baseline meets all four limits in every round.

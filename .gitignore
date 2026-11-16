@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 build/
 dist/
+/workspace-test/deployment-trial/model.pkl

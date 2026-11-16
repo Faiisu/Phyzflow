@@ -52,3 +52,5 @@ Two consecutive runs on Apple Silicon, macOS 27.0.1, CPython 3.12.11, and Chrome
 | Direct | 0.000250 | 0.000292 | 23.109–23.156 |
 | Runner | 0.010167–0.010375 | 0.011250–0.013333 | 23.156–23.172 |
 | Runner with live UI | 1.0 | 1.3–1.4 | 26.953–27.000 |
+
+For the real model and release overhead limits, see [Benchmark the trained workload](deployment-trial/README.md#benchmark-the-trained-workload).
