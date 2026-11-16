@@ -1,5 +1,6 @@
 """Discover and create the Python projects represented by Workspace sheets."""
 
+from contextlib import ExitStack
 from importlib.metadata import version
 import json
 from pathlib import Path
@@ -10,10 +11,7 @@ from .ui_settings import load_ui_settings
 
 STARTER_FLOW = '''from workspace_sdk import Flow, Output, Step
 
-
-def start() -> dict[str, str]:
-    return {"message": "Hello from Workspace"}
-
+from nodes.start.entrypoint import start
 
 flow = Flow(
     inputs=(),
@@ -21,6 +19,18 @@ flow = Flow(
     output=Output("Start"),
 )
 '''
+
+STARTER_NODE = '''def start() -> dict[str, str]:
+    return {"message": "Hello from Workspace"}
+'''
+
+WORKSPACE_AGENT_GUIDE = """# Workspace instructions
+
+- Use one Python package per node under the sheet's `nodes/` directory.
+- Put the node callable in `nodes/<node_name>/entrypoint.py` and keep its helpers in that package.
+- Use `flow.py` to declare the inputs, node connections, and output. Keep `nodes` in the sheet's `tool.workspace.sources` list.
+- Run `workspace check` and verify the changed flow with `workspace run` from the sheet directory.
+"""
 
 
 def discover_flows(root: Path) -> list[tuple[str, Path]]:
@@ -56,13 +66,25 @@ def create_sheet(root: Path, value: object) -> Path:
 
     pending = directory / ".flow.py.tmp"
     entrypoint = directory / "flow.py"
-    try:
-        pending.write_text(STARTER_FLOW, encoding="utf-8")
+    nodes = directory / "nodes"
+    node = nodes / "start"
+    with ExitStack() as cleanup:
+        cleanup.callback(directory.rmdir)
+        for folder in (nodes, node):
+            folder.mkdir()
+            cleanup.callback(folder.rmdir)
+        for path, content in (
+            (nodes / "__init__.py", ""),
+            (node / "__init__.py", ""),
+            (node / "entrypoint.py", STARTER_NODE),
+            (directory / "pyproject.toml", '[tool.workspace]\nsources = ["nodes"]\n'),
+            (pending, STARTER_FLOW),
+        ):
+            with path.open("x", encoding="utf-8") as stream:
+                cleanup.callback(path.unlink)
+                stream.write(content)
         pending.rename(entrypoint)
-    except OSError:
-        pending.unlink(missing_ok=True)
-        directory.rmdir()
-        raise
+        cleanup.pop_all()
     return entrypoint
 
 
@@ -81,6 +103,7 @@ def initialize_workspace(root: Path) -> None:
     files = {
         "setting.json": json.dumps({"port": settings.port, "zoom": settings.zoom}, indent=2) + "\n",
         "pyproject.toml": project,
+        "AGENTS.md": WORKSPACE_AGENT_GUIDE,
     }
     created = []
     try:

@@ -25,3 +25,22 @@ workspace --project "$project_path" ui
 ```
 
 Use `workspace init "$project_path"` to initialize a new project and `workspace --project "$project_path" new-sheet "First Flow"` to create a runnable Python sheet. The CLI prints the path to its Python entry point. A browser already open on the project discovers the new sheet without a restart. After editing Python, select the sheet and click **Reload flow** to refresh the graph and use the edited code on the next run.
+
+## One folder per node
+
+The **+** button and `new-sheet` create the same starter layout.
+
+```text
+First Flow/
+├── flow.py
+├── pyproject.toml
+└── nodes/
+    ├── __init__.py
+    └── start/
+        ├── __init__.py
+        └── entrypoint.py
+```
+
+Add one package under `nodes/` per node. Use a `snake_case` folder name, put the callable in its `entrypoint.py`, and keep node-specific helpers beside it. Import the callable in `flow.py` and wire it up with `Step`. The starter includes `nodes` in `tool.workspace.sources` so validation checks every Python file under it, including helpers the flow has yet to import. Workspace initialization also writes an agent guide with the layout.
+
+Double-click a node on the execution graph or select **View files** in the Inspector to browse its package. Select a Python file to read or edit it in the browser, and use **Save** to write the changes to disk. If the file changed in another editor, reopen it before saving. Select **Reload flow** to run the saved version. Nodes declared directly in the flow directory display their source file.

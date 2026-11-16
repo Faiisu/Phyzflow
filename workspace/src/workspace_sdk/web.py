@@ -4,18 +4,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from inspect import getdoc
 import json
 from pathlib import Path
+import re
 from threading import Lock
 from time import perf_counter
 from typing import Any
 
 from .flow import Flow, Output
 from .history import RunHistory
+from .node_sources import SourceChanged, edit_node_source, node_files, node_source_path
 from .project import ordered_steps, relative_source, source_location
 from .runner import run
 from .ui_settings import ZoomSettings
 
 
 STATIC = Path(__file__).with_name("static")
+NODE_FILES_ROUTE = r"node-files/([0-9]{1,8})"
+NODE_SOURCE_ROUTE = r"node-source/([0-9]{1,8})"
 
 
 def serve(
@@ -48,6 +52,7 @@ def serve(
     default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
     history = RunHistory(root)
     run_lock = Lock()
+    source_lock = Lock()
     run_status = "ready"
 
     class Handler(BaseHTTPRequestHandler):
@@ -55,13 +60,16 @@ def serve(
             if self.path != "/status":
                 super().log_request(code, size)
 
-        def send_bytes(self, data, content_type):
-            self.send_response(HTTPStatus.OK)
+        def send_bytes(self, data, content_type, status=HTTPStatus.OK):
+            self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
+
+        def send_source(self, data, status=HTTPStatus.OK):
+            self.send_bytes(json.dumps(data).encode(), "application/json", status)
 
         def local_request(self):
             return self.headers.get("Host") == f"127.0.0.1:{server.server_port}"
@@ -86,6 +94,17 @@ def serve(
                 self.send_bytes(data, "application/json")
             elif self.path == "/status":
                 self.send_bytes(json.dumps({"status": run_status}).encode(), "application/json")
+            elif match := re.fullmatch(f"/{NODE_FILES_ROUTE}", self.path):
+                index = int(match[1])
+                if index >= len(graph):
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                try:
+                    data = node_files(root, graph[index]["file"])
+                except (OSError, RuntimeError):
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not read the node folder.")
+                    return
+                self.send_bytes(json.dumps(data).encode(), "application/json")
             elif self.path == "/history" or self.path.startswith("/history/"):
                 try:
                     data = history.list_runs() if self.path == "/history" else history.read(
@@ -107,7 +126,8 @@ def serve(
             if not self.local_request() or origin not in (None, f"http://{self.headers.get('Host')}"):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
-            if self.path != "/run":
+            source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
+            if self.path != "/run" and source_route is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -123,6 +143,9 @@ def serve(
             except (ValueError, UnicodeError):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
                 return
+            if source_route is not None:
+                self.edit_source(int(source_route[1]), inputs)
+                return
 
             if not run_lock.acquire(blocking=False):
                 self.send_error(HTTPStatus.CONFLICT, "A run is already in progress.")
@@ -135,6 +158,34 @@ def serve(
                 if run_status == "running":
                     run_status = "failed"
                 run_lock.release()
+
+        def edit_source(self, index: int, data: dict):
+            relative = data.get("path")
+            source = data.get("source")
+            revision = data.get("revision")
+            if not isinstance(relative, str) or (
+                "source" in data and (not isinstance(source, str) or not isinstance(revision, str))
+            ):
+                self.send_source({"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                if index >= len(graph):
+                    raise FileNotFoundError
+                with source_lock:
+                    path = node_source_path(root, graph[index]["file"], relative)
+                    result = edit_node_source(path, source, revision)
+            except FileNotFoundError:
+                self.send_source({"error": "This Python file is unavailable in the node folder."}, HTTPStatus.NOT_FOUND)
+            except SourceChanged:
+                self.send_source({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
+            except (UnicodeError, SyntaxError):
+                self.send_source({"error": "Could not read or write the file's Python encoding."}, HTTPStatus.BAD_REQUEST)
+            except ValueError as error:
+                self.send_source({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, RuntimeError):
+                self.send_source({"error": "Could not read or write the file."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_source(result)
 
         def stream_run(self, inputs):
             nonlocal run_status

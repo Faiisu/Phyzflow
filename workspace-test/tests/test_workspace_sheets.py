@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from shutil import copytree
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -29,6 +30,7 @@ class WorkspaceSheetTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "setting.json").read_text())["port"], 18080)
             metadata = (root / "pyproject.toml").read_bytes()
             self.assertIn(b"workspace-sdk==", metadata)
+            self.assertIn("nodes/<node_name>/entrypoint.py", (root / "AGENTS.md").read_text())
             self.assertNotEqual(command("init", check=False).returncode, 0)
             self.assertEqual((root / "pyproject.toml").read_bytes(), metadata)
             source = Path(command("new-sheet", "First Flow").stdout.strip())
@@ -37,11 +39,19 @@ class WorkspaceSheetTests(unittest.TestCase):
             self.assertNotEqual(command("new-sheet", "../outside", check=False).returncode, 0)
             self.assertEqual(source.read_text(), starter)
             (root / "flow.py").write_text(starter)
-            source.write_text(starter.replace(
+            copytree(source.parent / "nodes", root / "nodes")
+            node = source.parent / "nodes" / "start" / "entrypoint.py"
+            node.write_text(node.read_text().replace(
                 'return {"message": "Hello from Workspace"}',
                 'from pathlib import Path\n    return {"message": Path("value.txt").read_text()}',
             ))
             (source.parent / "value.txt").write_text("from sheet")
+            helper = node.with_name("helper.py")
+            helper.write_text("def broken(\n")
+            failed = command("check", "--sheet", "First Flow", check=False)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn(f"Syntax: {helper}:1", failed.stderr)
+            helper.unlink()
             command("check", "--sheet", "First Flow")
             self.assertEqual(json.loads(command("run", "--sheet", "First Flow", "{}").stdout), {"message": "from sheet"})
             self.assertIn("No sheet named", command("check", "--sheet", "Unknown", check=False).stderr)
@@ -80,11 +90,72 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(page.get_by_role("tab", name=name)).to_have_attribute("aria-selected", "true")
                 self.assertTrue(source.is_file())
                 original = source.read_bytes()
+                node = source.parent / "nodes" / "start" / "entrypoint.py"
+                self.assertTrue(node.is_file())
+                helper = node.parent / "helpers" / "format.py"
+                helper.parent.mkdir()
+                helper.write_text("VALUE = 1\n")
+                sibling = node.parent.parent / "other"
+                sibling.mkdir()
+                (sibling / "private.py").write_text("SECRET = 2\n")
+                linked = node.parent / "linked.py"
+                linked.symlink_to(sibling / "private.py")
                 flow = page.frame_locator(f'iframe[title="{name} flow"]')
-                expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
+                start = flow.get_by_role("button", name="Inspect Start")
+                start.click()
+                expect(flow.locator("#inspector-source")).to_contain_text("nodes/start/entrypoint.py")
+                files = flow.get_by_role("dialog", name="Start files")
+                expect(files).to_be_hidden()
+                start.dblclick()
+                expect(files.locator("#node-files-path")).to_have_text("nodes/start")
+                expect(files.get_by_text("entrypoint.py", exact=True)).to_be_visible()
+                expect(files.get_by_text("format.py", exact=True)).to_be_hidden()
+                files.get_by_text("helpers", exact=True).click()
+                expect(files.get_by_text("format.py", exact=True)).to_be_visible()
+                expect(files.get_by_text("private.py", exact=True)).to_have_count(0)
+                expect(files.get_by_text("linked.py", exact=True)).to_have_count(0)
+                expect(files.get_by_text("__pycache__", exact=True)).to_have_count(0)
+                editor = files.get_by_role("textbox", name="Python source code")
+                saved = node.read_text()
+                expect(editor).to_have_value(saved)
+                files.get_by_role("button", name="format.py", exact=True).click()
+                expect(editor).to_have_value("VALUE = 1\n")
+                files.get_by_role("button", name="entrypoint.py", exact=True).click()
+                expect(editor).to_have_value(saved)
+                newer = saved.replace("Hello from Workspace", "Saved in the browser")
+                node.write_text(newer)
+                editor.fill(saved.replace("Hello", "Stale"))
+                files.get_by_role("button", name="Save", exact=True).click()
+                expect(files.locator("#node-source-message")).to_contain_text("changed on disk")
+                self.assertEqual(node.read_text(), newer)
+                page.once("dialog", lambda prompt: prompt.accept())
+                files.get_by_role("button", name="entrypoint.py", exact=True).click()
+                expect(editor).to_have_value(newer)
+                edited = newer.replace("Saved in the browser", "Edited in the browser")
+                editor.fill(edited)
+                page.once("dialog", lambda prompt: prompt.dismiss())
+                page.get_by_role("button", name="Reload flow").click()
+                expect(editor).to_have_value(edited)
+                files.get_by_role("button", name="Save", exact=True).click()
+                expect(files.locator("#node-source-message")).to_contain_text("Saved.")
+                self.assertEqual(node.read_text(), edited)
+                for rejected in ("../flow.py", "nodes/other/private.py", "nodes/start/linked.py"):
+                    response = page.request.post(f"{url}/flows/0/view/node-source/0", data={
+                        "path": rejected, "source": "Overwritten", "revision": "0" * 64,
+                    })
+                    self.assertEqual(response.status, 404)
+                self.assertEqual((sibling / "private.py").read_text(), "SECRET = 2\n")
+                files.get_by_role("button", name="Close node files").press("Escape")
+                expect(files).to_be_hidden()
+                flow.get_by_role("button", name="View files").click()
+                expect(files.get_by_text("entrypoint.py", exact=True)).to_be_visible()
+                files.get_by_role("button", name="Close node files").click()
+                linked.unlink()
+                page.get_by_role("button", name="Reload flow").click()
+                expect(page.locator(f'iframe[title="{name} flow"]')).to_have_attribute("src", "/flows/0/revision/1/view/")
                 flow.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name=name)).to_contain_text("Succeeded")
-                self.assertEqual(json.loads(flow.locator("#result pre").inner_text()), {"message": "Hello from Workspace"})
+                self.assertEqual(json.loads(flow.locator("#result pre").inner_text()), {"message": "Edited in the browser"})
 
                 page.get_by_role("button", name="New sheet").click()
                 title.fill(name.upper())
@@ -96,8 +167,9 @@ class WorkspaceSheetTests(unittest.TestCase):
             result = subprocess.check_output(
                 [str(Path(sys.executable).with_name("workspace")), "run", "{}"], cwd=source.parent, text=True,
             )
-            self.assertEqual(json.loads(result), {"message": "Hello from Workspace"})
+            self.assertEqual(json.loads(result), {"message": "Edited in the browser"})
             (root / "flow.py").write_bytes(original)
+            copytree(source.parent / "nodes", root / "nodes")
             with local_ui(root) as (url, _):
                 page.goto(url)
                 expect(page.get_by_role("tab", name="Main")).to_have_attribute("aria-selected", "true")

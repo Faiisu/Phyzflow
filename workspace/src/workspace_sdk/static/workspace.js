@@ -68,6 +68,14 @@ function showNotice() {
 reopen.addEventListener("click", () => openFlow(active));
 reloadFlow.addEventListener("click", () => openFlow(active, "reload"));
 
+function hasUnsavedSource(sheet) {
+  return sheet.frame?.contentDocument?.documentElement.hasAttribute("data-unsaved-source");
+}
+
+function mayReplaceView(sheet) {
+  return !hasUnsavedSource(sheet) || window.confirm("Discard unsaved Python changes in this sheet?");
+}
+
 async function command(sheet, action) {
   const response = await fetch(`/flows/${sheet.index}/${action}`, { method: "POST" });
   const data = await response.json();
@@ -90,7 +98,7 @@ function showFrame(sheet, revision) {
 }
 
 async function openFlow(sheet, action = "open") {
-  if (sheet.pending) return;
+  if (sheet.pending || (action === "reload" && !mayReplaceView(sheet))) return;
   sheet.pending = true;
   sheet.version++;
   sheet.error = null;
@@ -118,7 +126,7 @@ async function openFlow(sheet, action = "open") {
 }
 
 async function stopFlow(sheet) {
-  if (sheet.pending) return;
+  if (sheet.pending || !mayReplaceView(sheet)) return;
   sheet.pending = true;
   sheet.version++;
   sheet.reloadError = null;
@@ -309,13 +317,13 @@ async function pollStatus() {
     for (const sheet of sheets.filter(Boolean)) {
       if (flows[sheet.index] && !sheet.pending && sheet.version === versions[sheet.index]) {
         const { status, revision } = flows[sheet.index];
-        if (revision !== sheet.revision && status !== "unavailable" && status !== "stopped") {
+        if (revision !== sheet.revision && status !== "unavailable" && status !== "stopped" && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;
           sheet.reloadError = null;
           if (sheet.frame) showFrame(sheet, revision);
         }
-        if (status === "stopped" && sheet.frame) {
+        if (status === "stopped" && sheet.frame && !hasUnsavedSource(sheet)) {
           sheet.view.replaceChildren();
           sheet.frame = null;
         }

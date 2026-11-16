@@ -106,7 +106,7 @@ From the repository root, follow [Deploy and verify](deployment-trial/README.md#
 
 ## Multiple flows in one workspace
 
-Open `workspace ui` from your workspace directory and select **+** in the bottom bar. Enter a sheet name and select **Create sheet**. Workspace writes a runnable starter to `flows/<sheet-name>/flow.py` and opens it in the new tab. Edit the file in your IDE, then select **Reload flow** to load the new version. If that sheet is running, wait for it to finish or stop it before reloading. See [project folders and CLI commands](../workspace/README.md#work-on-a-selected-project-from-the-cli) for the agent workflow.
+Open `workspace ui` from your workspace directory and select **+** in the bottom bar. Enter a sheet name and select **Create sheet**. Workspace opens the new sheet's runnable starter. Edit the graph in `flow.py` and the Start node in `nodes/start/entrypoint.py`, then select **Reload flow**. If that sheet is running, wait for it to finish or stop it before reloading. See [one folder per node](../workspace/README.md#one-folder-per-node) for the standard layout.
 
 You can also add flow directories directly. Put each entry point under `flows/<sheet-name>/flow.py`, with an optional `sample.json` and `pyproject.toml` beside it. The directory name becomes the sheet label. A root `flow.py` appears as the **Main** sheet. To open just the flow in the current directory, use `workspace ui --single-flow`.
 

@@ -60,6 +60,7 @@
             <code id="inspector-source"></code>
             <button type="button" id="copy-source" class="text-button">Copy location</button>
           </div>
+          <button type="button" id="open-node-files" class="text-button" aria-haspopup="dialog">View files</button>
           <div class="inspector-links">
             <div><h3>Inputs</h3><ul id="inspector-inputs"></ul></div>
             <div><h3>Feeds</h3><ul id="inspector-feeds"></ul></div>
@@ -103,6 +104,32 @@
       <div id="history-detail" class="dock-content"></div>
     </section>
   </aside>
+
+  <dialog id="node-files" aria-labelledby="node-files-heading">
+    <div class="dock-heading">
+      <h2 id="node-files-heading">Node files</h2>
+      <button type="button" id="close-node-files" class="close-panel" aria-label="Close node files" autofocus>×</button>
+    </div>
+    <div class="node-files-content">
+      <code id="node-files-path" hidden></code>
+      <div class="node-files-layout">
+        <div class="node-file-browser">
+          <div id="node-files-tree"></div>
+          <p id="node-files-message" class="muted" role="status"></p>
+        </div>
+        <section class="node-source-panel" aria-label="Source editor">
+          <form id="node-source-form" hidden>
+            <div class="node-source-toolbar">
+              <label for="node-source-input" id="node-source-name"></label>
+              <button type="submit" id="save-node-source" class="primary-button" disabled>Save</button>
+            </div>
+            <textarea id="node-source-input" aria-label="Python source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+          </form>
+          <p id="node-source-message" class="muted" role="status">Select a Python file.</p>
+        </section>
+      </div>
+    </div>
+  </dialog>
 
   <details class="panel-switcher" id="panel-switcher">
     <summary class="overlay">Panels</summary>

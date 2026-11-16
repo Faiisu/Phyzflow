@@ -1,9 +1,6 @@
 from workspace_sdk import Flow, Output, Step
 
-
-def start() -> dict[str, str]:
-    return {"message": "Hello from Workspace"}
-
+from nodes.start.entrypoint import start
 
 flow = Flow(
     inputs=(),

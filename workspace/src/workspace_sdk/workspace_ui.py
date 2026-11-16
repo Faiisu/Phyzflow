@@ -23,7 +23,10 @@ from .ui_settings import UISettings, ZoomSettings
 from .web import STATIC, serve
 
 
-VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view(/(?:app\.css|app\.js|project|history(?:/[0-9a-f]{32})?|run)?)")
+VIEW_PATH = re.compile(
+    r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view"
+    r"(/(?:app\.css|app\.js|project|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+)
 
 
 def serve_flow(root: Path, zoom: ZoomSettings, ready: Connection) -> None:
@@ -313,7 +316,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 })
                 return
             view = self.view_route()
-            if view is not None and view[2] != "/run":
+            if view is not None and view[2] != "/run" and not view[2].startswith("/node-source/"):
                 self.forward_view(*view)
                 return
             asset = {
@@ -336,7 +339,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 self.create_sheet()
                 return
             view = self.view_route()
-            if view is not None and view[2] == "/run":
+            if view is not None and (view[2] == "/run" or view[2].startswith("/node-source/")):
                 self.forward_view(*view)
                 return
             command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload)", self.path)

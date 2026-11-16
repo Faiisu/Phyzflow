@@ -20,6 +20,17 @@ const panelSwitcher = document.querySelector("#panel-switcher");
 const panelToggles = [...panelSwitcher.querySelectorAll("button[aria-controls]")];
 const inspectorState = document.querySelector("#inspector-state");
 const copySource = document.querySelector("#copy-source");
+const openNodeFiles = document.querySelector("#open-node-files");
+const nodeFilesDialog = document.querySelector("#node-files");
+const nodeFilesHeading = document.querySelector("#node-files-heading");
+const nodeFilesPath = document.querySelector("#node-files-path");
+const nodeFilesTree = document.querySelector("#node-files-tree");
+const nodeFilesMessage = document.querySelector("#node-files-message");
+const nodeSourceForm = document.querySelector("#node-source-form");
+const nodeSourceInput = document.querySelector("#node-source-input");
+const nodeSourceName = document.querySelector("#node-source-name");
+const nodeSourceMessage = document.querySelector("#node-source-message");
+const saveNodeSource = document.querySelector("#save-node-source");
 const historyList = document.querySelector("#history-list");
 const historyDetail = document.querySelector("#history-detail");
 const refreshHistoryButton = document.querySelector("#refresh-history");
@@ -199,6 +210,182 @@ function element(tag, text, className) {
   return node;
 }
 
+let nodeFilesRequest;
+let nodeSourceRequest;
+let currentSource = null;
+let savingSource = false;
+
+function sourceIsDirty() {
+  return currentSource !== null && nodeSourceInput.value !== currentSource.text;
+}
+
+function updateSourceDirty() {
+  const dirty = sourceIsDirty();
+  document.documentElement.toggleAttribute("data-unsaved-source", dirty);
+  saveNodeSource.disabled = !dirty || savingSource || Boolean(nodeSourceRequest);
+}
+
+function canLeaveSource() {
+  return !savingSource && (!sourceIsDirty() || window.confirm("Discard unsaved changes to this file?"));
+}
+
+window.addEventListener("beforeunload", event => {
+  if (sourceIsDirty()) {
+    event.preventDefault();
+    event.returnValue = true;
+  }
+});
+document.querySelector("#close-node-files").addEventListener("click", () => {
+  if (canLeaveSource()) nodeFilesDialog.close();
+});
+nodeFilesDialog.addEventListener("cancel", event => {
+  if (!canLeaveSource()) event.preventDefault();
+});
+nodeFilesDialog.addEventListener("close", () => {
+  if (!nodeFilesDialog.open) {
+    nodeFilesRequest?.abort();
+    nodeSourceRequest?.abort();
+    nodeSourceRequest = null;
+    currentSource = null;
+    updateSourceDirty();
+  }
+});
+
+async function requestSource(index, data, signal) {
+  const response = await fetch(`node-source/${index}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+    signal,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const fallback = response.status === 409
+      ? "The flow was reloaded. Copy any unsaved changes before reopening this file."
+      : "Could not access the Python file.";
+    throw new Error(result.error ?? fallback);
+  }
+  return result;
+}
+
+async function openSource(index, path) {
+  if (!canLeaveSource()) return;
+  nodeSourceRequest?.abort();
+  const request = new AbortController();
+  nodeSourceRequest = request;
+  nodeSourceInput.readOnly = true;
+  saveNodeSource.disabled = true;
+  nodeSourceMessage.textContent = "Loading source…";
+  try {
+    const { source, revision } = await requestSource(index, { path }, request.signal);
+    if (request.signal.aborted) return;
+    currentSource = { index, path, text: source, revision };
+    nodeSourceName.textContent = path;
+    nodeSourceInput.value = source;
+    nodeSourceForm.hidden = false;
+    nodeSourceMessage.textContent = "";
+    for (const button of nodeFilesTree.querySelectorAll("[data-file]")) {
+      button.setAttribute("aria-current", String(button.dataset.file === path));
+    }
+  } catch (error) {
+    if (!request.signal.aborted) nodeSourceMessage.textContent = error.message;
+  } finally {
+    if (nodeSourceRequest === request) {
+      nodeSourceRequest = null;
+      nodeSourceInput.readOnly = false;
+      updateSourceDirty();
+    }
+  }
+}
+
+nodeSourceInput.addEventListener("input", () => {
+  updateSourceDirty();
+  nodeSourceMessage.textContent = "";
+});
+nodeSourceForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (savingSource || nodeSourceRequest || !sourceIsDirty()) return;
+  const { index, path, revision } = currentSource;
+  const source = nodeSourceInput.value;
+  savingSource = true;
+  saveNodeSource.disabled = true;
+  nodeSourceInput.readOnly = true;
+  nodeSourceMessage.textContent = "Saving…";
+  try {
+    const saved = await requestSource(index, { path, source, revision });
+    currentSource = { index, path, text: source, revision: saved.revision };
+    nodeSourceMessage.textContent = window.parent === window
+      ? "Saved. Restart the flow UI to run the edited code."
+      : "Saved. Close the editor and select Reload flow to run the edited code.";
+  } catch (error) {
+    nodeSourceMessage.textContent = error.message;
+  } finally {
+    savingSource = false;
+    nodeSourceInput.readOnly = false;
+    updateSourceDirty();
+  }
+});
+
+function fileTree(entries, parent, source, index) {
+  const list = element("ul", "", "file-tree");
+  for (const entry of entries) {
+    const path = parent ? `${parent}/${entry.name}` : entry.name;
+    const item = element("li", "");
+    if (entry.children === null) {
+      const editable = path.endsWith(".py");
+      const file = element(editable ? "button" : "code", entry.name, path === source ? "node-entrypoint" : "node-file");
+      if (editable) {
+        file.type = "button";
+        file.dataset.file = path;
+        file.addEventListener("click", () => openSource(index, path));
+      }
+      item.append(file);
+    } else {
+      const folder = element("details", "");
+      folder.append(element("summary", entry.name), fileTree(entry.children, path, source, index));
+      if (source?.startsWith(`${path}/`)) folder.open = true;
+      item.append(folder);
+    }
+    list.append(item);
+  }
+  return list;
+}
+
+async function showNodeFiles(step, index) {
+  nodeFilesRequest?.abort();
+  nodeSourceRequest?.abort();
+  nodeSourceRequest = null;
+  currentSource = null;
+  updateSourceDirty();
+  nodeSourceForm.hidden = true;
+  nodeSourceMessage.textContent = "Select a Python file.";
+  const request = new AbortController();
+  nodeFilesRequest = request;
+  nodeFilesHeading.textContent = `${step.id} files`;
+  nodeFilesPath.hidden = true;
+  nodeFilesTree.replaceChildren();
+  nodeFilesMessage.textContent = "Loading files…";
+  if (!nodeFilesDialog.open) nodeFilesDialog.showModal();
+  try {
+    const response = await fetch(`node-files/${index}`, { signal: request.signal });
+    if (!response.ok) throw new Error();
+    const { path, entries, truncated } = await response.json();
+    if (request.signal.aborted) return;
+    if (path === null) {
+      nodeFilesMessage.textContent = "No source file was found inside this flow.";
+      return;
+    }
+    nodeFilesPath.textContent = path === "." ? "Flow directory" : path;
+    nodeFilesPath.hidden = false;
+    nodeFilesTree.replaceChildren(fileTree(entries, path === "." ? "" : path, step.source, index));
+    nodeFilesMessage.textContent = truncated ? "Showing part of this folder tree." : "";
+    const entrypoint = [...nodeFilesTree.querySelectorAll("[data-file]")].find(button => button.dataset.file === step.source);
+    entrypoint?.click();
+  } catch (error) {
+    if (!request.signal.aborted) nodeFilesMessage.textContent = "Could not load the node files. Close this view and try again.";
+  }
+}
+
 function showInspectorState(value) {
   inspectorState.textContent = labels[value] ?? "Idle";
   inspectorState.dataset.state = value ?? "idle";
@@ -212,7 +399,8 @@ function inspectNode(step, project) {
     previous.outlineSelect.setAttribute("aria-pressed", "false");
   }
   activeNode = step.id;
-  const { node, select, outlineSelect } = nodes.get(step.id);
+  const { node, select, outlineSelect, index } = nodes.get(step.id);
+  openNodeFiles.onclick = () => showNodeFiles(step, index);
   node.classList.add("is-selected");
   select.setAttribute("aria-pressed", "true");
   outlineSelect.setAttribute("aria-pressed", "true");
@@ -276,6 +464,7 @@ function positionGraph(project) {
     select.setAttribute("aria-label", `Inspect ${step.id}`);
     select.setAttribute("aria-pressed", "false");
     select.addEventListener("click", () => inspectNode(step, project));
+    node.addEventListener("dblclick", () => showNodeFiles(step, index));
     const outlineSelect = element("button", "", "outline-node");
     outlineSelect.type = "button";
     outlineSelect.setAttribute("aria-pressed", "false");
@@ -298,7 +487,7 @@ function positionGraph(project) {
       node.append(element("p", `Depends on ${step.dependencies.join(", ")}`, "sr-only"));
     }
     graph.append(node);
-    nodes.set(step.id, { node, column, state, select, outlineSelect });
+    nodes.set(step.id, { node, column, state, select, outlineSelect, index });
   }
   const count = steps.reduce((total, step) => total + step.dependencies.length, 0);
   document.querySelector("#graph-summary").textContent =
