@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 /workspace-test/deployment-trial/model.pkl
+
+.DS_Store
