@@ -27,7 +27,11 @@ class RunHistory:
             step = steps.setdefault(event["step_id"], {
                 "id": event["step_id"], "source": self.location(event),
             })
-            step.update({key: event[key] for key in ("status", "time", "input", "output") if key in event})
+            step.update({
+                key: event[key]
+                for key in ("status", "time", "input", "output", "reasons", "input_sample", "output_sample")
+                if key in event
+            })
             if "error_frames" in event:
                 step["error_type"] = event["diagnostic_error_type"]
                 step["error_frames"] = [

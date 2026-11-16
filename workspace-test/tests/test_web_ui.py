@@ -16,6 +16,42 @@ PROJECT = Path(__file__).resolve().parents[1]
 
 
 class WebUITests(unittest.TestCase):
+    def test_history_explains_an_incorrect_successful_result(self):
+        fixture = PROJECT / "evidence-demo"
+        sample = json.loads((fixture / "sample.json").read_text())
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            for filename in ("flow.py", "sample.json"):
+                copy2(fixture / filename, root)
+
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                page.get_by_role("button", name="Run flow").click()
+                expect(page.get_by_role("status")).to_have_text("Succeeded")
+                actual = json.loads(page.locator("#result pre").inner_text())
+                self.assertNotEqual(actual, sample["output"])
+                self.assertEqual(actual, {"category": "billing", "priority": "standard"})
+
+                history = page.get_by_role("region", name="Run history")
+                history.get_by_role("button", name="Refresh history").click()
+                history.get_by_text("Succeeded", exact=True).click()
+                predict = history.locator(".history-node").filter(
+                    has=page.get_by_role("heading", name="Predict · Succeeded")
+                )
+                expect(predict.get_by_text("The demo predictor assigns every ticket to billing.")).to_be_visible()
+                expect(predict.get_by_text("Input sample", exact=True)).to_be_visible()
+                expect(predict.get_by_text("Output sample", exact=True)).to_be_visible()
+                expect(predict.locator("pre").filter(has_text='"the app crashes with a blank screen"')).to_be_visible()
+                expect(predict.locator("pre").filter(has_text='"billing"')).to_be_visible()
+                for name in ("Prepare", "Decide"):
+                    other = history.locator(".history-node").filter(
+                        has=page.get_by_role("heading", name=f"{name} · Succeeded")
+                    )
+                    expect(other.get_by_text("Input", exact=True)).to_be_visible()
+                    expect(other.get_by_text("Output", exact=True)).to_be_visible()
+                    expect(other.get_by_text("sample", exact=False)).to_have_count(0)
+                    expect(other).not_to_contain_text("assigns every ticket")
+
     def test_history_recovers_disconnected_run_and_keeps_loaded_source_version(self):
         secret = "request-value-8d708"
         with TemporaryDirectory() as temp, browser_page() as page:

@@ -1,0 +1,4 @@
+{
+  "input": {"text": "The app crashes with a blank screen"},
+  "output": {"category": "technical", "priority": "standard"}
+}

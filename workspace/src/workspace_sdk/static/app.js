@@ -142,6 +142,17 @@ function showMetadata(container, label, metadata) {
   }
 }
 
+function showSample(container, label, sample) {
+  if (sample !== undefined) {
+    container.append(element("p", label));
+    if (sample === null) {
+      container.append(element("p", "No JSON sample available."));
+    } else {
+      container.append(element("pre", sample));
+    }
+  }
+}
+
 let historySelection = 0;
 async function showHistoryRun(id) {
   const selection = ++historySelection;
@@ -168,6 +179,13 @@ async function showHistoryRun(id) {
       );
       showMetadata(node, "Input", step.input);
       showMetadata(node, "Output", step.output);
+      if (step.reasons?.length) {
+        const reasons = element("ul", "");
+        for (const reason of step.reasons) reasons.append(element("li", reason));
+        node.append(element("p", "Decision reasons"), reasons);
+      }
+      showSample(node, "Input sample", step.input_sample);
+      showSample(node, "Output sample", step.output_sample);
       if (step.error_type) {
         const stack = element("ul", "", "stack-locations");
         for (const frame of step.error_frames) stack.append(element("li", locationText(frame)));

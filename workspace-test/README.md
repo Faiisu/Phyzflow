@@ -34,7 +34,27 @@ Run the prefilled sample, then replace the input with `{"text":"Debug failure"}`
 
 You can close the browser tab while a run is in progress. Leave the `workspace ui` process running, then reopen its URL. In **Run history**, select a saved run to see its status, duration, source version, and node summaries. Use **Refresh history** if the run finishes after you reopen the page.
 
-Workspace saves completed runs in `.workspace/runs/` inside the project, so the same history is available after restarting the UI. Each source version identifies the project Python code loaded by Workspace, including uncommitted edits. History stores input and output metadata such as value type and tensor shape, dtype, and device. Saved failures show the exception type and project stack locations. Raw input and output and exception messages stay in the live view.
+Workspace saves completed runs in `.workspace/runs/` inside the project, so the same history is available after restarting the UI. Each source version identifies the project Python code loaded by Workspace, including uncommitted edits. History stores input and output metadata such as value type and tensor shape, dtype, and device. Saved failures show the exception type and project stack locations. Request values and exception messages are absent from history by default.
+
+### Diagnose an incorrect result
+
+From `workspace-test/`, start the evidence demo in its own project directory:
+
+```sh
+cd evidence-demo
+../../.venv/bin/workspace ui
+```
+
+Open the printed URL and run the prefilled ticket. Its category should be `technical`. The flow reports **Succeeded**, but the output says `billing`. In **Run history**, select **Refresh history** and open the successful run to find the first node that returned the wrong value.
+
+<details>
+<summary>Check the diagnosis</summary>
+
+**Predict** received the normalized ticket about a blank screen and returned `billing`. Its decision reason says the demo predictor assigns every ticket to billing. **Decide** received that prediction and applied the priority rule.
+
+</details>
+
+To store a reason in your own node, call `record_reason("…")` from `workspace_sdk` with an explanation safe to save. To also store examples, set `capture_samples=True` on that node's `Step`. Only enable capture where the values are safe to retain. Each JSON example is limited to 4 KiB. Oversized or unsupported values retain their metadata and show that a sample is unavailable. History keeps up to ten reasons per node, each up to 512 characters.
 
 ## Acceptance tests and overhead baseline
 

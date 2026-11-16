@@ -7,6 +7,7 @@ from types import ModuleType
 from typing import Any, Callable
 from uuid import uuid4
 
+from .evidence import active_reasons, capture_sample
 from .flow import Flow, Input
 from .project import ordered_steps, source_location
 
@@ -103,11 +104,19 @@ def run(
             for name, ref in step.arguments.items()
         }
         argument_metadata = {}
+        collect_samples = include_metadata and step.capture_samples is True
         if include_metadata:
             argument_metadata["input"] = {name: summarize(value) for name, value in arguments.items()}
+        if collect_samples:
+            argument_metadata["input_sample"] = capture_sample(arguments)
         emit("running", **location, **argument_metadata)
+        reasons: list[str] | None = [] if include_metadata else None
+        reason_scope = active_reasons.set(reasons)
         try:
-            outputs[step.id] = step.function(**arguments)
+            try:
+                outputs[step.id] = step.function(**arguments)
+            finally:
+                active_reasons.reset(reason_scope)
         except Exception as error:
             unsuccessful.add(step.id)
             trace = traceback.TracebackException.from_exception(error)
@@ -116,13 +125,19 @@ def run(
             if include_metadata:
                 diagnostics["diagnostic_error_type"] = diagnostic_error_type(error)
                 diagnostics["error_frames"] = list(diagnostic_frames(trace))
+            if reasons:
+                diagnostics["reasons"] = reasons.copy()
             emit(
                 "failed", step_id=step.id, file=frame.filename, line=frame.lineno,
                 error_type=type(error).__name__, traceback="".join(trace.format()),
                 **diagnostics,
             )
         else:
-            metadata = {"output": summarize(outputs[step.id])} if include_metadata else {}
+            metadata: dict[str, Any] = {"output": summarize(outputs[step.id])} if include_metadata else {}
+            if collect_samples:
+                metadata["output_sample"] = capture_sample(outputs[step.id])
+            if reasons:
+                metadata["reasons"] = reasons.copy()
             emit("succeeded", **location, **metadata)
 
     status = "failed" if unsuccessful else "succeeded"

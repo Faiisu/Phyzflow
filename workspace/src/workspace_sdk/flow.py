@@ -17,6 +17,7 @@ class Step:
     id: str
     function: Callable[..., Any]
     arguments: dict[str, Input | Output]
+    capture_samples: bool = False
 
 
 @dataclass(frozen=True)
