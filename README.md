@@ -1,6 +1,6 @@
-# Python Flow Workspace
+# Phyzflow
 
-A local workspace for humans and AI agents to build, run, and inspect Python flows. Each sheet opens a Python flow as an execution graph where you can run the flow, inspect individual nodes, and trace results back to source code.
+Phyzflow is a local application for humans and AI agents to build, run, and inspect Python flows. Each sheet opens a Python flow as an execution graph where you can run the flow, inspect individual nodes, and trace results back to source code.
 
 ## Quick start
 
@@ -28,7 +28,7 @@ Both scripts ask for the bind IPv4 address and port on startup. Press Enter at e
 
 ### Run the ticket example from the CLI
 
-From the repository root, use [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the Workspace SDK into a Python 3.12 environment.
+From the repository root, use [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the Phyzflow SDK into a Python 3.12 environment.
 
 ```sh
 uv venv --python 3.12
