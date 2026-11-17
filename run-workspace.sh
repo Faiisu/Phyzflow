@@ -11,7 +11,10 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-project_dir=${1:-"$repo_dir/workspace-test/sheets-demo"}
+project_dir=${1:-"$repo_dir/default-workspace"}
+if [ -z "${1:-}" ]; then
+    mkdir -p "$project_dir"
+fi
 if [ ! -d "$project_dir" ]; then
     printf 'Workspace directory does not exist: %s\n' "$project_dir" >&2
     exit 1
@@ -22,4 +25,8 @@ if [ ! -x "$python" ]; then
     uv venv --allow-existing --python 3.12 "$project_dir/.venv"
 fi
 uv pip install --python "$python" --reinstall-package workspace-sdk "$repo_dir/workspace"
-exec "$project_dir/.venv/bin/workspace" --project "$project_dir" ui
+workspace_cli="$project_dir/.venv/bin/workspace"
+if [ -z "${1:-}" ] && [ ! -f "$project_dir/pyproject.toml" ]; then
+    "$workspace_cli" --project "$project_dir" init --with-main
+fi
+exec "$workspace_cli" --project "$project_dir" ui

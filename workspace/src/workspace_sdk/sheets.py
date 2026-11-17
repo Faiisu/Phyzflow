@@ -24,6 +24,8 @@ STARTER_NODE = '''def start() -> dict[str, str]:
     return {"message": "Hello from Workspace"}
 '''
 
+STARTER_SOURCES = '[tool.workspace]\nsources = ["nodes"]\n'
+
 WORKSPACE_AGENT_GUIDE = """# Workspace instructions
 
 - Use one Python package per node under the sheet's `nodes/` directory.
@@ -42,6 +44,33 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     if (root / "flow.py").is_file():
         flows.insert(0, ("Main", root))
     return flows
+
+
+def write_new_file(path: Path, content: str, cleanup: ExitStack) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        cleanup.callback(path.unlink, missing_ok=True)
+        stream.write(content)
+
+
+def write_starter_flow(directory: Path, cleanup: ExitStack) -> Path:
+    nodes = directory / "nodes"
+    node = nodes / "start"
+    for folder in (nodes, node):
+        folder.mkdir()
+        cleanup.callback(folder.rmdir)
+    for path, content in (
+        (nodes / "__init__.py", ""),
+        (node / "__init__.py", ""),
+        (node / "entrypoint.py", STARTER_NODE),
+        (node / "settings.json", "{}\n"),
+    ):
+        write_new_file(path, content, cleanup)
+    pending = directory / ".flow.py.tmp"
+    entrypoint = directory / "flow.py"
+    write_new_file(pending, STARTER_FLOW, cleanup)
+    pending.rename(entrypoint)
+    cleanup.callback(entrypoint.unlink, missing_ok=True)
+    return entrypoint
 
 
 def create_sheet(root: Path, value: object) -> Path:
@@ -65,32 +94,15 @@ def create_sheet(root: Path, value: object) -> Path:
     except FileExistsError:
         raise FileExistsError("That sheet name is already in use. Choose another name.") from None
 
-    pending = directory / ".flow.py.tmp"
-    entrypoint = directory / "flow.py"
-    nodes = directory / "nodes"
-    node = nodes / "start"
     with ExitStack() as cleanup:
         cleanup.callback(directory.rmdir)
-        for folder in (nodes, node):
-            folder.mkdir()
-            cleanup.callback(folder.rmdir)
-        for path, content in (
-            (nodes / "__init__.py", ""),
-            (node / "__init__.py", ""),
-            (node / "entrypoint.py", STARTER_NODE),
-            (node / "settings.json", "{}\n"),
-            (directory / "pyproject.toml", '[tool.workspace]\nsources = ["nodes"]\n'),
-            (pending, STARTER_FLOW),
-        ):
-            with path.open("x", encoding="utf-8") as stream:
-                cleanup.callback(path.unlink)
-                stream.write(content)
-        pending.rename(entrypoint)
+        write_new_file(directory / "pyproject.toml", STARTER_SOURCES, cleanup)
+        entrypoint = write_starter_flow(directory, cleanup)
         cleanup.pop_all()
     return entrypoint
 
 
-def initialize_workspace(root: Path) -> None:
+def initialize_workspace(root: Path, *, with_main: bool = False) -> None:
     settings = load_ui_settings(root, None)
     project = (
         '[project]\n'
@@ -100,21 +112,17 @@ def initialize_workspace(root: Path) -> None:
         f'dependencies = ["workspace-sdk=={version("workspace-sdk")}"]\n'
     )
     root.mkdir(parents=True, exist_ok=True)
-    if any(path.name != ".DS_Store" for path in root.iterdir()):
+    allowed = {".DS_Store", ".venv"} if with_main else {".DS_Store"}
+    if any(path.name not in allowed for path in root.iterdir()):
         raise ValueError(f"Choose an empty folder to initialize a Workspace: {root}")
     files = {
         "setting.json": json.dumps({"port": settings.port, "zoom": settings.zoom}, indent=2) + "\n",
-        "pyproject.toml": project,
+        "pyproject.toml": project + ("\n" + STARTER_SOURCES if with_main else ""),
         "AGENTS.md": WORKSPACE_AGENT_GUIDE,
     }
-    created = []
-    try:
+    with ExitStack() as cleanup:
         for name, content in files.items():
-            path = root / name
-            with path.open("x", encoding="utf-8") as stream:
-                created.append(path)
-                stream.write(content)
-    except OSError:
-        for path in created:
-            path.unlink()
-        raise
+            write_new_file(root / name, content, cleanup)
+        if with_main:
+            write_starter_flow(root, cleanup)
+        cleanup.pop_all()

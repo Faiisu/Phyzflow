@@ -16,6 +16,29 @@ from browser_support import browser_page, local_ui, show_panel
 
 
 class WorkspaceSheetTests(unittest.TestCase):
+    def test_init_with_main_creates_a_runnable_project_and_preserves_existing_files(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / ".venv").mkdir()
+            cli = Path(sys.executable).with_name("workspace")
+
+            def command(*arguments, check=True):
+                return subprocess.run([cli, *arguments], cwd=root, capture_output=True, text=True, check=check)
+
+            command("init", "--with-main")
+            self.assertEqual(
+                json.loads(command("sheets").stdout),
+                [{"name": "Main", "file": str(root / "flow.py")}],
+            )
+            command("check", "--sheet", "Main")
+            self.assertEqual(json.loads(command("run", "--sheet", "Main", "{}").stdout),
+                             {"message": "Hello from Workspace"})
+            settings = root / "nodes" / "start" / "settings.json"
+            self.assertEqual(json.loads(settings.read_text()), {})
+            (root / "nodes" / "start" / "entrypoint.py").write_text('def start(): return "My Workspace"\n')
+            self.assertNotEqual(command("init", "--with-main", check=False).returncode, 0)
+            self.assertEqual(json.loads(command("run", "--sheet", "Main", "{}").stdout), "My Workspace")
+
     def test_node_settings_file_opens_by_default_and_sets_next_run_defaults(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve()

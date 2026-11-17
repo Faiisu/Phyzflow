@@ -26,6 +26,8 @@ workspace --project "$project_path" ui
 
 Use `workspace init "$project_path"` to initialize a new project and `workspace --project "$project_path" new-sheet "First Flow"` to create a runnable Python sheet. The CLI prints the path to its Python entry point. A browser already open on the project discovers the new sheet without a restart. After editing Python, select the sheet and click **Reload flow** to refresh the graph and use the edited code on the next run.
 
+Use `workspace init --with-main "$project_path"` to start with a runnable **Main** sheet. The Linux and Windows launchers use this command to initialize the local `default-workspace/`.
+
 For `workspace deploy`, set the host IPv4 address, host port, container port, and Docker context under `deploy` in the project's `setting.json`. See [the deployment settings and CLI overrides](../workspace-test/deployment-trial/README.md#deploy-and-verify).
 
 ## One folder per node

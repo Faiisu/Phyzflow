@@ -20,7 +20,9 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and make i
 .\run-workspace.bat
 ```
 
-The launchers open `workspace-test/sheets-demo` by default. Pass an existing project directory as the first argument to open that project. The launcher creates a Python 3.12 virtual environment if the project lacks one and installs the local SDK into its `.venv`. Install any flow-specific dependencies in the same environment. Open the URL printed in the terminal, then select a sheet and choose **Run flow**.
+The launchers create a local `default-workspace/` with a runnable **Main** sheet on first use. Work on your flows in this directory. Git ignores it, and later launches reuse its files. The launcher creates a Python 3.12 virtual environment if the project lacks one and installs the local SDK into its `.venv`. Install any flow-specific dependencies in the same environment. Open the URL printed in the terminal and choose **Run flow**.
+
+Pass a project directory to open another workspace. Open the development sheets explicitly with `./run-workspace.sh workspace-test/sheets-demo` on Linux or `.\run-workspace.bat workspace-test/sheets-demo` in Windows PowerShell.
 
 ### Run the ticket example from the CLI
 

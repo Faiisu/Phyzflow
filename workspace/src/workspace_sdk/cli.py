@@ -38,6 +38,7 @@ def main() -> int:
     commands.add_parser("sheets", help="List sheet names and Python entry points as JSON.")
     init_parser = commands.add_parser("init", help="Initialize a Workspace in a new or empty directory.")
     init_parser.add_argument("directory", type=Path, nargs="?", help="Directory to initialize.")
+    init_parser.add_argument("--with-main", action="store_true", help="Include a runnable Main sheet.")
     new_parser = commands.add_parser("new-sheet", help="Create a runnable Python sheet.")
     new_parser.add_argument("name", help="The name of the new sheet.")
     ui_command = commands.add_parser("ui", help="Serve the Workspace UI on localhost.")
@@ -56,7 +57,7 @@ def main() -> int:
     try:
         root = (getattr(args, "directory", None) or args.project or Path.cwd()).expanduser().resolve()
         if args.command == "init":
-            initialize_workspace(root)
+            initialize_workspace(root, with_main=args.with_main)
             print(root)
             return 0
         if not root.is_dir():

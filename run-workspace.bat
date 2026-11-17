@@ -12,8 +12,12 @@ if errorlevel 1 (
 )
 
 set "REPO_DIR=%~dp0"
-set "PROJECT_DIR=%REPO_DIR%workspace-test\sheets-demo"
+set "PROJECT_DIR=%REPO_DIR%default-workspace"
 if not "%~1"=="" set "PROJECT_DIR=%~f1"
+if "%~1"=="" if not exist "%PROJECT_DIR%\." (
+    mkdir "%PROJECT_DIR%"
+    if errorlevel 1 exit /b 1
+)
 if not exist "%PROJECT_DIR%\." (
     echo Workspace directory does not exist: "%PROJECT_DIR%" >&2
     exit /b 1
@@ -27,5 +31,10 @@ if not exist "%PYTHON%" (
 uv.exe pip install --python "%PYTHON%" --reinstall-package workspace-sdk "%REPO_DIR%workspace"
 if errorlevel 1 exit /b 1
 
-"%PROJECT_DIR%\.venv\Scripts\workspace.exe" --project "%PROJECT_DIR%" ui
+set "WORKSPACE_CLI=%PROJECT_DIR%\.venv\Scripts\workspace.exe"
+if "%~1"=="" if not exist "%PROJECT_DIR%\pyproject.toml" (
+    "%WORKSPACE_CLI%" --project "%PROJECT_DIR%" init --with-main
+    if errorlevel 1 exit /b 1
+)
+"%WORKSPACE_CLI%" --project "%PROJECT_DIR%" ui
 exit /b %errorlevel%
