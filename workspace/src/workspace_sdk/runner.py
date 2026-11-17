@@ -9,7 +9,7 @@ from types import GeneratorType, ModuleType
 from typing import Any, Callable
 from uuid import uuid4
 
-from .evidence import active_metrics, active_output, active_progress, active_reasons, capture_sample
+from .evidence import active_frame, active_metrics, active_output, active_progress, active_reasons, capture_sample
 from .flow import Flow, Input, Output, Step
 from .node_settings import LiveSettings, SettingValue, active_checkpoint, active_settings
 from .project import ordered_steps, source_location
@@ -78,6 +78,7 @@ def run(
     *,
     include_metadata: bool = False,
     live_metrics: bool = False,
+    live_frames: bool = False,
     settings: dict[str, dict[str, SettingValue]] | None = None,
     live_settings: LiveSettings | None = None,
 ) -> RunResult:
@@ -151,6 +152,10 @@ def run(
                 (lambda preview: emit("running", step_id=step.id, output_preview=preview))
                 if on_event is not None else None
             )
+            frame_scope = active_frame.set(
+                (lambda frame: emit("running", step_id=step.id, live_frame=frame))
+                if live_frames and on_event is not None else None
+            )
             progress_scope = active_progress.set(
                 (lambda stage, values: emit("running", step_id=step.id, live_metrics={stage: values}))
                 if live_metrics else None
@@ -163,6 +168,7 @@ def run(
                 active_reasons.reset(reason_scope)
                 active_metrics.reset(metrics_scope)
                 active_output.reset(output_scope)
+                active_frame.reset(frame_scope)
                 active_progress.reset(progress_scope)
                 active_settings.reset(settings_scope)
                 active_checkpoint.reset(checkpoint_scope)

@@ -1,3 +1,4 @@
+from base64 import b64encode
 from contextvars import ContextVar
 from itertools import islice
 import json
@@ -8,6 +9,7 @@ from typing import Any, Callable
 active_reasons: ContextVar[list[str] | None] = ContextVar("active_reasons", default=None)
 active_metrics: ContextVar[dict[str, dict[str, int | float]] | None] = ContextVar("active_metrics", default=None)
 active_output: ContextVar[Callable[[str], None] | None] = ContextVar("active_output", default=None)
+active_frame: ContextVar[Callable[[str], None] | None] = ContextVar("active_frame", default=None)
 active_progress: ContextVar[Callable[[str, dict[str, int | float]], None] | None] = ContextVar(
     "active_progress", default=None
 )
@@ -56,6 +58,18 @@ def publish_output(value: Any) -> None:
     observer = active_output.get()
     if observer is not None and (preview := capture_sample(value)) is not None:
         observer(preview)
+
+
+def publish_frame(jpeg: bytes) -> None:
+    """Send a JPEG of up to 256 KiB to the live dashboard."""
+    observer = active_frame.get()
+    if observer is None:
+        return
+    if type(jpeg) is not bytes or not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+        raise ValueError("A live frame must be JPEG bytes.")
+    if len(jpeg) > 256 * 1024:
+        raise ValueError("A live frame must be at most 256 KiB.")
+    observer(b64encode(jpeg).decode("ascii"))
 
 
 def capture_sample(value: Any) -> str | None:

@@ -1007,7 +1007,7 @@ function setStatus(value, label = labels[value]) {
 
 function showMessage(message) {
   if (stopPhase === "stopped") return;
-  if (message.live_metrics || message.setting_change) return;
+  if (message.live_frame || message.live_metrics || message.setting_change) return;
   if (message.output_preview !== undefined) {
     if (!liveOutput) {
       liveOutput = element("section");
@@ -1214,6 +1214,7 @@ function updateRunControls() {
 }
 
 function showRunStreamError(message) {
+  dashboards.track({ error: message });
   setStatus("failed");
   result.append(element("p", message, "error run-stream-error"));
 }

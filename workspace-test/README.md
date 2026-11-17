@@ -121,6 +121,8 @@ Use the bottom tabs to switch sheets. The Workspace and all sheet views use the 
 
 Select **×** next to a sheet's **Stop** button and confirm **Delete sheet**. Workspace stops that sheet's process and moves its entire folder to `.workspace/deleted-flows/<archive-id>/<sheet-name>/`. To restore it, move the sheet folder back under `flows/` and restart the Workspace UI. The root **Main** sheet has no delete button.
 
+Try the [People Detection sheet](sheets-demo/flows/People%20Detection/README.md) to view live camera frames with person detections overlaid.
+
 ## Acceptance tests and overhead baseline
 
 Run the verification suite and demo benchmark in a checkout with the original sample flow, before the node exercise or in a separate checkout. Install Google Chrome and the optional test dependencies. From the repository root:

@@ -92,6 +92,7 @@ export function initDashboards(project) {
   let stopped = false;
   let settings = {};
   const previews = new Map();
+  const frames = new Map();
   const metrics = new Map();
   const settingChanges = new Map();
 
@@ -115,6 +116,7 @@ export function initDashboards(project) {
           steps: run.steps.filter(node => inScope(node.id)).map(node => pick(node, nodeFields)),
         },
         previews: following ? Object.fromEntries([...previews].filter(([id]) => inScope(id))) : {},
+        liveFrames: following ? Object.fromEntries([...frames].filter(([id]) => inScope(id))) : {},
         liveMetrics: following ? Object.fromEntries([...metrics].filter(([id]) => inScope(id))) : {},
         settings,
         settingChanges: following ? [...settingChanges.values()].filter(change => inScope(change.nodeId)) : [],
@@ -268,7 +270,10 @@ export function initDashboards(project) {
   window.addEventListener("workspace-stop", event => {
     stopped = event.detail.phase === "stopped";
     workflowButton.disabled = stopped;
-    if (stopped) dialog.close();
+    if (stopped) {
+      frames.clear();
+      dialog.close();
+    }
   });
 
   function track(event) {
@@ -279,6 +284,7 @@ export function initDashboards(project) {
     if (!event.run_id) {
       if (event.error && liveRun?.status === "running") {
         liveRun.status = "failed";
+        frames.clear();
         if (following) sendSnapshot();
       }
       return;
@@ -287,6 +293,7 @@ export function initDashboards(project) {
     if (id === undefined && status === "running") {
       liveRun = { id: event.run_id, status, started_at: time, steps: [] };
       previews.clear();
+      frames.clear();
       metrics.clear();
       settingChanges.clear();
       if (dialog.open) {
@@ -297,10 +304,13 @@ export function initDashboards(project) {
     } else if (liveRun?.id === event.run_id) {
       if (id === undefined) {
         liveRun.status = status;
+        frames.clear();
         liveRun.finished_at = time;
         liveRun.duration_ms = Date.parse(time) - Date.parse(liveRun.started_at);
       } else if (event.output_preview !== undefined) {
         previews.set(id, JSON.parse(event.output_preview));
+      } else if (event.live_frame !== undefined) {
+        frames.set(id, `data:image/jpeg;base64,${event.live_frame}`);
       } else if (event.live_metrics) {
         const groups = { ...metrics.get(id), ...event.live_metrics };
         metrics.set(id, Object.fromEntries(Object.entries(groups).slice(-8)));

@@ -300,14 +300,14 @@ def serve(
                         connected = False
 
             def record_event(event):
-                if not event.keys() & {"output_preview", "live_metrics", "setting_change"}:
+                if not event.keys() & {"output_preview", "live_frame", "live_metrics", "setting_change"}:
                     events.append(event)
                 send(event)
 
             try:
                 started = perf_counter()
                 result = run(
-                    flow, inputs, record_event, include_metadata=True, live_metrics=True,
+                    flow, inputs, record_event, include_metadata=True, live_metrics=True, live_frames=True,
                     settings=settings.snapshot(steps), live_settings=live_settings,
                 )
                 try:

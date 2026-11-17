@@ -61,6 +61,7 @@ In `dashboard.js`, call `window.workspaceDashboard.subscribe(render)`. The callb
 | `graph` | Nodes with `id` and `dependencies`, restricted to the dashboard scope. |
 | `run` | Null before data is available, otherwise the run ID, status, timing and scoped `steps`. Each step can include status, timing, blockers, error type and completed metrics. Saved runs include `source_version`. |
 | `previews`, `liveMetrics` | Latest explicit previews and numeric groups, keyed by node ID. Call `publish_output(value)` or `publish_metrics(group, values)` in the node to send these live snapshots. Use fixed metric labels and publish at a rate appropriate to the workload. Use `record_metrics` to retain a completed measurement in history. |
+| `liveFrames` | Latest JPEG data URLs keyed by node ID while a run is active. Call `publish_frame(jpeg_bytes)` to share a frame up to 256 KiB. Use the data URL as an image source. Frames are cleared when the run ends and are excluded from saved runs. |
 | `settings`, `settingChanges` | Editable definitions and saved values keyed by node ID and setting name, plus recent changes from the live run. |
 
 The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a node dashboard on the same run.
