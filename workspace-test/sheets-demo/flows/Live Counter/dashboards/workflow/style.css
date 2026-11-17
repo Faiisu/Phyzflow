@@ -1,0 +1,21 @@
+:root {
+  color-scheme: dark;
+  color: #ecf0fa;
+  background: #141d2b;
+  font: 14px/1.4 "Instrument Sans", system-ui, sans-serif;
+  --muted: #aebbd0;
+  --count: #86c7ff;
+  --scaled: #ffbf78;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+body { margin: 0; }
+main { padding: 1rem 1.1rem .8rem; }
+header { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: space-between; gap: .4rem 1.25rem; }
+h1 { margin: 0; font-size: 1.3rem; }
+p { margin: .2rem 0 .45rem; color: var(--muted); }
+dl { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0; }
+dt { color: var(--muted); font-size: .8rem; }
+dd { margin: 0; font: 600 1.18rem/1.55 var(--mono); }
+.count dd { color: var(--count); }
+.scaled dd { color: var(--scaled); }
+canvas { display: block; width: 100%; height: clamp(10rem, 58vh, 17rem); margin-top: .4rem; }

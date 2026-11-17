@@ -1,0 +1,14 @@
+<main>
+  <header>
+    <div>
+      <h1>Live Counter</h1>
+      <p id="chart-status">Run the flow to start counting.</p>
+    </div>
+    <dl aria-label="Latest live sample">
+      <div class="count"><dt>Count</dt><dd><output id="count" aria-live="off">—</output></dd></div>
+      <div class="scaled"><dt>Output (×10)</dt><dd><output id="scaled" aria-live="off">—</output></dd></div>
+      <div><dt>Elapsed</dt><dd><output id="elapsed" aria-live="off">—</output></dd></div>
+    </dl>
+  </header>
+  <canvas id="chart" role="img" aria-label="Line chart of count and output versus elapsed time in seconds"></canvas>
+</main>
