@@ -505,7 +505,7 @@ function sourceIsDirty() {
 
 function updateSourceDirty() {
   const dirty = sourceIsDirty();
-  document.documentElement.toggleAttribute("data-unsaved-source", dirty);
+  document.documentElement.toggleAttribute("data-unsaved-source", dirty || savingSource);
   saveNodeSource.disabled = (!dirty && currentSource?.revision !== "missing") ||
     savingSource || Boolean(nodeSourceRequest) || stopPhase === "stopped";
 }
@@ -612,7 +612,7 @@ nodeSourceForm.addEventListener("submit", async event => {
   const { index, path, revision } = currentSource;
   const source = nodeSourceInput.value;
   savingSource = true;
-  saveNodeSource.disabled = true;
+  updateSourceDirty();
   nodeSourceInput.readOnly = true;
   nodeSourceMessage.textContent = "Saving…";
   try {

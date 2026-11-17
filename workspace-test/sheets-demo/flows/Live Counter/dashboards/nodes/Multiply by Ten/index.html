@@ -1,0 +1,15 @@
+<main>
+  <p id="reading-status" role="status">Run the flow to see live readings.</p>
+  <div class="equation" role="group" aria-label="Multiply the input by ten">
+    <div class="reading">
+      <span>Input count</span>
+      <output id="input-count" aria-label="Input count" aria-live="off">—</output>
+    </div>
+    <div class="operator" aria-hidden="true">× 10 →</div>
+    <div class="reading result">
+      <span>Node output</span>
+      <output id="node-output" aria-label="Node output" aria-live="off">—</output>
+    </div>
+  </div>
+  <p class="elapsed">Elapsed <output id="elapsed" aria-label="Elapsed time" aria-live="off">—</output></p>
+</main>

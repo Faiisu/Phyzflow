@@ -28,6 +28,8 @@ Use `workspace init "$project_path"` to initialize a new project and `workspace 
 
 In the Workspace, select a sheet and choose **Edit flow.py** to open its flow source. **Save** writes to the project file. If another editor changed the file, copy any changes you want to keep and reopen the editor to see the latest version. If **Reload flow** reports a validation error, use the diagnostic to locate it. You can reopen **Edit flow.py** to fix the flow source, save it, and retry **Reload flow**.
 
+Open sheets reload automatically after Python files in their project folders change and the edits settle. The next run uses the reloaded code. If a run is active or the source editor has unsaved text, the sheet shows **Reload pending** and waits. If validation fails, the sheet shows the diagnostic and retries after another source change. To resume an explicitly stopped sheet, select **Open flow**.
+
 Use `workspace init --with-main "$project_path"` to start with a runnable **Main** sheet. The Linux and Windows launchers use this command to initialize the local `default-workspace/`.
 
 For `workspace deploy`, set the host IPv4 address, host port, container port, and Docker context under `deploy` in the project's `setting.json`. See [the deployment settings and CLI overrides](../workspace-test/deployment-trial/README.md#deploy-and-verify).
