@@ -15,6 +15,9 @@ from .ui_settings import load_ui_settings
 def report_event(event):
     if "step_id" not in event:
         return
+    if "output_preview" in event:
+        print(f"{event['step_id']}: {event['output_preview']}", file=sys.stderr, flush=True)
+        return
     print(f"{event['step_id']}: {event['status']}", file=sys.stderr)
     if event["status"] == "failed":
         print(f"{event['file']}:{event['line']}", file=sys.stderr)

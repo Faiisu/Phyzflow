@@ -35,6 +35,7 @@ def serve(
             "line": line,
             "source": relative_source(root, file),
             "description": (getdoc(step.function) or "").split("\n\n", 1)[0],
+            "track_generator": step.track_generator,
             "dependencies": list(dict.fromkeys(
                 ref.step_id for ref in step.arguments.values() if isinstance(ref, Output)
             )),
@@ -209,7 +210,8 @@ def serve(
                     if message.get("file"):
                         file = relative_source(root, message["file"])
                         message = {**message, "file": file}
-                        if message["status"] == "failed" and file is not None and message.get("step_id") in node_files_by_id:
+                        if (message["status"] == "failed" and not message.get("blocked_by")
+                                and file is not None and message.get("step_id") in node_files_by_id):
                             try:
                                 path = node_source_path(root, node_files_by_id[message["step_id"]], file)
                             except (OSError, RuntimeError):
@@ -223,7 +225,8 @@ def serve(
                         connected = False
 
             def record_event(event):
-                events.append(event)
+                if "output_preview" not in event:
+                    events.append(event)
                 send(event)
 
             try:

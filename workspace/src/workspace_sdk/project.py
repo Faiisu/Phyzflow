@@ -50,6 +50,8 @@ def ordered_steps(flow: Flow) -> tuple[Step, ...]:
                 raise ValidationError(f"{step_id} depends on unknown step {dependency!r}.")
     if flow.output.step_id not in steps:
         raise ValidationError(f"Unknown output step {flow.output.step_id!r}.")
+    if steps[flow.output.step_id].track_generator:
+        raise ValidationError("A tracked generator must be consumed inside the flow.")
     try:
         return tuple(steps[step_id] for step_id in TopologicalSorter(graph).static_order())
     except CycleError as error:

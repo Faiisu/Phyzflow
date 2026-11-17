@@ -2,11 +2,12 @@ from contextvars import ContextVar
 from itertools import islice
 import json
 from math import isfinite
-from typing import Any
+from typing import Any, Callable
 
 
 active_reasons: ContextVar[list[str] | None] = ContextVar("active_reasons", default=None)
 active_metrics: ContextVar[dict[str, dict[str, int | float]] | None] = ContextVar("active_metrics", default=None)
+active_output: ContextVar[Callable[[str], None] | None] = ContextVar("active_output", default=None)
 
 
 def record_reason(reason: str) -> None:
@@ -35,6 +36,13 @@ def record_metrics(stage: str, values: dict[str, int | float]) -> None:
     }
     if metrics:
         groups[stage] = metrics
+
+
+def publish_output(value: Any) -> None:
+    """Send a bounded JSON preview to the current observer without saving it to history."""
+    observer = active_output.get()
+    if observer is not None and (preview := capture_sample(value)) is not None:
+        observer(preview)
 
 
 def capture_sample(value: Any) -> str | None:

@@ -37,7 +37,7 @@ class RunHistory:
             })
             if event["status"] == "running":
                 step["started_at"] = event["time"]
-            elif event["status"] in ("succeeded", "failed"):
+            elif event["status"] in ("succeeded", "failed", "stopped"):
                 step["finished_at"] = event["time"]
             if "blocked_by" in event:
                 step["blocked_by"] = event["blocked_by"]

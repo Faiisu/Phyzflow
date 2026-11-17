@@ -7,6 +7,34 @@ from workspace_sdk import Flow, Output, Step, record_metrics, run
 
 
 class RunnerTests(unittest.TestCase):
+    def test_runner_closes_a_partially_consumed_tracked_generator(self):
+        closed = []
+
+        def produce():
+            try:
+                yield 1
+                yield 2
+            finally:
+                closed.append(True)
+
+        def first(values):
+            return next(values)
+
+        flow = Flow(
+            inputs=(),
+            steps=(Step("Produce", produce, {}, track_generator=True),
+                   Step("First", first, {"values": Output("Produce")})),
+            output=Output("First"),
+        )
+        events = []
+        result = run(flow, {}, events.append)
+        self.assertEqual(result.output, 1)
+        self.assertEqual(closed, [True])
+        self.assertEqual(
+            [event["status"] for event in events if event.get("step_id") == "Produce"],
+            ["running", "stopped"],
+        )
+
     def test_operational_metrics_are_bounded_and_scoped_to_reporting_nodes(self):
         def report():
             record_metrics("x" * 49, {"Count": 1})

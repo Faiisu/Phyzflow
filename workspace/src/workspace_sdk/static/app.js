@@ -46,12 +46,14 @@ const historyList = document.querySelector("#history-list");
 const historyDetail = document.querySelector("#history-detail");
 const refreshHistoryButton = document.querySelector("#refresh-history");
 const nodes = new Map();
-const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped" };
+const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", stopped: "Stopped" };
+let tracksGenerators = false;
 let activeNode = null;
 let stopPhase = null;
 let runInProgress = false;
 let projectReady = false;
 let deferredRunError = null;
+let liveOutput = null;
 let graphZoom = 100;
 let zoomSettings = null;
 let wheelZoom = null;
@@ -797,6 +799,7 @@ function inspectNode(step, project) {
 
 function positionGraph(project) {
   const { steps } = project;
+  tracksGenerators = steps.some(step => step.track_generator);
   const rows = new Map();
   const producers = new Set(steps.flatMap(step => step.dependencies));
   for (const [index, step] of steps.entries()) {
@@ -1001,6 +1004,17 @@ function setStatus(value, label = labels[value]) {
 
 function showMessage(message) {
   if (stopPhase === "stopped") return;
+  if (message.output_preview !== undefined) {
+    if (!liveOutput) {
+      liveOutput = element("section");
+      liveOutput.setAttribute("aria-label", "Live output");
+      liveOutput.append(element("h3", "Live output"));
+      result.append(liveOutput);
+    }
+    liveOutput.querySelector("pre")?.remove();
+    liveOutput.append(jsonOutput(message.output_preview));
+    return;
+  }
   trackInspectorExecution(message);
   if (message.history_error) {
     result.append(element("p", message.history_error, "error"));
@@ -1053,6 +1067,9 @@ function showMessage(message) {
       actions,
       trace,
     );
+    if (message.blocked_by?.length) {
+      error.append(element("p", blockedByText(message.blocked_by, id => nodes.get(id)?.node.dataset.state)));
+    }
     result.append(error);
   }
 }
@@ -1203,6 +1220,18 @@ window.addEventListener("workspace-stop", event => {
   updateRunControls();
   if (phase === "stopped") {
     setStatus("stopped", "Stopped");
+    if (tracksGenerators) {
+      for (const [id, { node, state }] of nodes) {
+        if (node.dataset.state !== "running") continue;
+        node.dataset.state = "stopped";
+        state.textContent = labels.stopped;
+        const timing = currentNodeTiming.get(id);
+        if (timing) timing.status = "stopped";
+      }
+      if (activeNode !== null && nodes.get(activeNode)?.node.dataset.state === "stopped") {
+        showInspectorState("stopped");
+      }
+    }
     result.querySelector(".run-stream-error")?.remove();
     resetInput.disabled = openNodeFiles.disabled = refreshHistoryButton.disabled = true;
     for (const control of document.querySelectorAll(".history-run, .open-error-source")) control.disabled = true;
@@ -1222,6 +1251,7 @@ form.addEventListener("submit", async event => {
   updateRunControls();
   setPanel("run", true);
   result.replaceChildren();
+  liveOutput = null;
   setStatus("running");
   currentRunId = null;
   currentRunFinished = false;

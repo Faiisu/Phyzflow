@@ -1,16 +1,23 @@
 from collections.abc import Iterator
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import sys
 from time import perf_counter_ns
 import traceback
-from types import ModuleType
+from types import GeneratorType, ModuleType
 from typing import Any, Callable
 from uuid import uuid4
 
-from .evidence import active_metrics, active_reasons, capture_sample
-from .flow import Flow, Input, Output
+from .evidence import active_metrics, active_output, active_reasons, capture_sample
+from .flow import Flow, Input, Output, Step
 from .project import ordered_steps, source_location
+
+
+class _UpstreamGeneratorError(RuntimeError):
+    def __init__(self, producer: str):
+        super().__init__(f"Generator from {producer!r} failed.")
+        self.producer = producer
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,7 @@ def run(
     run_id = uuid4().hex
     outputs = {}
     unsuccessful = set()
+    pending_generators: dict[str, Callable[[], None]] = {}
 
     def emit(status, **details):
         if on_event is not None:
@@ -92,7 +100,8 @@ def run(
     if include_metadata:
         input_metadata["input"] = {name: summarize(inputs[name]) for name in flow.inputs}
     emit("running", **input_metadata)
-    for step in steps:
+
+    def execute_step(step: Step) -> None:
         path, line = source_location(step.function)
         location: dict[str, str | int | float | None] = {"step_id": step.id, "file": path, "line": line}
         blocked_by = list(dict.fromkeys(
@@ -101,7 +110,7 @@ def run(
         if blocked_by:
             unsuccessful.add(step.id)
             emit("skipped", **location, blocked_by=blocked_by)
-            continue
+            return
 
         arguments = {
             name: inputs[ref.name] if isinstance(ref, Input) else outputs[ref.step_id]
@@ -116,41 +125,99 @@ def run(
         emit("running", **location, **argument_metadata)
         reasons: list[str] | None = [] if include_metadata else None
         metrics: dict[str, dict[str, int | float]] | None = {} if include_metadata else None
-        reason_scope = active_reasons.set(reasons)
-        metrics_scope = active_metrics.set(metrics)
-        evidence: dict[str, Any] = {}
-        started = perf_counter_ns() if on_event is not None else None
-        try:
+        def invoke(function, /, *args, **kwargs):
+            reason_scope = active_reasons.set(reasons)
+            metrics_scope = active_metrics.set(metrics)
+            output_scope = active_output.set(
+                (lambda preview: emit("running", step_id=step.id, output_preview=preview))
+                if on_event is not None else None
+            )
             try:
-                outputs[step.id] = step.function(**arguments)
+                return function(*args, **kwargs)
             finally:
-                if started is not None:
-                    location["duration_ms"] = (perf_counter_ns() - started) / 1_000_000
                 active_reasons.reset(reason_scope)
                 active_metrics.reset(metrics_scope)
-                if reasons:
-                    evidence["reasons"] = reasons.copy()
-                if metrics:
-                    evidence["metrics"] = metrics.copy()
-        except Exception as error:
+                active_output.reset(output_scope)
+
+        context = copy_context() if step.track_generator else None
+        started = perf_counter_ns() if on_event is not None else None
+
+        def duration() -> dict[str, float]:
+            return {"duration_ms": (perf_counter_ns() - started) / 1_000_000} if started is not None else {}
+
+        def finish(status: str, **details: Any) -> None:
+            pending_generators.pop(step.id, None)
+            if reasons:
+                details["reasons"] = reasons.copy()
+            if metrics:
+                details["metrics"] = metrics.copy()
+            emit(status, **location, **details)
+
+        def complete(value: Any) -> None:
+            elapsed = duration()
+            metadata: dict[str, Any] = {"output": summarize(value)} if include_metadata else {}
+            if collect_samples:
+                metadata["output_sample"] = capture_sample(value)
+            finish("succeeded", **elapsed, **metadata)
+
+        def fail(error: Exception) -> None:
+            elapsed = duration()
             unsuccessful.add(step.id)
             trace = traceback.TracebackException.from_exception(error)
-            frame = trace.stack[-1]
-            diagnostics = {}
+            diagnostics: dict[str, Any] = {}
             if include_metadata:
                 diagnostics["diagnostic_error_type"] = diagnostic_error_type(error)
                 diagnostics["error_frames"] = list(diagnostic_frames(trace))
-            location.update(file=frame.filename, line=frame.lineno)
-            emit(
-                "failed", **location,
-                error_type=type(error).__name__, traceback="".join(trace.format()),
-                **diagnostics, **evidence,
-            )
-        else:
-            metadata: dict[str, Any] = {"output": summarize(outputs[step.id])} if include_metadata else {}
-            if collect_samples:
-                metadata["output_sample"] = capture_sample(outputs[step.id])
-            emit("succeeded", **location, **metadata, **evidence)
+            if isinstance(error, _UpstreamGeneratorError):
+                diagnostics["blocked_by"] = [error.producer]
+            elif trace.stack:
+                frame = trace.stack[-1]
+                location.update(file=frame.filename, line=frame.lineno)
+            finish("failed", error_type=type(error).__name__, traceback="".join(trace.format()),
+                   **elapsed, **diagnostics)
+
+        try:
+            value = (context.run(invoke, step.function, **arguments) if context is not None
+                     else invoke(step.function, **arguments))
+            if context is not None and not isinstance(value, GeneratorType):
+                raise TypeError("A node with track_generator=True must return a Python generator.")
+        except Exception as error:
+            fail(error)
+            return
+        if context is None:
+            outputs[step.id] = value
+            complete(value)
+            return
+
+        def close_generator() -> None:
+            try:
+                context.run(invoke, value.close)
+            except Exception as error:
+                fail(error)
+            else:
+                finish("stopped", **duration())
+
+        def tracked_values() -> Iterator[Any]:
+            while True:
+                try:
+                    item = context.run(invoke, next, value)
+                except StopIteration:
+                    complete(value)
+                    return
+                except Exception as error:
+                    fail(error)
+                    raise _UpstreamGeneratorError(step.id) from None
+                yield item
+
+        pending_generators[step.id] = close_generator
+        outputs[step.id] = tracked_values()
+
+    try:
+        for step in steps:
+            execute_step(step)
+    finally:
+        for close in list(pending_generators.values()):
+            close()
 
     status = "failed" if unsuccessful else "succeeded"
     output = outputs.get(flow.output.step_id)
