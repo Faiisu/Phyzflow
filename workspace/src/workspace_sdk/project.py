@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from graphlib import CycleError, TopologicalSorter
 from hashlib import sha256
 from importlib.machinery import PathFinder, SourceFileLoader
@@ -12,7 +13,8 @@ from types import CodeType
 from typing import Callable
 
 from .flow import Flow, Input, Output, Step
-from .node_settings import NodeSetting
+from .node_settings import NodeSetting, parse_setting_defaults
+from .node_sources import node_settings_path, read_node_source
 
 
 class ValidationError(ValueError):
@@ -80,6 +82,51 @@ def validate_bindings(flow: Flow, steps: tuple[Step, ...]) -> None:
             file, line = source_location(step.function)
             location = f" ({file}:{line})" if file else ""
             raise ValidationError(f"Invalid arguments for {step.id}{location}: {error}") from error
+
+
+def setting_files(root: Path, steps: tuple[Step, ...]) -> dict[Path, dict[str, list[NodeSetting]]]:
+    files: dict[Path, dict[str, list[NodeSetting]]] = {}
+    for step in steps:
+        filename, _ = source_location(step.function)
+        path = node_settings_path(root, filename)
+        if path is not None:
+            definitions = files.setdefault(path, {})
+            for name, setting in step.settings.items():
+                definitions.setdefault(name, []).append(setting)
+    return files
+
+
+def load_setting_defaults(
+    root: Path, flow: Flow, loaded_sources: dict[Path, str] | None,
+) -> Flow:
+    defaults = {}
+    for path, definitions in setting_files(root, flow.steps).items():
+        try:
+            if path.resolve() != path:
+                raise ValueError("Use a regular settings file inside the node folder.")
+            try:
+                content = read_node_source(path)
+            except FileNotFoundError:
+                continue
+            defaults[path] = parse_setting_defaults(content.decode("utf-8-sig"), definitions)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ValidationError(f"Node settings: {path}: {error}") from error
+        if loaded_sources is not None:
+            loaded_sources[path] = sha256(content).hexdigest()
+
+    if not defaults:
+        return flow
+    steps = []
+    for step in flow.steps:
+        filename, _ = source_location(step.function)
+        values = defaults.get(node_settings_path(root, filename), {})
+        if values:
+            step = replace(step, setting_defaults={
+                **step.setting_defaults,
+                **{name: setting.validate(values[name]) for name, setting in step.settings.items() if name in values},
+            })
+        steps.append(step)
+    return replace(flow, steps=tuple(steps))
 
 
 def check_source(root: Path, flow_path: Path) -> dict[Path, tuple[CodeType, str]]:
@@ -189,7 +236,7 @@ def load_project(root: Path, loaded_sources: dict[Path, str] | None = None) -> I
             validate_bindings(flow, steps)
         except ValidationError as error:
             raise ValidationError(f"Flow: {path}: {error}") from error
-        yield flow
+        yield load_setting_defaults(root, flow, loaded_sources)
     finally:
         del sys.modules[name]
         sys.meta_path.remove(finder)

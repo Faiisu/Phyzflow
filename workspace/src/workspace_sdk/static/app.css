@@ -27,7 +27,7 @@ button:disabled { cursor: default; opacity: .52; }
 :where(button, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 #open-node-files { margin-bottom: .5rem; }
-#node-files, #dashboard {
+#node-files {
   width: min(66rem, calc(100% - 2rem));
   max-height: calc(100% - 2rem);
   padding: 0;
@@ -38,13 +38,27 @@ button:disabled { cursor: default; opacity: .52; }
 }
 #node-files::backdrop { background: #15171bb0; }
 #dashboard {
-  position: fixed;
-  inset: auto var(--edge) var(--edge) auto;
-  margin: 0;
-  width: min(48rem, calc(100% - 2 * var(--edge)));
-  box-shadow: 0 10px 36px #101116a6;
-  z-index: 8;
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 17rem;
+  min-height: 13rem;
+  border: 1px solid #5a5d69;
+  border-radius: 7px;
+  background: var(--dock);
+  box-shadow: 0 8px 26px #101116a6;
+  cursor: auto;
+  overflow: hidden;
 }
+.dashboard-actions { display: flex; align-items: center; gap: .35rem; flex: none; }
+#dashboard .dock-heading { cursor: grab; user-select: none; }
+#dashboard.is-moving .dock-heading { cursor: grabbing; }
+#dashboard.is-moving iframe, #dashboard.is-resizing iframe { pointer-events: none; }
+.graph-scroll.is-dragging-dashboard { user-select: none; }
+#dashboard:fullscreen { border: 0; border-radius: 0; }
+#dashboard:fullscreen .dock-heading { cursor: auto; }
+#dashboard:fullscreen #dashboard-resize { display: none; }
 .dashboard-controls {
   display: flex;
   align-items: center;
@@ -64,7 +78,26 @@ button:disabled { cursor: default; opacity: .52; }
   border-radius: 4px;
 }
 #dashboard-message:not(:empty) { padding: 0 .75rem .65rem; }
-#dashboard-preview iframe { display: block; width: 100%; height: min(48dvh, 29rem); border: 0; border-top: 1px solid var(--line); }
+#dashboard-preview { flex: 1; min-height: 0; background: var(--canvas); }
+#dashboard-preview iframe { display: block; width: 100%; height: 100%; border: 0; border-top: 1px solid var(--line); }
+#dashboard-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px 0 0 0;
+  background: var(--toolbar);
+  cursor: nwse-resize;
+}
+#dashboard-resize::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  background: repeating-linear-gradient(135deg, transparent 0 2px, var(--muted) 2px 3px, transparent 3px 5px);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+#dashboard-resize:hover { background: var(--line); }
 .node-files-content { padding: .75rem; }
 #node-files-path {
   display: block;

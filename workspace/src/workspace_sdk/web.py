@@ -14,8 +14,8 @@ from .dashboard import ASSET_ROUTE, SETTINGS_ROUTE, dashboard_assets
 from .flow import Flow, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_node_source, node_files, node_source_path
-from .node_settings import LiveSettings, SettingsStore
-from .project import ordered_steps, relative_source, source_location
+from .node_settings import LiveSettings, SettingsStore, parse_setting_defaults
+from .project import ordered_steps, relative_source, setting_files, source_location
 from .runner import run
 from .ui_settings import ZoomSettings
 
@@ -54,6 +54,7 @@ def serve(
         })
 
     node_files_by_id = {step["id"]: step["file"] for step in graph}
+    defaults_files = setting_files(root, steps)
     fixture = root / "sample.json"
     default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
     history = RunHistory(root)
@@ -252,7 +253,20 @@ def serve(
                     raise FileNotFoundError
                 with source_lock:
                     path = node_source_path(root, graph[index]["file"], relative)
-                    result = edit_node_source(path, source, revision)
+                    definitions = defaults_files.get(path)
+                    initial = None
+                    if definitions is not None:
+                        if source is not None:
+                            parse_setting_defaults(source, definitions)
+                        initial = json.dumps({
+                            name: declarations[0].default
+                            for name, declarations in definitions.items()
+                            if all(
+                                type(setting.default) is type(declarations[0].default)
+                                and setting.default == declarations[0].default for setting in declarations
+                            )
+                        }, indent=2) + "\n"
+                    result = edit_node_source(path, source, revision, initial=initial)
             except FileNotFoundError:
                 self.send_source({"error": "This source file is unavailable in the node folder."}, HTTPStatus.NOT_FOUND)
             except SourceChanged:

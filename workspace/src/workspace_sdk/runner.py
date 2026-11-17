@@ -130,7 +130,7 @@ def run(
         if collect_samples:
             argument_metadata["input_sample"] = capture_sample(arguments)
         values = {
-            setting: (settings or {}).get(step.id, {}).get(name, setting.default)
+            setting: (settings or {}).get(step.id, {}).get(name, step.setting_defaults.get(name, setting.default))
             for name, setting in step.settings.items()
         }
         controlled = live_settings if any(setting.live for setting in values) else None

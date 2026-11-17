@@ -64,20 +64,49 @@ def apply_node_settings() -> None:
         checkpoint()
 
 
+def parse_setting_defaults(source: str, definitions: dict[str, list[NodeSetting]]) -> dict[str, SettingValue]:
+    def unique(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError(f"Duplicate setting {name!r}.")
+            result[name] = value
+        return result
+
+    try:
+        values = json.loads(source, object_pairs_hook=unique)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Line {error.lineno}: {error.msg}.") from error
+    if not isinstance(values, dict):
+        raise ValueError("Settings defaults must be a JSON object.")
+    for name, value in values.items():
+        if name not in definitions:
+            raise ValueError(f"Unknown setting {name!r}. Declare it in Step.settings first.")
+        try:
+            for setting in definitions[name]:
+                setting.validate(value)
+        except ValueError as error:
+            raise ValueError(f"{name}: {error}") from error
+    return values
+
+
 class SettingsStore:
     def __init__(self, root: Path):
         self.path = root / ".workspace" / "node-settings.sqlite3"
 
     def snapshot(self, steps) -> dict[str, dict[str, SettingValue]]:
-        items = {step.id: step.settings for step in steps if step.settings}
-        values = {node: {name: setting.default for name, setting in definitions.items()}
-                  for node, definitions in items.items()}
-        if not items or not self.path.is_file():
+        configured = {step.id: step for step in steps if step.settings}
+        values = {
+            node: {name: step.setting_defaults.get(name, setting.default) for name, setting in step.settings.items()}
+            for node, step in configured.items()
+        }
+        if not configured or not self.path.is_file():
             return values
         with sqlite3.connect(self.path) as db:
             self.create_table(db)
             for node, name, value in db.execute("SELECT node, name, value FROM setting"):
-                if setting := items.get(node, {}).get(name):
+                step = configured.get(node)
+                if step is not None and (setting := step.settings.get(name)) is not None:
                     try:
                         values[node][name] = setting.validate(json.loads(value))
                     except ValueError:

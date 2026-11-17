@@ -12,10 +12,64 @@ from urllib.request import urlopen
 from playwright.sync_api import expect
 from workspace_sdk.ui_settings import load_ui_settings
 
-from browser_support import browser_page, local_ui
+from browser_support import browser_page, local_ui, show_panel
 
 
 class WorkspaceSheetTests(unittest.TestCase):
+    def test_node_settings_file_opens_by_default_and_sets_next_run_defaults(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            node = root / "nodes" / "start"
+            node.mkdir(parents=True)
+            (node / "entrypoint.py").write_text(
+                'from workspace_sdk import NodeSetting\n'
+                'LIMIT = NodeSetting(2, minimum=1, maximum=8)\n'
+                'def start(): return LIMIT.get()\n'
+            )
+            (root / "flow.py").write_text(
+                'from workspace_sdk import Flow, Output, Step\n'
+                'from nodes.start.entrypoint import LIMIT, start\n'
+                'flow = Flow((), (Step("Start", start, {}, settings={"Limit": LIMIT}),), Output("Start"))\n'
+            )
+            settings = node / "settings.json"
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                flow.get_by_role("button", name="Inspect Start").dblclick()
+                files = flow.get_by_role("dialog", name="Start files")
+                expect(files.locator("#node-source-name")).to_have_text("nodes/start/settings.json")
+                editor = files.get_by_role("textbox", name="Source code")
+                expect(editor).to_have_value('{\n  "Limit": 2\n}\n')
+                self.assertFalse(settings.exists())
+                save = files.get_by_role("button", name="Save", exact=True)
+                editor.fill('{"Limit": 99}')
+                save.click()
+                expect(files.locator("#node-source-message")).to_contain_text("Maximum value is 8")
+                self.assertFalse(settings.exists())
+                editor.fill('{"Limit": 5}')
+                save.click()
+                expect(files.locator("#node-source-message")).to_contain_text("Saved.")
+                self.assertEqual(json.loads(settings.read_text()), {"Limit": 5})
+                files.get_by_role("button", name="Close node files").click()
+                page.get_by_role("button", name="Reload flow").click()
+                expect(page.locator('iframe[title="Main flow"]')).to_have_attribute("src", "/flows/0/revision/1/view/")
+                flow.get_by_role("button", name="Run flow", exact=True).click()
+                expect(flow.locator("#result pre")).to_have_text("5")
+
+                cli = Path(sys.executable).with_name("workspace")
+                result = subprocess.run([str(cli), "run", "{}"], cwd=root, capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(result.stdout), 5)
+                saved = page.request.post(f"{url}/flows/0/revision/1/view/dashboard-settings/workflow", data={
+                    "nodeId": "Start", "name": "Limit", "value": 6, "mode": "next",
+                })
+                self.assertEqual(saved.json()["status"], "saved")
+                result = subprocess.run([str(cli), "run", "{}"], cwd=root, capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(result.stdout), 6)
+                settings.write_text('{"Limit": "invalid"}')
+                result = subprocess.run([str(cli), "check"], cwd=root, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"Node settings: {settings}: Limit: Expected a int setting.", result.stderr)
+
     def test_cli_selects_and_creates_workspace_sheets_from_another_directory(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             parent = Path(temp).resolve()
@@ -111,6 +165,8 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(files).to_be_hidden()
                 start.dblclick()
                 expect(files.locator("#node-files-path")).to_have_text("nodes/start")
+                expect(files.locator("#node-source-name")).to_have_text("nodes/start/settings.json")
+                expect(files.get_by_role("textbox", name="Source code")).to_have_value("{}\n")
                 expect(files.get_by_text("entrypoint.py", exact=True)).to_be_visible()
                 expect(files.get_by_text("format.py", exact=True)).to_be_hidden()
                 files.get_by_text("helpers", exact=True).click()
@@ -119,6 +175,7 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(files.get_by_text("linked.py", exact=True)).to_have_count(0)
                 expect(files.get_by_text("__pycache__", exact=True)).to_have_count(0)
                 editor = files.get_by_role("textbox", name="Source code")
+                files.get_by_role("button", name="entrypoint.py", exact=True).click()
                 saved = node.read_text()
                 expect(editor).to_have_value(saved)
                 highlight = files.locator("#node-source-highlight")
@@ -166,6 +223,7 @@ class WorkspaceSheetTests(unittest.TestCase):
                 self.assertEqual((sibling / "private.py").read_text(), "SECRET = 2\n")
                 files.get_by_role("button", name="Close node files").press("Escape")
                 expect(files).to_be_hidden()
+                show_panel(flow, "Inspector")
                 flow.get_by_role("button", name="View files").click()
                 expect(files.get_by_text("entrypoint.py", exact=True)).to_be_visible()
                 files.get_by_role("button", name="Close node files").click()

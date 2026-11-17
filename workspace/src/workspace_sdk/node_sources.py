@@ -3,7 +3,7 @@
 from codecs import BOM_UTF8
 from hashlib import sha256
 from io import BytesIO
-from os import scandir
+from os import link, scandir
 from pathlib import Path
 from stat import S_IMODE
 from tempfile import NamedTemporaryFile
@@ -13,6 +13,7 @@ from typing import TypedDict
 
 MAX_SOURCE_BYTES = 128 * 1024
 SOURCE_EXTENSIONS = {".py", ".json"}
+SETTINGS_FILENAME = "settings.json"
 
 
 class SourceChanged(RuntimeError):
@@ -31,6 +32,16 @@ def node_location(root: Path, filename: str | None) -> tuple[Path, Path] | None:
     relative = source.relative_to(root)
     folder = root.joinpath(*relative.parts[:2]) if relative.parts[0] == "nodes" and len(relative.parts) >= 3 else source.parent
     return folder, source
+
+
+def node_settings_path(root: Path, filename: str | None) -> Path | None:
+    location = node_location(root, filename)
+    if location is not None:
+        folder, _ = location
+        parts = folder.relative_to(root).parts
+        if len(parts) == 2 and parts[0] == "nodes":
+            return folder / SETTINGS_FILENAME
+    return None
 
 
 def node_files(root: Path, filename: str | None) -> dict:
@@ -65,7 +76,15 @@ def node_files(root: Path, filename: str | None) -> dict:
         return sorted(entries, key=lambda item: (item["children"] is None, item["name"].casefold(), item["name"]))
 
     entries = read_folder(folder, 0)
-    return {"path": folder.relative_to(root).as_posix(), "entries": entries, "truncated": truncated}
+    settings = node_settings_path(root, filename)
+    settings_path = None
+    if settings is not None and (settings.is_file() or not settings.exists()) and not settings.is_symlink():
+        entries = [{"name": SETTINGS_FILENAME, "children": None}] + [
+            entry for entry in entries if entry["name"] != SETTINGS_FILENAME
+        ]
+        settings_path = settings.relative_to(root).as_posix()
+    return {"path": folder.relative_to(root).as_posix(), "entries": entries, "truncated": truncated,
+            "settings": settings_path}
 
 
 def node_source_path(root: Path, filename: str | None, relative: str) -> Path:
@@ -80,7 +99,8 @@ def node_source_path(root: Path, filename: str | None, relative: str) -> Path:
     path = root / path
     if (
         not path.is_relative_to(folder) or (folder == root and path != source)
-        or path.resolve() != path or not path.is_file()
+        or path.resolve() != path
+        or not (path.is_file() or (path == node_settings_path(root, filename) and not path.exists()))
     ):
         raise FileNotFoundError
     return path
@@ -98,34 +118,52 @@ def source_revision(content: bytes) -> str:
     return sha256(content).hexdigest()
 
 
-def edit_node_source(path: Path, source: str | None, revision: str | None) -> dict[str, str]:
-    content = read_node_source(path)
+def edit_node_source(
+    path: Path, source: str | None, revision: str | None, *, initial: str | None = None,
+) -> dict[str, str]:
+    try:
+        content = read_node_source(path)
+    except FileNotFoundError:
+        if initial is None or path.resolve() != path:
+            raise
+        content = initial.encode("utf-8")
+        current_revision = "missing"
+    else:
+        current_revision = source_revision(content)
     if path.suffix == ".py":
         encoding, _ = detect_encoding(BytesIO(content).readline)
     else:
         encoding = "utf-8-sig" if content.startswith(BOM_UTF8) else "utf-8"
     text = content.decode(encoding)
     if source is None:
-        return {"source": text.replace("\r\n", "\n").replace("\r", "\n"), "revision": source_revision(content)}
+        return {"source": text.replace("\r\n", "\n").replace("\r", "\n"), "revision": current_revision}
 
-    if revision != source_revision(content):
+    if revision != current_revision:
         raise SourceChanged
     if "\r\n" in text and "\n" not in text.replace("\r\n", ""):
         source = source.replace("\r\n", "\n").replace("\n", "\r\n")
     updated = source.encode(encoding)
     if len(updated) > MAX_SOURCE_BYTES:
         raise ValueError("The editor supports source files up to 128 KiB.")
-    if updated == content:
+    if updated == content and current_revision != "missing":
         return {"revision": source_revision(content)}
     with NamedTemporaryFile(dir=path.parent, prefix=".workspace-edit-", delete=False) as stream:
         pending = Path(stream.name)
         try:
             stream.write(updated)
             stream.close()
-            pending.chmod(S_IMODE(path.stat().st_mode))
-            if path.resolve() != path or read_node_source(path) != content:
-                raise SourceChanged
-            pending.replace(path)
+            if current_revision == "missing":
+                if path.resolve() != path:
+                    raise SourceChanged
+                try:
+                    link(pending, path)
+                except FileExistsError:
+                    raise SourceChanged from None
+            else:
+                pending.chmod(S_IMODE(path.stat().st_mode))
+                if path.resolve() != path or read_node_source(path) != content:
+                    raise SourceChanged
+                pending.replace(path)
         finally:
             pending.unlink(missing_ok=True)
     return {"revision": source_revision(updated)}

@@ -38,20 +38,25 @@ First Flow/
     ├── __init__.py
     └── start/
         ├── __init__.py
-        └── entrypoint.py
+        ├── entrypoint.py
+        └── settings.json
 ```
 
 Add one package under `nodes/` per node. Use a `snake_case` folder name, put the callable in its `entrypoint.py`, and keep node-specific helpers beside it. Import the callable in `flow.py` and wire it up with `Step`. The starter includes `nodes` in `tool.workspace.sources` so validation checks every Python file under it, including helpers the flow has yet to import. Workspace initialization also writes an agent guide with the layout.
 
 Double-click a node on the execution graph or select **View files** in the Inspector to browse its package. The editor highlights Python and JSON syntax. Select a file and use **Save** to write changes to disk. If the file changed in another editor, reopen it before saving. Select **Reload flow** to run the saved version. Nodes declared directly in the flow directory display their source file.
 
+Double-click a node under `nodes/` to open its `settings.json` first. The file is a JSON object whose keys match the node's `Step.settings` names. New sheets start with an empty object. For an older node, the editor shows its declared defaults and creates the file when you select **Save**. Omitted entries use the Python defaults. Workspace validates the file on save and project load. Select **Reload flow** to use the new defaults. Values saved from a dashboard take precedence for subsequent runs, and live changes apply for the current run.
+
 Set `track_generator=True` on a step that returns a Python generator for a downstream node to iterate. The producer stays Running while the iterator is open and succeeds when the iterator is exhausted. Its duration covers the iterator's lifetime, including time between values. The Runner closes unfinished generators at the end of the run and records them as Stopped. The consumer can call `publish_output(value)` to show the latest bounded JSON preview during the run. Live previews are ephemeral.
 
 ## Build a dashboard for a workflow or node
 
-Write or have an AI agent generate `index.html`, optionally with `style.css` and `dashboard.js`, in the workflow's `dashboards/workflow/` or `dashboards/nodes/<step-id>/` folder. Use the exact step ID for ordinary folder names, including spaces. Percent-encode reserved path characters and non-ASCII characters using UTF-8, and encode the entire name for `.` and `..` as `%2E` and `%2E%2E`. Workspace automatically loads the companion CSS and JavaScript, so the HTML can contain just your markup. Use inline assets, data images, or browser APIs such as canvas. The browser policy restricts resource loads and navigation and isolates the frame from Workspace's page.
+Write or have an AI agent generate `index.html`, optionally with `style.css`, `setting.js`, and `dashboard.js`, in the workflow's `dashboards/workflow/` or `dashboards/nodes/<step-id>/` folder. Use the exact step ID for ordinary folder names, including spaces. Percent-encode reserved path characters and non-ASCII characters using UTF-8, and encode the entire name for `.` and `..` as `%2E` and `%2E%2E`. Workspace loads the companion files automatically and executes `setting.js` before `dashboard.js`. Use inline assets, data images, or browser APIs such as canvas. The browser policy restricts resource loads and navigation and isolates the frame from Workspace's page.
 
 Open **Visualize** in the workflow toolbar or the node inspector. Choose a saved run or **Live run**. Click **Reload dashboard** to load file changes without restarting the flow. The live view follows runs started in that Flow Editor session. Saved runs remain available after reopening Workspace. See [Telemetry Control Room](../workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md) for a working example.
+
+Drag the dashboard title bar to move it on the graph and drag the lower-right corner to resize it. Focus the title bar and use the arrow keys to move or hold **Shift** with an arrow key to resize. Select **Full screen** to expand the dashboard, then **Exit full screen** to return to its previous position and size.
 
 In `dashboard.js`, call `window.workspaceDashboard.subscribe(render)`. The callback receives a snapshot and the call returns a function to unsubscribe.
 

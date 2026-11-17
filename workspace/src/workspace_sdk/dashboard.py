@@ -18,7 +18,7 @@ def dashboard_assets(root: Path, step_id: str | None) -> dict[str, str]:
         directory = directory / "nodes" / name
 
     assets = {}
-    for name in ("index.html", "style.css", "dashboard.js"):
+    for name in ("index.html", "style.css", "setting.js", "dashboard.js"):
         path = directory / name
         # Only load regular files under the workflow's dashboard directory.
         if path.resolve() != path:

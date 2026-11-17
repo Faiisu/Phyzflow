@@ -28,6 +28,7 @@ WORKSPACE_AGENT_GUIDE = """# Workspace instructions
 
 - Use one Python package per node under the sheet's `nodes/` directory.
 - Put the node callable in `nodes/<node_name>/entrypoint.py` and keep its helpers in that package.
+- Put shared default values for settings declared in `Step.settings` in the node's `settings.json`.
 - Use `flow.py` to declare the inputs, node connections, and output. Keep `nodes` in the sheet's `tool.workspace.sources` list.
 - Run `workspace check` and verify the changed flow with `workspace run` from the sheet directory.
 """
@@ -77,6 +78,7 @@ def create_sheet(root: Path, value: object) -> Path:
             (nodes / "__init__.py", ""),
             (node / "__init__.py", ""),
             (node / "entrypoint.py", STARTER_NODE),
+            (node / "settings.json", "{}\n"),
             (directory / "pyproject.toml", '[tool.workspace]\nsources = ["nodes"]\n'),
             (pending, STARTER_FLOW),
         ):

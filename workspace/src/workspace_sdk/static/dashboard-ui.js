@@ -1,9 +1,10 @@
-const dialog = document.querySelector("#dashboard");
+const board = document.querySelector("#dashboard");
 const heading = document.querySelector("#dashboard-heading");
 const runSelect = document.querySelector("#dashboard-run");
 const preview = document.querySelector("#dashboard-preview");
 const message = document.querySelector("#dashboard-message");
 const reload = document.querySelector("#reload-dashboard");
+const fullscreen = document.querySelector("#fullscreen-dashboard");
 
 const runFields = ["id", "status", "started_at", "finished_at", "duration_ms", "source_version"];
 const nodeFields = ["id", "status", "started_at", "finished_at", "duration_ms", "blocked_by", "metrics", "error_type"];
@@ -48,7 +49,9 @@ function childBridge() {
 
 function frameDocument(assets) {
   const css = JSON.stringify(assets["style.css"] ?? "").replaceAll("<", "\\u003c");
-  const js = JSON.stringify(assets["dashboard.js"] ?? "").replaceAll("<", "\\u003c");
+  const scripts = JSON.stringify(
+    [assets["setting.js"], assets["dashboard.js"]].filter(Boolean),
+  ).replaceAll("<", "\\u003c");
   return `<!doctype html>
     <meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; base-uri 'none'; form-action 'none'">
@@ -59,9 +62,11 @@ function frameDocument(assets) {
       style.textContent = ${css};
       document.head.append(style);
       window.addEventListener("DOMContentLoaded", () => {
-        const script = document.createElement("script");
-        script.textContent = ${js};
-        document.body.append(script);
+        for (const source of ${scripts}) {
+          const script = document.createElement("script");
+          script.textContent = source;
+          document.body.append(script);
+        }
         parent.postMessage({ type: "dashboard-ready" }, "*");
       }, { once: true });
     })();
@@ -77,7 +82,7 @@ async function fetchJSON(path, errorMessage, options) {
   return data;
 }
 
-export function initDashboards(project) {
+export function initDashboards(project, revealBoard) {
   const graph = project.steps.map(step => pick(step, ["id", "dependencies"]));
   const workflowButton = document.querySelector("#visualize-workflow");
   let scope = null;
@@ -90,6 +95,7 @@ export function initDashboards(project) {
   let liveRun = null;
   let following = false;
   let stopped = false;
+  let opener;
   let settings = {};
   const previews = new Map();
   const frames = new Map();
@@ -133,7 +139,7 @@ export function initDashboards(project) {
     try {
       const key = scopeKey();
       const assets = await fetchJSON(`dashboard-assets/${key}`, "Could not load the dashboard.");
-      if (version !== loadVersion || !dialog.open) return;
+      if (version !== loadVersion || board.hidden) return;
       frame = document.createElement("iframe");
       frame.title = heading.textContent;
       // The CSP blocks native submissions. The sandbox permits submit handlers to run.
@@ -209,7 +215,7 @@ export function initDashboards(project) {
     const selection = runVersion;
     try {
       const runs = await fetchJSON("history", "Could not load run history.");
-      if (version !== listVersion || !dialog.open) return;
+      if (version !== listVersion || board.hidden) return;
       if (selection !== runVersion) preferred = runSelect.value;
       runSelect.replaceChildren(new Option("Live run", "live"), ...runs.map(run => new Option(
         `${new Date(run.started_at).toLocaleString()} · ${run.status} · ${run.id.slice(0, 8)}`, run.id,
@@ -230,7 +236,9 @@ export function initDashboards(project) {
     following = preferred === "live";
     settings = {};
     heading.textContent = scope === null ? "Workflow dashboard" : `${scope} dashboard`;
-    if (!dialog.open) dialog.show();
+    if (board.hidden) opener = document.activeElement;
+    board.hidden = false;
+    revealBoard();
     loadDashboard();
     loadSettings(loadVersion);
     listRuns(preferred);
@@ -238,24 +246,41 @@ export function initDashboards(project) {
 
   workflowButton.disabled = false;
   workflowButton.addEventListener("click", () => open(null));
-  document.querySelector("#close-dashboard").addEventListener("click", () => dialog.close());
+  document.querySelector("#close-dashboard").addEventListener("click", () => {
+    closeBoard();
+    opener?.focus({ preventScroll: true });
+  });
+  fullscreen.hidden = !document.fullscreenEnabled;
+  fullscreen.addEventListener("click", async () => {
+    try {
+      if (document.fullscreenElement === board) await document.exitFullscreen();
+      else await board.requestFullscreen();
+    } catch {
+      message.textContent = "Could not change dashboard full screen mode.";
+    }
+  });
+  document.addEventListener("fullscreenchange", () => {
+    fullscreen.textContent = document.fullscreenElement === board ? "Exit full screen" : "Full screen";
+  });
   reload.addEventListener("click", () => {
     loadDashboard();
     loadSettings(loadVersion);
   });
   runSelect.addEventListener("change", selectRun);
-  dialog.addEventListener("close", () => {
-    if (dialog.open) return;
+  function closeBoard() {
+    if (board.hidden) return;
+    if (document.fullscreenElement === board) document.exitFullscreen().catch(() => {});
+    board.hidden = true;
     loadVersion++;
     listVersion++;
     runVersion++;
     ready = false;
     frame = null;
     preview.replaceChildren();
-  });
+  }
 
   window.addEventListener("message", event => {
-    if (!dialog.open || event.origin !== "null" || event.source !== frame?.contentWindow) return;
+    if (board.hidden || event.origin !== "null" || event.source !== frame?.contentWindow) return;
     const data = event.data;
     if (data?.type === "dashboard-ready") {
       ready = true;
@@ -272,13 +297,13 @@ export function initDashboards(project) {
     workflowButton.disabled = stopped;
     if (stopped) {
       frames.clear();
-      dialog.close();
+      closeBoard();
     }
   });
 
   function track(event) {
     if (event.result) {
-      if (dialog.open) listRuns(runSelect.value);
+      if (!board.hidden) listRuns(runSelect.value);
       return;
     }
     if (!event.run_id) {
@@ -296,7 +321,7 @@ export function initDashboards(project) {
       frames.clear();
       metrics.clear();
       settingChanges.clear();
-      if (dialog.open) {
+      if (!board.hidden) {
         runVersion++;
         runSelect.value = "live";
         following = true;

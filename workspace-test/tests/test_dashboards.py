@@ -15,6 +15,70 @@ PIPELINE = "Run Parallel Pipeline"
 
 
 class DashboardTests(unittest.TestCase):
+    def test_dashboard_moves_resizes_and_restores_from_full_screen(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp)
+            project = root / "flows" / "Board"
+            assets = project / "dashboards" / "workflow"
+            assets.mkdir(parents=True)
+            (assets / "index.html").write_text("<h1>Board content</h1>")
+            (project / "flow.py").write_text(
+                'from workspace_sdk import Flow, Output, Step\n'
+                'flow = Flow((), (Step("Start", lambda: 1, {}),), Output("Start"))\n'
+            )
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                sheet = page.frame_locator('iframe[title="Board flow"]')
+                sheet.locator("#visualize-workflow").click()
+                board = sheet.locator("#dashboard")
+                handle = board.locator(".dock-heading")
+                content = sheet.frame_locator("#dashboard-preview iframe").locator("h1")
+                expect(content).to_have_text("Board content")
+                content.evaluate("heading => heading.dataset.loaded = 'once'")
+
+                def drag(locator, dx, dy, *, left=0.5):
+                    box = locator.bounding_box()
+                    x = box["x"] + box["width"] * left
+                    y = box["y"] + box["height"] / 2
+                    page.mouse.move(x, y)
+                    page.mouse.down()
+                    page.mouse.move(x + dx, y + dy, steps=5)
+                    page.mouse.up()
+
+                first = board.bounding_box()
+                drag(handle, -25, -20, left=0.4)
+                moved = board.bounding_box()
+                self.assertAlmostEqual(moved["x"], first["x"] - 25, delta=2)
+                self.assertAlmostEqual(moved["y"], first["y"] - 20, delta=2)
+
+                drag(board.locator("#dashboard-resize"), 20, 35)
+                grown = board.bounding_box()
+                self.assertAlmostEqual(grown["width"], moved["width"] + 20, delta=2)
+                self.assertAlmostEqual(grown["height"], moved["height"] + 35, delta=2)
+
+                sheet.locator("#zoom-in").click()
+                zoomed = board.bounding_box()
+                self.assertAlmostEqual(zoomed["width"], grown["width"] * 1.25, delta=2)
+                drag(handle, 20, -25, left=0.4)
+                moved_while_zoomed = board.bounding_box()
+                self.assertAlmostEqual(moved_while_zoomed["x"], zoomed["x"] + 20, delta=2)
+                self.assertAlmostEqual(moved_while_zoomed["y"], zoomed["y"] - 25, delta=2)
+                sheet.locator("#zoom-reset").click()
+                before_full_screen = board.bounding_box()
+
+                board.get_by_role("button", name="Full screen", exact=True).click()
+                expect(sheet.locator("#dashboard:fullscreen")).to_be_visible()
+                expect(content).to_have_attribute("data-loaded", "once")
+                expect(board.locator("#dashboard-resize")).to_be_hidden()
+                full_screen = board.bounding_box()
+                self.assertGreater(full_screen["width"], before_full_screen["width"])
+                self.assertGreater(full_screen["height"], before_full_screen["height"])
+                board.get_by_role("button", name="Exit full screen").click()
+                expect(sheet.locator("#dashboard:fullscreen")).to_have_count(0)
+                for key, value in board.bounding_box().items():
+                    self.assertAlmostEqual(value, before_full_screen[key], delta=2)
+                expect(content).to_have_attribute("data-loaded", "once")
+
     def test_workflow_and_node_dashboards_follow_runs_and_apply_settings(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve()
@@ -124,8 +188,10 @@ class DashboardTests(unittest.TestCase):
             node.mkdir(parents=True)
             (node / "index.html").write_text('<h1>Original</h1>')
             (node / "style.css").write_text("h1 { color: rgb(7, 8, 9); }")
+            (node / "setting.js").write_text('document.body.dataset.settingLoaded = "true";')
             script = node / "dashboard.js"
             script.write_text("""
+                document.body.dataset.settingLoadedFirst = document.body.dataset.settingLoaded;
                 let isolated = false;
                 try { parent.document.body; } catch { isolated = true; }
                 document.body.dataset.isolated = isolated;
@@ -146,6 +212,7 @@ class DashboardTests(unittest.TestCase):
                 frame = page.frame_locator("#dashboard-preview iframe")
                 expect(frame.locator("h1")).to_have_text("Original")
                 expect(frame.locator("h1")).to_have_css("color", "rgb(7, 8, 9)")
+                expect(frame.locator("body")).to_have_attribute("data-setting-loaded-first", "true")
                 expect(frame.locator("body")).to_have_attribute("data-isolated", "true")
                 expect(frame.locator("body")).to_have_attribute("data-blocked", "true")
                 with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith("chrome-error:")):

@@ -15,7 +15,26 @@
     <h1 id="graph-heading" class="sr-only">Execution graph</h1>
     <div class="graph-scroll" role="region" aria-label="Flow dependencies" tabindex="0">
       <div id="graph-plane">
-        <div id="graph"><canvas aria-hidden="true"></canvas></div>
+        <div id="graph">
+          <canvas aria-hidden="true"></canvas>
+          <section id="dashboard" aria-labelledby="dashboard-heading" hidden>
+            <div class="dock-heading" tabindex="0" aria-label="Move or resize dashboard" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight">
+              <h2 id="dashboard-heading">Dashboard</h2>
+              <div class="dashboard-actions">
+                <button type="button" id="fullscreen-dashboard" class="text-button">Full screen</button>
+                <button type="button" id="close-dashboard" class="close-panel" aria-label="Close dashboard">×</button>
+              </div>
+            </div>
+            <div class="dashboard-controls">
+              <label for="dashboard-run">Run</label>
+              <select id="dashboard-run"><option value="live">Live run</option></select>
+              <button type="button" id="reload-dashboard" class="text-button">Reload dashboard</button>
+            </div>
+            <p id="dashboard-message" class="muted" role="status"></p>
+            <div id="dashboard-preview"></div>
+            <div id="dashboard-resize" aria-hidden="true"></div>
+          </section>
+        </div>
       </div>
     </div>
   </main>
@@ -68,7 +87,7 @@
             <button type="button" id="copy-source" class="text-button">Copy location</button>
           </div>
           <button type="button" id="open-node-files" class="text-button" aria-haspopup="dialog">View files</button>
-          <button type="button" id="visualize-node" class="text-button" aria-haspopup="dialog">Visualize</button>
+          <button type="button" id="visualize-node" class="text-button">Visualize</button>
           <div class="inspector-tabs" role="tablist" aria-label="Node details">
             <button type="button" role="tab" id="inspector-connections-tab" aria-controls="inspector-connections" aria-selected="true">Connections</button>
             <button type="button" role="tab" id="inspector-execution-tab" aria-controls="inspector-execution" aria-selected="false" tabindex="-1">Execution</button>
@@ -134,20 +153,6 @@
       <div id="history-detail" class="dock-content"></div>
     </section>
   </aside>
-
-  <dialog id="dashboard" aria-labelledby="dashboard-heading">
-    <div class="dock-heading">
-      <h2 id="dashboard-heading">Dashboard</h2>
-      <button type="button" id="close-dashboard" class="close-panel" aria-label="Close dashboard">×</button>
-    </div>
-    <div class="dashboard-controls">
-      <label for="dashboard-run">Run</label>
-      <select id="dashboard-run"><option value="live">Live run</option></select>
-      <button type="button" id="reload-dashboard" class="text-button">Reload dashboard</button>
-    </div>
-    <p id="dashboard-message" class="muted" role="status"></p>
-    <div id="dashboard-preview"></div>
-  </dialog>
 
   <dialog id="node-files" aria-labelledby="node-files-heading">
     <div class="dock-heading">

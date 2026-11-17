@@ -56,6 +56,8 @@ class GraphFitTests(unittest.TestCase):
             dialog = page.get_by_role("dialog", name="Run Parallel Pipeline files", exact=True)
             expect(dialog).to_be_hidden()
             node.dblclick()
+            expect(dialog.locator("#node-source-name")).to_have_text("nodes/stream_pipeline/settings.json")
+            dialog.get_by_role("button", name="entrypoint.py", exact=True).click()
             expect(dialog.locator("#node-source-name")).to_contain_text("nodes/stream_pipeline/entrypoint.py")
 
     def test_fit_graph_and_selection_keep_node_source_access(self):
@@ -96,6 +98,8 @@ class GraphFitTests(unittest.TestCase):
                 selected.dblclick()
                 dialog = page.get_by_role("dialog", name="Persist Batch files", exact=True)
                 expect(dialog).to_be_visible()
+                expect(dialog.locator("#node-source-name")).to_have_text("nodes/persist/settings.json")
+                dialog.get_by_role("button", name="entrypoint.py", exact=True).click()
                 expect(dialog.locator("#node-source-name")).to_contain_text("nodes/persist/entrypoint.py")
                 dialog.get_by_role("button", name="Close node files").click()
 
