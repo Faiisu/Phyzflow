@@ -14,6 +14,8 @@ uv pip install --python .venv/bin/python ./workspace
 
 Open the URL printed in the terminal (usually [127.0.0.1:18080](http://127.0.0.1:18080)). Select the **Main** sheet and click **Run flow** to try the sample. Click **+** to create a sheet with its own `flow.py`. After editing Python, use **Reload flow** to refresh that sheet.
 
+To try the dashboards, run `.venv/bin/workspace --project workspace-test/sheets-demo ui` and open [Dashboard Demo](workspace-test/sheets-demo/flows/Dashboard%20Demo/README.md). Click **Visualize** in the toolbar for the overview or in the **Collect readings** node inspector for live progress.
+
 ## Documentation
 
 - [macOS launcher and CLI commands for AI agents](workspace/README.md)

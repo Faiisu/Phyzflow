@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
+
+from .node_settings import NodeSetting
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class Step:
     arguments: dict[str, Input | Output]
     capture_samples: bool = False
     track_generator: bool = False
+    settings: dict[str, NodeSetting] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

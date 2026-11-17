@@ -1,0 +1,20 @@
+:root {
+  color-scheme: dark;
+  background: #191b20;
+  color: #efedf1;
+  font: 14px/1.45 "Instrument Sans", system-ui, sans-serif;
+}
+body { margin: 0; }
+main { padding: 16px 20px; }
+h1 { font-size: 1.25rem; margin: 0; }
+p { color: #aeafb9; margin: 3px 0 12px; }
+#progress { margin: .55rem 0; }
+progress { width: min(50%, 16rem); margin-right: .55rem; accent-color: #71d6fa; }
+dl { display: grid; grid-template-columns: 1fr auto; gap: .25rem 1rem; margin: .65rem 0; max-width: 31rem; }
+dd { margin: 0; color: #71d6fa; font-family: "IBM Plex Mono", monospace; }
+form { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding-top: .7rem; border-top: 1px solid #383b43; }
+input, button { padding: .3rem .5rem; font: inherit; }
+input { width: 3rem; }
+button { background: #2b2e34; color: #efedf1; border: 1px solid #525562; border-radius: 4px; cursor: pointer; }
+button:disabled { opacity: .55; cursor: default; }
+:where(input, button):focus-visible { outline: 2px solid #ff826e; }

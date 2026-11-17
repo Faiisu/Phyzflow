@@ -5,13 +5,16 @@ from inspect import getdoc
 import json
 from pathlib import Path
 import re
+import sqlite3
 from threading import Lock
 from time import perf_counter
 from typing import Any
 
+from .dashboard import ASSET_ROUTE, SETTINGS_ROUTE, dashboard_assets
 from .flow import Flow, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_node_source, node_files, node_source_path
+from .node_settings import LiveSettings, SettingsStore
 from .project import ordered_steps, relative_source, source_location
 from .runner import run
 from .ui_settings import ZoomSettings
@@ -27,7 +30,8 @@ def serve(
     *, zoom: ZoomSettings, on_ready: Callable[[str], None] | None = None,
 ) -> None:
     graph = []
-    for step in ordered_steps(flow):
+    steps = ordered_steps(flow)
+    for step in steps:
         file, line = source_location(step.function)
         graph.append({
             "id": step.id,
@@ -53,6 +57,8 @@ def serve(
     fixture = root / "sample.json"
     default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
     history = RunHistory(root)
+    settings = SettingsStore(root)
+    live_settings = LiveSettings()
     run_lock = Lock()
     source_lock = Lock()
     run_status = "ready"
@@ -76,6 +82,9 @@ def serve(
         def local_request(self):
             return self.headers.get("Host") == f"127.0.0.1:{server.server_port}"
 
+        def scoped_steps(self, scope):
+            return steps if scope == "workflow" else (steps[int(scope)],)
+
         def do_GET(self):
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -84,6 +93,7 @@ def serve(
                 "/": ("index.html", "text/html; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
                 "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
                 "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
             }.get(self.path)
@@ -98,6 +108,41 @@ def serve(
                 self.send_bytes(data, "application/json")
             elif self.path == "/status":
                 self.send_bytes(json.dumps({"status": run_status}).encode(), "application/json")
+            elif match := re.fullmatch(f"/{ASSET_ROUTE}", self.path):
+                scope = match[1]
+                try:
+                    step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
+                    assets = dashboard_assets(root, step_id)
+                except (FileNotFoundError, IndexError):
+                    self.send_source({"error": "Add index.html to this scope's dashboard folder."}, HTTPStatus.NOT_FOUND)
+                except PermissionError:
+                    self.send_source({"error": "Load dashboard assets from files inside the dashboard folder."}, HTTPStatus.FORBIDDEN)
+                except (OSError, RuntimeError, ValueError):
+                    self.send_source({"error": "Dashboard assets must be UTF-8 files up to 256 KiB each."}, HTTPStatus.BAD_REQUEST)
+                else:
+                    self.send_source(assets)
+            elif match := re.fullmatch(f"/{SETTINGS_ROUTE}", self.path):
+                try:
+                    scoped = self.scoped_steps(match[1])
+                    current = settings.snapshot(scoped)
+                except IndexError:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                except (OSError, sqlite3.Error):
+                    self.send_source({"error": "Could not read node settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                else:
+                    self.send_source({
+                        step.id: {
+                            name: {
+                                "type": type(setting.default).__name__,
+                                "value": current[step.id][name],
+                                "minimum": setting.minimum,
+                                "maximum": setting.maximum,
+                                "live": setting.live,
+                            }
+                            for name, setting in step.settings.items()
+                        }
+                        for step in scoped if step.settings
+                    })
             elif match := re.fullmatch(f"/{NODE_FILES_ROUTE}", self.path):
                 index = int(match[1])
                 if index >= len(graph):
@@ -131,7 +176,8 @@ def serve(
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
-            if self.path != "/run" and source_route is None:
+            settings_route = re.fullmatch(f"/{SETTINGS_ROUTE}", self.path)
+            if self.path != "/run" and source_route is None and settings_route is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -150,6 +196,9 @@ def serve(
             if source_route is not None:
                 self.edit_source(int(source_route[1]), inputs)
                 return
+            if settings_route is not None:
+                self.change_setting(settings_route[1], inputs)
+                return
 
             if not run_lock.acquire(blocking=False):
                 self.send_error(HTTPStatus.CONFLICT, "A run is already in progress.")
@@ -162,6 +211,32 @@ def serve(
                 if run_status == "running":
                     run_status = "failed"
                 run_lock.release()
+
+        def change_setting(self, scope, data):
+            try:
+                node, name, mode = data.get("nodeId"), data.get("name"), data.get("mode")
+                if not isinstance(node, str) or not isinstance(name, str):
+                    raise ValueError("Choose an editable node setting.")
+                setting = next((step.settings.get(name) for step in self.scoped_steps(scope) if step.id == node), None)
+                if setting is None:
+                    raise ValueError("This setting is unavailable in the dashboard scope.")
+                value = setting.validate(data.get("value"))
+                if mode == "next":
+                    settings.save(node, name, value)
+                    result = {"status": "saved", "name": name, "value": value}
+                elif mode == "live":
+                    run_id = data.get("runId")
+                    if not setting.live or not isinstance(run_id, str):
+                        raise ValueError("This setting cannot change in the selected run.")
+                    result = live_settings.queue(run_id, node, name, value)
+                else:
+                    raise ValueError("Choose the next run or a live run.")
+            except (IndexError, ValueError) as error:
+                self.send_source({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, sqlite3.Error):
+                self.send_source({"error": "Could not save this setting."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_source(result)
 
         def edit_source(self, index: int, data: dict):
             relative = data.get("path")
@@ -225,13 +300,16 @@ def serve(
                         connected = False
 
             def record_event(event):
-                if "output_preview" not in event:
+                if not event.keys() & {"output_preview", "live_metrics", "setting_change"}:
                     events.append(event)
                 send(event)
 
             try:
                 started = perf_counter()
-                result = run(flow, inputs, record_event, include_metadata=True)
+                result = run(
+                    flow, inputs, record_event, include_metadata=True, live_metrics=True,
+                    settings=settings.snapshot(steps), live_settings=live_settings,
+                )
                 try:
                     history.save(events, loaded_sources, (perf_counter() - started) * 1000)
                 except OSError:
@@ -241,6 +319,9 @@ def serve(
                 run_status = result.status
             except (TypeError, ValueError) as error:
                 send({"error": str(error)})
+                run_status = "failed"
+            except (OSError, sqlite3.Error):
+                send({"error": "Could not read node settings."})
                 run_status = "failed"
 
     with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:

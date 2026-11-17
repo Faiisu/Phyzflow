@@ -25,7 +25,8 @@ from .web import STATIC, serve
 
 VIEW_PATH = re.compile(
     r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view"
-    r"(/(?:app\.css|app\.js|edge-routing\.js|prism-syntax\.js|project|"
+    r"(/(?:app\.css|app\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
+    r"dashboard-(?:assets|settings)/(?:workflow|[0-9]{1,8})|"
     r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
 
@@ -342,7 +343,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 self.create_sheet()
                 return
             view = self.view_route()
-            if view is not None and (view[2] == "/run" or view[2].startswith("/node-source/")):
+            if view is not None and (view[2] == "/run" or view[2].startswith(("/node-source/", "/dashboard-settings/"))):
                 self.forward_view(*view)
                 return
             command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload)", self.path)

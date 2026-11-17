@@ -1,4 +1,5 @@
 import { createEdgeRouter, pointAlongEdge, traceEdge } from "./edge-routing.js";
+import { initDashboards } from "./dashboard-ui.js";
 
 const graph = document.querySelector("#graph");
 const canvas = graph.querySelector("canvas");
@@ -52,6 +53,7 @@ let activeNode = null;
 let stopPhase = null;
 let runInProgress = false;
 let projectReady = false;
+let dashboards;
 let deferredRunError = null;
 let liveOutput = null;
 let graphZoom = 100;
@@ -753,6 +755,7 @@ function inspectNode(step, project) {
   fitSelection.disabled = false;
   const { node, select, outlineSelect, index, duration } = nodes.get(step.id);
   openNodeFiles.onclick = () => showNodeFiles(step.id, index, step.source);
+  document.querySelector("#visualize-node").onclick = () => dashboards.open(step.id);
   node.classList.add("is-selected");
   select.setAttribute("aria-pressed", "true");
   outlineSelect.setAttribute("aria-pressed", "true");
@@ -1004,6 +1007,7 @@ function setStatus(value, label = labels[value]) {
 
 function showMessage(message) {
   if (stopPhase === "stopped") return;
+  if (message.live_metrics || message.setting_change) return;
   if (message.output_preview !== undefined) {
     if (!liveOutput) {
       liveOutput = element("section");
@@ -1287,6 +1291,7 @@ form.addEventListener("submit", async event => {
       buffer = lines.pop();
       for (const line of lines) {
         const message = JSON.parse(line);
+        dashboards.track(message);
         showMessage(message);
         if (message.result || message.error) receivedResult = true;
       }
@@ -1305,6 +1310,7 @@ try {
   const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
+  dashboards = initDashboards(project);
   zoomSettings = project.zoom;
   const name = document.querySelector("#project-name");
   name.textContent = project.name;

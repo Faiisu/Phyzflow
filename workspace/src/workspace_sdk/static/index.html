@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#24262b">
+  <meta http-equiv="Content-Security-Policy" content="frame-src 'none'">
   <title>Workspace | Flow editor</title>
   <link rel="stylesheet" href="app.css">
   <script src="prism-syntax.js" data-manual></script>
@@ -28,6 +29,7 @@
     </div>
     <div class="toolbar-actions">
       <span id="status" role="status" class="badge">Ready</span>
+      <button type="button" id="visualize-workflow" class="text-button" disabled>Visualize</button>
       <button type="submit" form="run-form" class="primary-button" id="run-flow" disabled>
         <span class="play-mark" aria-hidden="true"></span>Run flow
       </button>
@@ -66,6 +68,7 @@
             <button type="button" id="copy-source" class="text-button">Copy location</button>
           </div>
           <button type="button" id="open-node-files" class="text-button" aria-haspopup="dialog">View files</button>
+          <button type="button" id="visualize-node" class="text-button" aria-haspopup="dialog">Visualize</button>
           <div class="inspector-tabs" role="tablist" aria-label="Node details">
             <button type="button" role="tab" id="inspector-connections-tab" aria-controls="inspector-connections" aria-selected="true">Connections</button>
             <button type="button" role="tab" id="inspector-execution-tab" aria-controls="inspector-execution" aria-selected="false" tabindex="-1">Execution</button>
@@ -131,6 +134,20 @@
       <div id="history-detail" class="dock-content"></div>
     </section>
   </aside>
+
+  <dialog id="dashboard" aria-labelledby="dashboard-heading">
+    <div class="dock-heading">
+      <h2 id="dashboard-heading">Dashboard</h2>
+      <button type="button" id="close-dashboard" class="close-panel" aria-label="Close dashboard">×</button>
+    </div>
+    <div class="dashboard-controls">
+      <label for="dashboard-run">Run</label>
+      <select id="dashboard-run"><option value="live">Live run</option></select>
+      <button type="button" id="reload-dashboard" class="text-button">Reload dashboard</button>
+    </div>
+    <p id="dashboard-message" class="muted" role="status"></p>
+    <div id="dashboard-preview"></div>
+  </dialog>
 
   <dialog id="node-files" aria-labelledby="node-files-heading">
     <div class="dock-heading">

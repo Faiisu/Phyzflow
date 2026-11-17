@@ -6,13 +6,15 @@ from nodes.deliver.entrypoint import deliver
 from nodes.persist.entrypoint import persist
 from nodes.reconcile.entrypoint import reconcile
 from nodes.report.entrypoint import report
-from nodes.stream_pipeline.entrypoint import stream_pipeline
+from nodes.stream_pipeline.entrypoint import submissions_per_worker, stream_pipeline
 
 flow = Flow(
     inputs=("config",),
     steps=(
         Step("Create Batch", create_batch, {"config": Input("config")}),
-        Step("Run Parallel Pipeline", stream_pipeline, {"batch": Output("Create Batch")}),
+        Step("Run Parallel Pipeline", stream_pipeline, {"batch": Output("Create Batch")}, settings={
+            "Submissions per worker": submissions_per_worker,
+        }),
         Step("Reconcile Events", reconcile, {
             "batch": Output("Create Batch"),
             "processed": Output("Run Parallel Pipeline"),

@@ -3,9 +3,11 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import traceback
 
+from .node_settings import SettingsStore
 from .project import ValidationError, load_project
 from .runner import run
 from .sheets import create_sheet, discover_flows, initialize_workspace
@@ -127,11 +129,14 @@ def run_command(args, flow, root, loaded_sources):
         inputs = json.loads(args.input)
         if not isinstance(inputs, dict):
             raise ValueError("Run input must be a JSON object.")
-        result = run(flow, inputs, report_event)
+        result = run(flow, inputs, report_event, settings=SettingsStore(root).snapshot(flow.steps))
         if result.status == "failed":
             return 1
         print(json.dumps(result.output, allow_nan=False))
     except (ValueError, TypeError) as error:
         print(f"Run: {error}", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error):
+        print("Run: Could not read node settings.", file=sys.stderr)
         return 1
     return 0

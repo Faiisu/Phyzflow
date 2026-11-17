@@ -7,11 +7,14 @@ from queue import Empty, Full, Queue
 from threading import Event, current_thread
 from time import perf_counter_ns, sleep
 
-from workspace_sdk import record_metrics
+from workspace_sdk import NodeSetting, apply_node_settings, publish_metrics, publish_output, record_metrics
 
 from nodes.create_batch.entrypoint import Batch, Event as Reading
 
 from .scoring import score, watch_sheet_process
+
+
+submissions_per_worker = NodeSetting(2, minimum=1, maximum=8, live=True)
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,8 @@ def stream_pipeline(batch: Batch) -> dict:
     scored = {}
     pending = set()
     peak_inflight = 0
+    next_sample = started
+    limit = batch.cpu_workers * submissions_per_worker.get()
 
     def produce():
         for event in batch.events:
@@ -130,10 +135,22 @@ def stream_pipeline(batch: Batch) -> dict:
         workers.extend(threads.submit(enrich) for _ in range(batch.io_workers))
         try:
             while len(prepared) < len(batch.events) or pending:
+                apply_node_settings()
+                limit = batch.cpu_workers * submissions_per_worker.get()
+                now = perf_counter_ns()
+                if now >= next_sample:
+                    publish_metrics("Pipeline progress", {
+                        "Ready depth": ready.qsize(),
+                        "Pending scores": len(pending),
+                        "Submission limit": limit,
+                        "Scored": len(scored),
+                    })
+                    publish_output({"prepared": len(prepared), "total": len(batch.events)})
+                    next_sample = now + 100_000_000
                 for worker in workers:
                     if worker.done():
                         worker.result()
-                if pending and (len(pending) >= batch.cpu_workers * 2 or
+                if pending and (len(pending) >= limit or
                                 len(prepared) == len(batch.events)):
                     completed, pending = wait(pending, return_when=FIRST_COMPLETED)
                     for future in completed:
@@ -169,7 +186,9 @@ def stream_pipeline(batch: Batch) -> dict:
     record_queue_metrics("Ingress queue", ingress_metrics, ingress_wait)
     record_metrics("I/O workers", {"Peak overlap": io_overlap})
     record_queue_metrics("Scoring queue", scoring_metrics, scoring_wait)
-    record_metrics("CPU workers", {"Peak overlap": cpu_overlap})
+    record_metrics("CPU workers", {
+        "Peak overlap": cpu_overlap, "Submission limit": limit, "Peak in flight": peak_inflight,
+    })
     return {
         "scores": scored,
         "dead_letters": dead_letters,

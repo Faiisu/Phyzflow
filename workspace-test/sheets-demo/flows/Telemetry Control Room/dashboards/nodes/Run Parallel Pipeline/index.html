@@ -1,0 +1,16 @@
+<main>
+  <h1>Parallel pipeline</h1>
+  <p id="pipeline-state" role="status"></p>
+  <section id="progress" aria-label="Live pipeline progress" hidden>
+    <progress id="prepared" aria-label="Prepared readings"></progress>
+    <span id="prepared-label"></span>
+  </section>
+  <dl id="pipeline-metrics"></dl>
+  <form id="setting" hidden>
+    <label for="submissions">Submissions per worker</label>
+    <input type="number" id="submissions" step="1" required>
+    <button type="submit" value="next">Save for next run</button>
+    <button type="submit" value="live" id="apply-live" disabled>Apply to live run</button>
+  </form>
+  <p id="setting-result" role="status"></p>
+</main>

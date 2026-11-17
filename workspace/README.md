@@ -46,3 +46,29 @@ Add one package under `nodes/` per node. Use a `snake_case` folder name, put the
 Double-click a node on the execution graph or select **View files** in the Inspector to browse its package. The editor highlights Python and JSON syntax. Select a file and use **Save** to write changes to disk. If the file changed in another editor, reopen it before saving. Select **Reload flow** to run the saved version. Nodes declared directly in the flow directory display their source file.
 
 Set `track_generator=True` on a step that returns a Python generator for a downstream node to iterate. The producer stays Running while the iterator is open and succeeds when the iterator is exhausted. Its duration covers the iterator's lifetime, including time between values. The Runner closes unfinished generators at the end of the run and records them as Stopped. The consumer can call `publish_output(value)` to show the latest bounded JSON preview during the run. Live previews are ephemeral.
+
+## Build a dashboard for a workflow or node
+
+Write or have an AI agent generate `index.html`, optionally with `style.css` and `dashboard.js`, in the workflow's `dashboards/workflow/` or `dashboards/nodes/<step-id>/` folder. Use the exact step ID for ordinary folder names, including spaces. Percent-encode reserved path characters and non-ASCII characters using UTF-8, and encode the entire name for `.` and `..` as `%2E` and `%2E%2E`. Workspace automatically loads the companion CSS and JavaScript, so the HTML can contain just your markup. Use inline assets, data images, or browser APIs such as canvas. The browser policy restricts resource loads and navigation and isolates the frame from Workspace's page.
+
+Open **Visualize** in the workflow toolbar or the node inspector. Choose a saved run or **Live run**. Click **Reload dashboard** to load file changes without restarting the flow. The live view follows runs started in that Flow Editor session. Saved runs remain available after reopening Workspace. See [Telemetry Control Room](../workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md) for a working example.
+
+In `dashboard.js`, call `window.workspaceDashboard.subscribe(render)`. The callback receives a snapshot and the call returns a function to unsubscribe.
+
+| Field | Contents |
+| --- | --- |
+| `scope`, `nodeId`, `mode` | Workflow or node scope, the selected node ID or null, and live or saved mode. |
+| `graph` | Nodes with `id` and `dependencies`, restricted to the dashboard scope. |
+| `run` | Null before data is available, otherwise the run ID, status, timing and scoped `steps`. Each step can include status, timing, blockers, error type and completed metrics. Saved runs include `source_version`. |
+| `previews`, `liveMetrics` | Latest explicit previews and numeric groups, keyed by node ID. Call `publish_output(value)` or `publish_metrics(group, values)` in the node to send these live snapshots. Use fixed metric labels and publish at a rate appropriate to the workload. Use `record_metrics` to retain a completed measurement in history. |
+| `settings`, `settingChanges` | Editable definitions and saved values keyed by node ID and setting name, plus recent changes from the live run. |
+
+The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a node dashboard on the same run.
+
+### Add a control
+
+Declare a `NodeSetting` in Python, include the same object in the node's `Step.settings` mapping, and call its `get()` method in the node. The default determines the supported value type. Numeric settings can declare a minimum and maximum. Use settings for operational values visible in the dashboard.
+
+On **Save**, call `workspaceDashboard.setSetting(nodeId, name, value, "next")` and await the result. A successful response has status `saved`. Workspace locally persists the value and snapshots saved settings when the next UI or CLI run starts. Invalid requests return `rejected` with a message.
+
+For a setting declared with `live=True`, the dashboard can send mode `"live"` when viewing an active node. The response includes an ID and status `queued`, or a terminal result if the node already responded. Call `apply_node_settings()` in the node at a safe point before reading the setting for subsequent work. Match the response ID to `settingChanges` to display `applied` or `rejected`. An applied change includes the run ID and timestamp and lasts for that run.

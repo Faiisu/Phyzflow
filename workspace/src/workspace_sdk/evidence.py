@@ -8,6 +8,9 @@ from typing import Any, Callable
 active_reasons: ContextVar[list[str] | None] = ContextVar("active_reasons", default=None)
 active_metrics: ContextVar[dict[str, dict[str, int | float]] | None] = ContextVar("active_metrics", default=None)
 active_output: ContextVar[Callable[[str], None] | None] = ContextVar("active_output", default=None)
+active_progress: ContextVar[Callable[[str, dict[str, int | float]], None] | None] = ContextVar(
+    "active_progress", default=None
+)
 
 
 def record_reason(reason: str) -> None:
@@ -24,18 +27,28 @@ def record_metrics(stage: str, values: dict[str, int | float]) -> None:
     entries and keeps only supported numeric values.
     """
     groups = active_metrics.get()
-    if groups is None or type(stage) is not str or not 1 <= len(stage) <= 48 or type(values) is not dict:
+    if groups is None or type(stage) is not str or (stage not in groups and len(groups) >= 8):
         return
-    if stage not in groups and len(groups) >= 8:
-        return
-    metrics = {
+    if metrics := checked_metrics(stage, values):
+        groups[stage] = metrics
+
+
+def checked_metrics(stage: str, values: dict[str, int | float]) -> dict[str, int | float]:
+    if type(stage) is not str or not 1 <= len(stage) <= 48 or type(values) is not dict:
+        return {}
+    return {
         name: value
         for name, value in islice(values.items(), 8)
         if type(name) is str and 1 <= len(name) <= 48
         and ((type(value) is int and value.bit_length() <= 53) or (type(value) is float and isfinite(value)))
     }
-    if metrics:
-        groups[stage] = metrics
+
+
+def publish_metrics(stage: str, values: dict[str, int | float]) -> None:
+    """Publish a numeric progress snapshot to the live UI without saving it."""
+    observer = active_progress.get()
+    if observer is not None and (metrics := checked_metrics(stage, values)):
+        observer(stage, metrics)
 
 
 def publish_output(value: Any) -> None:

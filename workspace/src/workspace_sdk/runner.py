@@ -9,8 +9,9 @@ from types import GeneratorType, ModuleType
 from typing import Any, Callable
 from uuid import uuid4
 
-from .evidence import active_metrics, active_output, active_reasons, capture_sample
+from .evidence import active_metrics, active_output, active_progress, active_reasons, capture_sample
 from .flow import Flow, Input, Output, Step
+from .node_settings import LiveSettings, SettingValue, active_checkpoint, active_settings
 from .project import ordered_steps, source_location
 
 
@@ -76,6 +77,9 @@ def run(
     on_event: Callable[[dict[str, Any]], None] | None = None,
     *,
     include_metadata: bool = False,
+    live_metrics: bool = False,
+    settings: dict[str, dict[str, SettingValue]] | None = None,
+    live_settings: LiveSettings | None = None,
 ) -> RunResult:
     """Execute a flow and emit run and step events to the optional observer."""
     steps = ordered_steps(flow)
@@ -99,6 +103,8 @@ def run(
     input_metadata = {}
     if include_metadata:
         input_metadata["input"] = {name: summarize(inputs[name]) for name in flow.inputs}
+    if live_settings is not None:
+        live_settings.start(run_id)
     emit("running", **input_metadata)
 
     def execute_step(step: Step) -> None:
@@ -122,6 +128,19 @@ def run(
             argument_metadata["input"] = {name: summarize(value) for name, value in arguments.items()}
         if collect_samples:
             argument_metadata["input_sample"] = capture_sample(arguments)
+        values = {
+            setting: (settings or {}).get(step.id, {}).get(name, setting.default)
+            for name, setting in step.settings.items()
+        }
+        controlled = live_settings if any(setting.live for setting in values) else None
+        if controlled is not None:
+            controlled.start_node(step.id)
+
+        def apply_pending():
+            for command in controlled.take(step.id):
+                values[step.settings[command["name"]]] = command["value"]
+                emit("running", step_id=step.id, setting_change={**command, "status": "applied"})
+
         emit("running", **location, **argument_metadata)
         reasons: list[str] | None = [] if include_metadata else None
         metrics: dict[str, dict[str, int | float]] | None = {} if include_metadata else None
@@ -132,12 +151,21 @@ def run(
                 (lambda preview: emit("running", step_id=step.id, output_preview=preview))
                 if on_event is not None else None
             )
+            progress_scope = active_progress.set(
+                (lambda stage, values: emit("running", step_id=step.id, live_metrics={stage: values}))
+                if live_metrics else None
+            )
+            settings_scope = active_settings.set(values or None)
+            checkpoint_scope = active_checkpoint.set(apply_pending if controlled is not None else None)
             try:
                 return function(*args, **kwargs)
             finally:
                 active_reasons.reset(reason_scope)
                 active_metrics.reset(metrics_scope)
                 active_output.reset(output_scope)
+                active_progress.reset(progress_scope)
+                active_settings.reset(settings_scope)
+                active_checkpoint.reset(checkpoint_scope)
 
         context = copy_context() if step.track_generator else None
         started = perf_counter_ns() if on_event is not None else None
@@ -147,6 +175,11 @@ def run(
 
         def finish(status: str, **details: Any) -> None:
             pending_generators.pop(step.id, None)
+            if controlled is not None:
+                for command in controlled.take(step.id, finish=True):
+                    emit("running", step_id=step.id, setting_change={
+                        **command, "status": "rejected", "message": "The node ended before applying this change.",
+                    })
             if reasons:
                 details["reasons"] = reasons.copy()
             if metrics:
@@ -213,11 +246,15 @@ def run(
         outputs[step.id] = tracked_values()
 
     try:
-        for step in steps:
-            execute_step(step)
+        try:
+            for step in steps:
+                execute_step(step)
+        finally:
+            for close in list(pending_generators.values()):
+                close()
     finally:
-        for close in list(pending_generators.values()):
-            close()
+        if live_settings is not None:
+            live_settings.stop()
 
     status = "failed" if unsuccessful else "succeeded"
     output = outputs.get(flow.output.step_id)

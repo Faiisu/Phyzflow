@@ -12,6 +12,7 @@ from types import CodeType
 from typing import Callable
 
 from .flow import Flow, Input, Output, Step
+from .node_settings import NodeSetting
 
 
 class ValidationError(ValueError):
@@ -61,6 +62,13 @@ def ordered_steps(flow: Flow) -> tuple[Step, ...]:
 
 def validate_bindings(flow: Flow, steps: tuple[Step, ...]) -> None:
     for step in steps:
+        if not isinstance(step.settings, dict) or any(
+            type(name) is not str or not 1 <= len(name) <= 64 or not isinstance(setting, NodeSetting)
+            for name, setting in step.settings.items()
+        ):
+            raise ValidationError(f"{step.id} settings must map names to NodeSetting declarations.")
+        if len(set(step.settings.values())) != len(step.settings):
+            raise ValidationError(f"{step.id} must declare a separate NodeSetting for each setting name.")
         for reference in step.arguments.values():
             if isinstance(reference, Input) and reference.name not in flow.inputs:
                 raise ValidationError(f"{step.id} uses unknown flow input {reference.name!r}.")

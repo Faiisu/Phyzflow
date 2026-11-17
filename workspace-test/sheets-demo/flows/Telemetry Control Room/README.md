@@ -11,6 +11,13 @@ shows that run's measurements. The pipeline opts in by calling `workspace_sdk.re
 from the executing node with fixed stage and metric labels and numeric aggregates. It can report
 up to eight groups of eight values per node without enabling input or output samples.
 
+Click **Visualize** in the workflow toolbar to compare node durations. Open **Run Parallel
+Pipeline** from that dashboard to see queue and scoring measurements for the same run. Switch
+to **Live run** to see prepared readings, queue depth, and the current submission limit. Raise
+the input's event count to 1800 to leave time for live controls. Change **Submissions per worker**
+and choose **Apply to live run** to update the limit at the next dispatcher iteration, or choose
+**Save for next run** to persist the value. Use **Reload dashboard** after editing the files.
+
 From the repository root, using the sheet project's installed SDK:
 
 ```sh
@@ -45,7 +52,8 @@ flowchart LR
   process pool for CPU-bound reference-profile scoring. The calibration lookup simulates I/O
   delay. The scorer runs actual pure-Python work with a configurable number of rounds.
   Both queues have an exact depth cap. The dispatcher also caps submitted CPU futures at
-  twice the number of CPU workers. Upstream producers wait when their queue fills.
+  the configured submissions per worker times the number of CPU workers. The default is two
+  submissions per worker. Upstream producers wait when their queue fills.
 - Invalid checksums go straight to dead letters. A simulated transient calibration timeout
   gets up to three attempts with increasing delay. Exhausted attempts also go to dead letters.
 - **Reconcile Events** requires exactly one scored or dead-letter outcome for every unique ID.

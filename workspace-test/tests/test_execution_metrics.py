@@ -32,7 +32,7 @@ class ExecutionMetricsTests(unittest.TestCase):
                     page.locator("#input").fill(json.dumps({"config": {"events": 80, "queue_capacity": capacity}}))
                     page.get_by_role("button", name="Run flow", exact=True).click()
                     expect(page.get_by_role("status")).to_have_text("Succeeded")
-                    result = page.locator("#result pre")
+                    result = page.locator("#result > h3 + pre")
                     expect(result).to_be_visible()
                     report = json.loads(result.inner_text())["pipeline"]
                     page.get_by_role("button", name="Close Run", exact=True).click()
