@@ -6,4 +6,10 @@ build/
 dist/
 /workspace-test/deployment-trial/model.pkl
 
+# Keep custom sheets local. The two shared examples are part of the test workspace.
+/workspace-test/sheets-demo/flows/*
+!/workspace-test/sheets-demo/flows/Live Counter/
+!/workspace-test/sheets-demo/flows/Telemetry Control Room/
+/workspace-test/tests/test_people_detection.py
+
 .DS_Store
