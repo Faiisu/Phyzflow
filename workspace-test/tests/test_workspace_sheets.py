@@ -284,12 +284,19 @@ class WorkspaceSheetTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             self.assertEqual(load_ui_settings(root, None).port, 18080)
+            self.assertEqual(load_ui_settings(root, None).ipv4, "127.0.0.1")
             self.assertEqual(load_ui_settings(root, None).zoom, {"speed": 1.0, "smooth_ms": 160})
             settings = root / "setting.json"
             settings.write_text('{"port": 22080, "zoom":{"speed":2,"smooth_ms":0}}')
             self.assertEqual(load_ui_settings(root, None).port, 22080)
             self.assertEqual(load_ui_settings(root, 0).port, 0)
             self.assertEqual(load_ui_settings(root, 0).zoom, {"speed": 2, "smooth_ms": 0})
+            settings.write_text('{"ipv4": "0.0.0.0"}')
+            self.assertEqual(load_ui_settings(root, None).ipv4, "0.0.0.0")
+            self.assertEqual(load_ui_settings(root, None, ipv4_override="127.0.0.1").ipv4, "127.0.0.1")
+            settings.write_text('{"ipv4": "example.com"}')
+            with self.assertRaisesRegex(ValueError, "IPv4"):
+                load_ui_settings(root, None)
             settings.write_text('{"port": true}')
             with self.assertRaisesRegex(ValueError, "UI port"):
                 load_ui_settings(root, None)
@@ -297,6 +304,26 @@ class WorkspaceSheetTests(unittest.TestCase):
                 settings.write_text(json.dumps({"zoom": zoom}))
                 with self.assertRaisesRegex(ValueError, rf"zoom\.{field}"):
                     load_ui_settings(root, None)
+
+    def test_wildcard_ui_accepts_the_connection_address_and_rejects_other_hosts(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp)
+            (root / "setting.json").write_text('{"ipv4": "0.0.0.0", "port": 0}')
+            (root / "flow.py").write_text(
+                'from workspace_sdk import Flow, Output, Step\n'
+                'flow = Flow((), (Step("Start", lambda: True, {}),), Output("Start"))\n'
+            )
+            for single_flow in (False, True):
+                with self.subTest(single_flow=single_flow), local_ui(root, port=None, single_flow=single_flow) as (url, _):
+                    self.assertTrue(url.startswith("http://127.0.0.1:"))
+                    self.assertTrue(page.request.get(url).ok)
+                    self.assertEqual(page.request.get(url, headers={"Host": "example.com"}).status, 403)
+                    path = "/run" if single_flow else "/flows/0/open"
+                    self.assertEqual(page.request.post(f"{url}{path}", headers={"Origin": "http://example.com"}).status, 403)
+                    response = page.request.post(f"{url}{path}", data={}, headers={"Origin": url})
+                    self.assertTrue(response.ok)
+                    if not single_flow:
+                        self.assertTrue(page.request.get(url + response.json()["url"] + "project").ok)
 
     def test_flows_run_independently_and_stop_only_the_requested_sheet(self):
         with TemporaryDirectory() as temp, browser_page() as page:

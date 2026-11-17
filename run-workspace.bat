@@ -36,5 +36,5 @@ if "%~1"=="" if not exist "%PROJECT_DIR%\pyproject.toml" (
     "%WORKSPACE_CLI%" --project "%PROJECT_DIR%" init --with-main
     if errorlevel 1 exit /b 1
 )
-"%WORKSPACE_CLI%" --project "%PROJECT_DIR%" ui
+"%WORKSPACE_CLI%" --project "%PROJECT_DIR%" ui --prompt
 exit /b %errorlevel%

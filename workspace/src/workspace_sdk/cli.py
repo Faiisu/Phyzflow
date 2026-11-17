@@ -11,7 +11,7 @@ from .node_settings import SettingsStore
 from .project import ValidationError, load_project
 from .runner import run
 from .sheets import create_sheet, discover_flows, initialize_workspace
-from .ui_settings import load_ui_settings
+from .ui_settings import load_ui_settings, prompt_ui_settings
 
 
 def report_event(event):
@@ -41,8 +41,10 @@ def main() -> int:
     init_parser.add_argument("--with-main", action="store_true", help="Include a runnable Main sheet.")
     new_parser = commands.add_parser("new-sheet", help="Create a runnable Python sheet.")
     new_parser.add_argument("name", help="The name of the new sheet.")
-    ui_command = commands.add_parser("ui", help="Serve the Workspace UI on localhost.")
+    ui_command = commands.add_parser("ui", help="Serve the Workspace UI.")
+    ui_command.add_argument("--ipv4", help="Override the IPv4 bind address from setting.json (default: 127.0.0.1).")
     ui_command.add_argument("--port", type=int, help="Override the port from setting.json (default: 18080).")
+    ui_command.add_argument("--prompt", action="store_true", help="Ask for the IPv4 bind address and port before starting.")
     ui_command.add_argument("--single-flow", action="store_true", help="Open the current flow without sheets.")
     deploy_parser = commands.add_parser("deploy", help="Validate and serve a Linux ARM64 build.")
     deploy_parser.add_argument("--sdk", type=Path, required=True, help="Path to the Workspace SDK source.")
@@ -87,7 +89,12 @@ def main() -> int:
 
     if args.command == "ui":
         try:
-            args.ui_settings = load_ui_settings(root, args.port)
+            args.ui_settings = load_ui_settings(root, args.port, ipv4_override=args.ipv4)
+            if args.prompt:
+                args.ui_settings = prompt_ui_settings(args.ui_settings)
+        except KeyboardInterrupt:
+            print(file=sys.stderr)
+            return 130
         except (OSError, ValueError) as error:
             print(f"UI settings: {error}", file=sys.stderr)
             return 1
@@ -121,7 +128,8 @@ def run_command(args, flow, root, loaded_sources):
         from .web import serve
 
         try:
-            serve(flow, root, args.ui_settings.port, loaded_sources, zoom=args.ui_settings.zoom)
+            serve(flow, root, args.ui_settings.port, loaded_sources, zoom=args.ui_settings.zoom,
+                  ipv4=args.ui_settings.ipv4)
         except (OSError, ValueError) as error:
             print(f"Web UI: {error}", file=sys.stderr)
             return 1

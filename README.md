@@ -24,6 +24,8 @@ The launchers create a local `default-workspace/` with a runnable **Main** sheet
 
 Pass a project directory to open another workspace. Open the development sheets explicitly with `./run-workspace.sh workspace-test/sheets-demo` on Linux or `.\run-workspace.bat workspace-test/sheets-demo` in Windows PowerShell.
 
+Both scripts ask for the bind IPv4 address and port on startup. Press Enter at either prompt to use the value from `setting.json` or the built-in default of `127.0.0.1` and port `18080`. Entries apply to the current launch. Use port `0` to pick an available port. Use a non-loopback address or `0.0.0.0` on a trusted network where others may edit the project and run flows.
+
 ### Run the ticket example from the CLI
 
 From the repository root, use [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the Workspace SDK into a Python 3.12 environment.

@@ -29,4 +29,4 @@ workspace_cli="$project_dir/.venv/bin/workspace"
 if [ -z "${1:-}" ] && [ ! -f "$project_dir/pyproject.toml" ]; then
     "$workspace_cli" --project "$project_dir" init --with-main
 fi
-exec "$workspace_cli" --project "$project_dir" ui
+exec "$workspace_cli" --project "$project_dir" ui --prompt

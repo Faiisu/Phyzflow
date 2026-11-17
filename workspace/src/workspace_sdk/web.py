@@ -25,9 +25,21 @@ NODE_FILES_ROUTE = r"node-files/([0-9]{1,8})"
 NODE_SOURCE_ROUTE = r"node-source/([0-9]{1,8})"
 
 
+def matches_ui_host(request: BaseHTTPRequestHandler) -> bool:
+    # Check the accepted socket's destination, including when the listener binds all interfaces.
+    ipv4, port = request.connection.getsockname()
+    host = request.headers.get("Host")
+    return host == f"{ipv4}:{port}" or (port == 80 and host == ipv4)
+
+
+def ui_address(ipv4: str, port: int) -> str:
+    browser_ip = "127.0.0.1" if ipv4 == "0.0.0.0" else ipv4
+    return f"http://{browser_ip}:{port}"
+
+
 def serve(
     flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
-    *, zoom: ZoomSettings, on_ready: Callable[[str], None] | None = None,
+    *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str], None] | None = None,
 ) -> None:
     graph = []
     steps = ordered_steps(flow)
@@ -81,7 +93,7 @@ def serve(
             self.send_bytes(json.dumps(data).encode(), "application/json", status)
 
         def local_request(self):
-            return self.headers.get("Host") == f"127.0.0.1:{server.server_port}"
+            return matches_ui_host(self)
 
         def scoped_steps(self, scope):
             return steps if scope == "workflow" else (steps[int(scope)],)
@@ -338,8 +350,8 @@ def serve(
                 send({"error": "Could not read node settings."})
                 run_status = "failed"
 
-    with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
-        address = f"http://127.0.0.1:{server.server_port}"
+    with ThreadingHTTPServer((ipv4, port), Handler) as server:
+        address = ui_address(ipv4, server.server_port)
         if on_ready is None:
             print(f"Workspace UI: {address}", flush=True)
         else:

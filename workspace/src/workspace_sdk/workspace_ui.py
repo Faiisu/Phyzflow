@@ -20,7 +20,7 @@ from uuid import uuid4
 from .project import ValidationError, load_project
 from .sheets import create_sheet, discover_flows
 from .ui_settings import UISettings, ZoomSettings
-from .web import STATIC, serve
+from .web import STATIC, matches_ui_host, serve, ui_address
 
 
 VIEW_PATH = re.compile(
@@ -176,7 +176,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             self.send_bytes(json.dumps(data).encode(), "application/json", status)
 
         def local_request(self) -> bool:
-            return self.headers.get("Host") == f"127.0.0.1:{server.server_port}"
+            return matches_ui_host(self)
 
         def create_sheet(self) -> None:
             try:
@@ -371,8 +371,8 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 self.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
 
     try:
-        with ThreadingHTTPServer(("127.0.0.1", settings.port), Handler) as server:
-            print(f"Workspace UI: http://127.0.0.1:{server.server_port}", flush=True)
+        with ThreadingHTTPServer((settings.ipv4, settings.port), Handler) as server:
+            print(f"Workspace UI: {ui_address(settings.ipv4, server.server_port)}", flush=True)
             try:
                 server.serve_forever()
             except KeyboardInterrupt:
