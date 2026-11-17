@@ -17,22 +17,22 @@
       <div id="graph-plane">
         <div id="graph">
           <canvas aria-hidden="true"></canvas>
-          <section id="dashboard" aria-labelledby="dashboard-heading" hidden>
-            <div class="dock-heading" tabindex="0" aria-label="Move or resize dashboard" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight">
-              <h2 id="dashboard-heading">Dashboard</h2>
+          <section id="dashboard" class="dashboard-panel" aria-labelledby="dashboard-heading" hidden>
+            <div class="dock-heading" data-dash="handle" tabindex="0" aria-label="Move or resize dashboard" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight">
+              <h2 id="dashboard-heading" data-dash="heading">Dashboard</h2>
               <div class="dashboard-actions">
-                <button type="button" id="fullscreen-dashboard" class="text-button">Full screen</button>
-                <button type="button" id="close-dashboard" class="close-panel" aria-label="Close dashboard">×</button>
+                <button type="button" id="fullscreen-dashboard" data-dash="fullscreen" class="text-button">Full screen</button>
+                <button type="button" id="close-dashboard" data-dash="close" class="close-panel" aria-label="Close dashboard">×</button>
               </div>
             </div>
             <div class="dashboard-controls">
-              <label for="dashboard-run">Run</label>
-              <select id="dashboard-run"><option value="live">Live run</option></select>
-              <button type="button" id="reload-dashboard" class="text-button">Reload dashboard</button>
+              <label data-dash="run-label" for="dashboard-run">Run</label>
+              <select id="dashboard-run" data-dash="run"><option value="live">Live run</option></select>
+              <button type="button" id="reload-dashboard" data-dash="reload" class="text-button">Reload dashboard</button>
             </div>
-            <p id="dashboard-message" class="muted" role="status"></p>
-            <div id="dashboard-preview"></div>
-            <div id="dashboard-resize" aria-hidden="true"></div>
+            <p id="dashboard-message" data-dash="message" class="muted" role="status"></p>
+            <div id="dashboard-preview" data-dash="preview"></div>
+            <div id="dashboard-resize" data-dash="resize" aria-hidden="true"></div>
           </section>
         </div>
       </div>
@@ -48,7 +48,6 @@
     </div>
     <div class="toolbar-actions">
       <span id="status" role="status" class="badge">Ready</span>
-      <button type="button" id="visualize-workflow" class="text-button" disabled>Visualize</button>
       <button type="submit" form="run-form" class="primary-button" id="run-flow" disabled>
         <span class="play-mark" aria-hidden="true"></span>Run flow
       </button>
@@ -56,12 +55,24 @@
     </div>
   </header>
 
-  <aside id="panel-outline" class="overlay outline" aria-labelledby="outline-heading">
-    <div class="dock-heading">
-      <h2 id="outline-heading">Flow outline</h2>
-      <button type="button" class="close-panel" data-close-panel="outline" aria-label="Close Flow outline">×</button>
-    </div>
-    <ul id="outline-list"></ul>
+  <aside class="outline-stack" aria-label="Flow navigation and dashboards">
+    <section id="panel-outline" class="overlay outline" aria-labelledby="outline-heading">
+      <div class="dock-heading">
+        <h2 id="outline-heading">Flow outline</h2>
+        <button type="button" class="close-panel" data-close-panel="outline" aria-label="Close Flow outline">×</button>
+      </div>
+      <ul id="outline-list"></ul>
+    </section>
+
+    <section id="panel-visualize" class="overlay visualize-drawer" aria-labelledby="visualize-heading">
+      <div class="dock-heading">
+        <h2 id="visualize-heading">Visualize</h2>
+        <button type="button" class="close-panel" data-close-panel="visualize" aria-label="Close Visualize">×</button>
+      </div>
+      <div id="visualize-list" class="visualize-list">
+        <p class="muted">Loading panels…</p>
+      </div>
+    </section>
   </aside>
 
   <aside class="overlay-stack" aria-label="Workspace tools">
@@ -118,7 +129,7 @@
       </div>
     </section>
 
-    <section id="panel-run" class="overlay" aria-labelledby="run-heading" hidden>
+    <section id="panel-run" class="overlay" aria-labelledby="run-heading">
       <div class="dock-heading">
         <h2 id="run-heading">Run</h2>
         <button type="button" class="close-panel" data-close-panel="run" aria-label="Close Run">×</button>
@@ -141,7 +152,7 @@
       </section>
     </section>
 
-    <section id="panel-history" class="overlay" aria-labelledby="history-heading" hidden>
+    <section id="panel-history" class="overlay" aria-labelledby="history-heading">
       <div class="dock-heading">
         <h2 id="history-heading">Run history</h2>
         <button type="button" class="close-panel" data-close-panel="history" aria-label="Close History">×</button>
@@ -188,9 +199,10 @@
     <div class="overlay panel-menu" role="group" aria-label="Panel visibility">
       <button type="button" aria-controls="panel-toolbar" aria-pressed="true">Toolbar</button>
       <button type="button" aria-controls="panel-outline" aria-pressed="true">Flow outline</button>
+      <button type="button" aria-controls="panel-visualize" aria-pressed="true">Visualize</button>
       <button type="button" aria-controls="panel-inspector" aria-pressed="true">Inspector</button>
-      <button type="button" aria-controls="panel-run" aria-pressed="false">Run</button>
-      <button type="button" aria-controls="panel-history" aria-pressed="false">History</button>
+      <button type="button" aria-controls="panel-run" aria-pressed="true">Run</button>
+      <button type="button" aria-controls="panel-history" aria-pressed="true">History</button>
       <button type="button" aria-controls="panel-zoom" aria-pressed="true">Zoom controls</button>
     </div>
   </details>

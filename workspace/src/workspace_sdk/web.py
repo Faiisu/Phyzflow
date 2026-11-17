@@ -10,7 +10,7 @@ from threading import Lock
 from time import perf_counter
 from typing import Any
 
-from .dashboard import ASSET_ROUTE, SETTINGS_ROUTE, dashboard_assets
+from .dashboard import ASSET_ROUTE, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels
 from .flow import Flow, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
@@ -121,11 +121,19 @@ def serve(
                 self.send_bytes(data, "application/json")
             elif self.path == "/status":
                 self.send_bytes(json.dumps({"status": run_status}).encode(), "application/json")
-            elif match := re.fullmatch(f"/{ASSET_ROUTE}", self.path):
+            elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):
                 scope = match[1]
                 try:
                     step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
-                    assets = dashboard_assets(root, step_id)
+                    self.send_source({"panels": dashboard_panels(root, step_id)})
+                except IndexError:
+                    self.send_source({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
+            elif match := re.fullmatch(f"/{ASSET_ROUTE}", self.path):
+                scope = match[1]
+                panel_id = match[2]
+                try:
+                    step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
+                    assets = dashboard_assets(root, step_id, panel_id)
                 except (FileNotFoundError, IndexError):
                     self.send_source({"error": "Add index.html to this scope's dashboard folder."}, HTTPStatus.NOT_FOUND)
                 except PermissionError:

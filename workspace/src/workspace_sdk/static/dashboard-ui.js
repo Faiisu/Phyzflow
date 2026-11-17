@@ -1,10 +1,4 @@
-const board = document.querySelector("#dashboard");
-const heading = document.querySelector("#dashboard-heading");
-const runSelect = document.querySelector("#dashboard-run");
-const preview = document.querySelector("#dashboard-preview");
-const message = document.querySelector("#dashboard-message");
-const reload = document.querySelector("#reload-dashboard");
-const fullscreen = document.querySelector("#fullscreen-dashboard");
+const primaryBoard = document.querySelector("#dashboard");
 
 const runFields = ["id", "status", "started_at", "finished_at", "duration_ms", "source_version"];
 const nodeFields = ["id", "status", "started_at", "finished_at", "duration_ms", "blocked_by", "metrics", "error_type"];
@@ -26,6 +20,9 @@ function childBridge() {
     },
     openNode(nodeId) {
       parent.postMessage({ type: "dashboard-open-node", nodeId }, "*");
+    },
+    openPanel(panelId, nodeId = null) {
+      parent.postMessage({ type: "dashboard-open-panel", panelId, nodeId }, "*");
     },
     setSetting(nodeId, name, value, mode = "next") {
       const id = ++request;
@@ -84,84 +81,17 @@ async function fetchJSON(path, errorMessage, options) {
 
 export function initDashboards(project, revealBoard) {
   const graph = project.steps.map(step => pick(step, ["id", "dependencies"]));
-  const workflowButton = document.querySelector("#visualize-workflow");
-  let scope = null;
-  let frame;
-  let ready = false;
-  let loadVersion = 0;
-  let listVersion = 0;
-  let runVersion = 0;
-  let savedRun = null;
   let liveRun = null;
-  let following = false;
   let stopped = false;
-  let opener;
-  let settings = {};
+  let cloneCounter = 0;
   const previews = new Map();
   const frames = new Map();
   const metrics = new Map();
   const settingChanges = new Map();
+  const activePanels = new Set();
 
-  function scopeKey() {
+  function scopeKey(scope) {
     return scope === null ? "workflow" : graph.findIndex(node => node.id === scope);
-  }
-
-  function sendSnapshot() {
-    if (!ready) return;
-    const run = following ? liveRun : savedRun;
-    const inScope = id => scope === null || id === scope;
-    frame.contentWindow.postMessage({
-      type: "dashboard-data",
-      snapshot: {
-        scope: scope === null ? "workflow" : "node",
-        nodeId: scope,
-        mode: following ? "live" : "saved",
-        graph: graph.filter(node => inScope(node.id)),
-        run: run && {
-          ...pick(run, runFields),
-          steps: run.steps.filter(node => inScope(node.id)).map(node => pick(node, nodeFields)),
-        },
-        previews: following ? Object.fromEntries([...previews].filter(([id]) => inScope(id))) : {},
-        liveFrames: following ? Object.fromEntries([...frames].filter(([id]) => inScope(id))) : {},
-        liveMetrics: following ? Object.fromEntries([...metrics].filter(([id]) => inScope(id))) : {},
-        settings,
-        settingChanges: following ? [...settingChanges.values()].filter(change => inScope(change.nodeId)) : [],
-      },
-    }, "*");
-  }
-
-  async function loadDashboard() {
-    const version = ++loadVersion;
-    ready = false;
-    frame = null;
-    preview.replaceChildren();
-    message.textContent = "Loading dashboard…";
-    try {
-      const key = scopeKey();
-      const assets = await fetchJSON(`dashboard-assets/${key}`, "Could not load the dashboard.");
-      if (version !== loadVersion || board.hidden) return;
-      frame = document.createElement("iframe");
-      frame.title = heading.textContent;
-      // The CSP blocks native submissions. The sandbox permits submit handlers to run.
-      frame.setAttribute("sandbox", "allow-scripts allow-forms");
-      frame.referrerPolicy = "no-referrer";
-      frame.srcdoc = frameDocument(assets);
-      preview.replaceChildren(frame);
-      message.textContent = "";
-    } catch (error) {
-      if (version === loadVersion) message.textContent = error.message;
-    }
-  }
-
-  async function loadSettings(version) {
-    try {
-      const current = await fetchJSON(`dashboard-settings/${scopeKey()}`, "Could not load dashboard settings.");
-      if (version !== loadVersion) return;
-      settings = current;
-      sendSnapshot();
-    } catch (error) {
-      if (version === loadVersion) message.textContent = error.message;
-    }
   }
 
   function rememberChange(nodeId, change) {
@@ -169,148 +99,426 @@ export function initDashboards(project, revealBoard) {
     if (settingChanges.size > 64) settingChanges.delete(settingChanges.keys().next().value);
   }
 
-  async function changeSetting(data, sender) {
-    const { id, nodeId, name, mode, value } = data;
-    if (!Number.isSafeInteger(id)) return;
-    const runId = mode === "live" && following ? liveRun?.id : null;
-    let result;
-    try {
-      result = await fetchJSON(`dashboard-settings/${scopeKey()}`, "Could not change this setting.", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodeId, name, mode, value, runId }),
-      });
-      if (result.status === "queued" && liveRun?.id === runId) {
-        if (!settingChanges.has(result.id)) rememberChange(nodeId, result);
-        result = settingChanges.get(result.id);
+  function createPanelElement() {
+    if (primaryBoard.hidden && !activePanels.has(primaryBoard._panelInstance)) {
+      return { element: primaryBoard, isPrimary: true };
+    }
+    const id = ++cloneCounter;
+    const element = primaryBoard.cloneNode(true);
+    element.removeAttribute("id");
+    for (const child of element.querySelectorAll("[id]")) child.removeAttribute("id");
+    const headingId = `dashboard-heading-${id}`;
+    const runId = `dashboard-run-${id}`;
+    element.querySelector('[data-dash="heading"]').id = headingId;
+    element.setAttribute("aria-labelledby", headingId);
+    element.querySelector('[data-dash="run"]').id = runId;
+    element.querySelector('[data-dash="run-label"]').setAttribute("for", runId);
+    element.style.left = "";
+    element.style.top = "";
+    element.style.width = "";
+    element.style.height = "";
+    primaryBoard.parentElement.append(element);
+    return { element, isPrimary: false };
+  }
+
+  function createPanel() {
+    const { element, isPrimary } = createPanelElement();
+    const heading = element.querySelector('[data-dash="heading"]');
+    const runSelect = element.querySelector('[data-dash="run"]');
+    const preview = element.querySelector('[data-dash="preview"]');
+    const message = element.querySelector('[data-dash="message"]');
+    const reload = element.querySelector('[data-dash="reload"]');
+    const fullscreen = element.querySelector('[data-dash="fullscreen"]');
+    const closeBtn = element.querySelector('[data-dash="close"]');
+
+    const panel = {
+      element,
+      isPrimary,
+      scope: null,
+      panelId: "default",
+      panelLabel: "",
+      frame: null,
+      ready: false,
+      loadVersion: 0,
+      listVersion: 0,
+      runVersion: 0,
+      savedRun: null,
+      following: false,
+      settings: {},
+      opener: null,
+    };
+    if (isPrimary) primaryBoard._panelInstance = panel;
+
+    function updateHeading() {
+      const base = panel.scope === null ? "Workflow dashboard" : `${panel.scope} dashboard`;
+      heading.textContent = panel.panelId && panel.panelId !== "default"
+        ? `${base} · ${panel.panelLabel || panel.panelId}`
+        : base;
+    }
+
+    panel.sendSnapshot = function sendSnapshot() {
+      if (!panel.ready || !panel.frame?.contentWindow) return;
+      const run = panel.following ? liveRun : panel.savedRun;
+      const inScope = id => panel.scope === null || id === panel.scope;
+      panel.frame.contentWindow.postMessage({
+        type: "dashboard-data",
+        snapshot: {
+          scope: panel.scope === null ? "workflow" : "node",
+          nodeId: panel.scope,
+          panelId: panel.panelId,
+          mode: panel.following ? "live" : "saved",
+          graph: graph.filter(node => inScope(node.id)),
+          run: run && {
+            ...pick(run, runFields),
+            steps: run.steps.filter(node => inScope(node.id)).map(node => pick(node, nodeFields)),
+          },
+          previews: panel.following ? Object.fromEntries([...previews].filter(([id]) => inScope(id))) : {},
+          liveFrames: panel.following ? Object.fromEntries([...frames].filter(([id]) => inScope(id))) : {},
+          liveMetrics: panel.following ? Object.fromEntries([...metrics].filter(([id]) => inScope(id))) : {},
+          settings: panel.settings,
+          settingChanges: panel.following ? [...settingChanges.values()].filter(change => inScope(change.nodeId)) : [],
+        },
+      }, "*");
+    };
+
+    panel.loadDashboard = async function loadDashboard() {
+      const version = ++panel.loadVersion;
+      panel.ready = false;
+      panel.frame = null;
+      preview.replaceChildren();
+      message.textContent = "Loading dashboard…";
+      try {
+        const key = scopeKey(panel.scope);
+        const assetPath = panel.panelId && panel.panelId !== "default"
+          ? `dashboard-assets/${key}/${encodeURIComponent(panel.panelId)}`
+          : `dashboard-assets/${key}`;
+        const assets = await fetchJSON(assetPath, "Could not load the dashboard.");
+        if (version !== panel.loadVersion || element.hidden) return;
+        const frame = document.createElement("iframe");
+        frame.title = heading.textContent;
+        // The CSP blocks native submissions. The sandbox permits submit handlers to run.
+        frame.setAttribute("sandbox", "allow-scripts allow-forms");
+        frame.referrerPolicy = "no-referrer";
+        frame.srcdoc = frameDocument(assets);
+        panel.frame = frame;
+        preview.replaceChildren(frame);
+        message.textContent = "";
+      } catch (error) {
+        if (version === panel.loadVersion) message.textContent = error.message;
       }
-      if (result.status === "saved") await loadSettings(loadVersion);
-    } catch (error) {
-      result = { status: "rejected", message: error.message };
-    }
-    if (sender !== frame?.contentWindow) return;
-    sender.postMessage({ type: "dashboard-setting-result", id, result }, "*");
-    sendSnapshot();
+    };
+
+    panel.loadSettings = async function loadSettings(version) {
+      try {
+        const current = await fetchJSON(`dashboard-settings/${scopeKey(panel.scope)}`, "Could not load dashboard settings.");
+        if (version !== panel.loadVersion) return;
+        panel.settings = current;
+        panel.sendSnapshot();
+      } catch (error) {
+        if (version === panel.loadVersion) message.textContent = error.message;
+      }
+    };
+
+    panel.changeSetting = async function changeSetting(data, sender) {
+      const { id, nodeId, name, mode, value } = data;
+      if (!Number.isSafeInteger(id)) return;
+      const runId = mode === "live" && panel.following ? liveRun?.id : null;
+      let result;
+      try {
+        result = await fetchJSON(`dashboard-settings/${scopeKey(panel.scope)}`, "Could not change this setting.", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nodeId, name, mode, value, runId }),
+        });
+        if (result.status === "queued" && liveRun?.id === runId) {
+          if (!settingChanges.has(result.id)) rememberChange(nodeId, result);
+          result = settingChanges.get(result.id);
+        }
+        if (result.status === "saved") {
+          await Promise.all([...activePanels].map(item => item.loadSettings(item.loadVersion)));
+        }
+      } catch (error) {
+        result = { status: "rejected", message: error.message };
+      }
+      if (sender !== panel.frame?.contentWindow) return;
+      sender.postMessage({ type: "dashboard-setting-result", id, result }, "*");
+      panel.sendSnapshot();
+    };
+
+    panel.selectRun = async function selectRun() {
+      const version = ++panel.runVersion;
+      const id = runSelect.value;
+      panel.following = id === "live";
+      panel.savedRun = null;
+      panel.sendSnapshot();
+      if (!id || panel.following) return;
+      try {
+        const run = await fetchJSON(`history/${id}`, "Could not load this run.");
+        if (version !== panel.runVersion) return;
+        panel.savedRun = run;
+        panel.sendSnapshot();
+      } catch (error) {
+        if (version === panel.runVersion) message.textContent = error.message;
+      }
+    };
+
+    panel.listRuns = async function listRuns(preferred) {
+      const version = ++panel.listVersion;
+      const selection = panel.runVersion;
+      try {
+        const runs = await fetchJSON("history", "Could not load run history.");
+        if (version !== panel.listVersion || element.hidden) return;
+        if (selection !== panel.runVersion) preferred = runSelect.value;
+        runSelect.replaceChildren(new Option("Live run", "live"), ...runs.map(run => new Option(
+          `${new Date(run.started_at).toLocaleString()} · ${run.status} · ${run.id.slice(0, 8)}`, run.id,
+        )));
+        runSelect.value = (preferred === "live" || runs.some(run => run.id === preferred))
+          ? preferred : runs[0]?.id ?? "live";
+        await panel.selectRun();
+      } catch (error) {
+        if (version === panel.listVersion) message.textContent = error.message;
+      }
+    };
+
+    panel.setScope = function setScope(nodeId, panelId = "default", panelLabel = "", preferred = liveRun?.status === "running" ? "live" : null, staggerIndex = 0) {
+      panel.scope = nodeId;
+      panel.panelId = panelId;
+      panel.panelLabel = panelLabel;
+      panel.runVersion++;
+      panel.savedRun = null;
+      panel.following = preferred === "live";
+      panel.settings = {};
+      updateHeading();
+      if (element.hidden) panel.opener = document.activeElement;
+      element.hidden = false;
+      activePanels.add(panel);
+      revealBoard(element, staggerIndex);
+      panel.loadDashboard();
+      panel.loadSettings(panel.loadVersion);
+      panel.listRuns(preferred);
+    };
+
+    panel.close = function close() {
+      if (element.hidden && !activePanels.has(panel)) return;
+      if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
+      panel.loadVersion++;
+      panel.listVersion++;
+      panel.runVersion++;
+      panel.ready = false;
+      panel.frame = null;
+      preview.replaceChildren();
+      activePanels.delete(panel);
+      if (panel.isPrimary) {
+        element.hidden = true;
+      } else {
+        element.remove();
+      }
+      syncVisualizeDrawer();
+    };
+
+    const onFullscreenChange = () => {
+      if (!element.isConnected) {
+        document.removeEventListener("fullscreenchange", onFullscreenChange);
+        return;
+      }
+      fullscreen.textContent = document.fullscreenElement === element ? "Exit full screen" : "Full screen";
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+
+    closeBtn.addEventListener("click", () => {
+      const opener = panel.opener;
+      panel.close();
+      opener?.focus({ preventScroll: true });
+    });
+
+    fullscreen.hidden = !document.fullscreenEnabled;
+    fullscreen.addEventListener("click", async () => {
+      try {
+        if (document.fullscreenElement === element) await document.exitFullscreen();
+        else await element.requestFullscreen();
+      } catch {
+        message.textContent = "Could not change dashboard full screen mode.";
+      }
+    });
+
+    reload.addEventListener("click", () => {
+      panel.loadDashboard();
+      panel.loadSettings(panel.loadVersion);
+    });
+    runSelect.addEventListener("change", () => panel.selectRun());
+
+    return panel;
   }
 
-  async function selectRun() {
-    const version = ++runVersion;
-    const id = runSelect.value;
-    following = id === "live";
-    savedRun = null;
-    sendSnapshot();
-    if (!id || following) return;
-    try {
-      const run = await fetchJSON(`history/${id}`, "Could not load this run.");
-      if (version !== runVersion) return;
-      savedRun = run;
-      sendSnapshot();
-    } catch (error) {
-      if (version === runVersion) message.textContent = error.message;
+  function findPanel(nodeId, panelId) {
+    return [...activePanels].find(p => p.scope === nodeId && p.panelId === panelId);
+  }
+
+  function syncVisualizeDrawer() {
+    const list = document.querySelector("#visualize-list");
+    if (!list) return;
+    for (const button of list.querySelectorAll("button[data-vis-panel]")) {
+      const nodeId = button.dataset.visNode === "" ? null : button.dataset.visNode;
+      const panelId = button.dataset.visPanel;
+      button.setAttribute("aria-pressed", String(Boolean(findPanel(nodeId, panelId))));
     }
   }
 
-  async function listRuns(preferred) {
-    const version = ++listVersion;
-    const selection = runVersion;
-    try {
-      const runs = await fetchJSON("history", "Could not load run history.");
-      if (version !== listVersion || board.hidden) return;
-      if (selection !== runVersion) preferred = runSelect.value;
-      runSelect.replaceChildren(new Option("Live run", "live"), ...runs.map(run => new Option(
-        `${new Date(run.started_at).toLocaleString()} · ${run.status} · ${run.id.slice(0, 8)}`, run.id,
-      )));
-      runSelect.value = (preferred === "live" || runs.some(run => run.id === preferred))
-        ? preferred : runs[0]?.id ?? "live";
-      await selectRun();
-    } catch (error) {
-      if (version === listVersion) message.textContent = error.message;
-    }
-  }
-
-  function open(nodeId, preferred = liveRun?.status === "running" ? "live" : null) {
+  function openSinglePanel(nodeId, panelId = "default", panelLabel = "", preferred = liveRun?.status === "running" ? "live" : null, staggerIndex = 0) {
     if (stopped) return;
-    scope = nodeId;
-    runVersion++;
-    savedRun = null;
-    following = preferred === "live";
-    settings = {};
-    heading.textContent = scope === null ? "Workflow dashboard" : `${scope} dashboard`;
-    if (board.hidden) opener = document.activeElement;
-    board.hidden = false;
-    revealBoard();
-    loadDashboard();
-    loadSettings(loadVersion);
-    listRuns(preferred);
+    const existing = findPanel(nodeId, panelId);
+    if (existing) {
+      revealBoard(existing.element, 0);
+      if (preferred) existing.listRuns(preferred);
+      syncVisualizeDrawer();
+      return existing;
+    }
+    const panel = createPanel();
+    panel.setScope(nodeId, panelId, panelLabel, preferred, staggerIndex);
+    syncVisualizeDrawer();
+    return panel;
   }
 
-  workflowButton.disabled = false;
-  workflowButton.addEventListener("click", () => open(null));
-  document.querySelector("#close-dashboard").addEventListener("click", () => {
-    closeBoard();
-    opener?.focus({ preventScroll: true });
-  });
-  fullscreen.hidden = !document.fullscreenEnabled;
-  fullscreen.addEventListener("click", async () => {
-    try {
-      if (document.fullscreenElement === board) await document.exitFullscreen();
-      else await board.requestFullscreen();
-    } catch {
-      message.textContent = "Could not change dashboard full screen mode.";
+  async function refreshVisualizeList() {
+    const list = document.querySelector("#visualize-list");
+    if (!list) return;
+    const scopes = [
+      { nodeId: null, key: "workflow", title: "Workflow" },
+      ...graph.map((node, index) => ({ nodeId: node.id, key: String(index), title: node.id })),
+    ];
+    const results = await Promise.allSettled(
+      scopes.map(async item => {
+        const data = await fetchJSON(`dashboard-panels/${item.key}`, "Could not list panels.");
+        return { ...item, panels: data.panels ?? [] };
+      }),
+    );
+    const groups = results
+      .filter(res => res.status === "fulfilled" && res.value.panels.length > 0)
+      .map(res => res.value);
+
+    if (!groups.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No dashboards found in this flow.";
+      list.replaceChildren(empty);
+      return;
     }
-  });
-  document.addEventListener("fullscreenchange", () => {
-    fullscreen.textContent = document.fullscreenElement === board ? "Exit full screen" : "Full screen";
-  });
-  reload.addEventListener("click", () => {
-    loadDashboard();
-    loadSettings(loadVersion);
-  });
-  runSelect.addEventListener("change", selectRun);
-  function closeBoard() {
-    if (board.hidden) return;
-    if (document.fullscreenElement === board) document.exitFullscreen().catch(() => {});
-    board.hidden = true;
-    loadVersion++;
-    listVersion++;
-    runVersion++;
-    ready = false;
-    frame = null;
-    preview.replaceChildren();
+
+    const fragment = document.createDocumentFragment();
+    let itemIndex = 0;
+    for (const group of groups) {
+      const heading = document.createElement("div");
+      heading.className = "visualize-group-title";
+      heading.textContent = group.title;
+      fragment.append(heading);
+
+      for (const entry of group.panels) {
+        itemIndex += 1;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "outline-node";
+        btn.dataset.visNode = group.nodeId ?? "";
+        btn.dataset.visPanel = entry.id;
+        btn.setAttribute("aria-pressed", String(Boolean(findPanel(group.nodeId, entry.id))));
+
+        const idx = document.createElement("span");
+        idx.className = "node-index";
+        idx.textContent = String(itemIndex).padStart(2, "0");
+
+        const label = document.createElement("span");
+        label.textContent = entry.label || entry.id;
+
+        btn.append(idx, label);
+        btn.addEventListener("click", () => {
+          const current = findPanel(group.nodeId, entry.id);
+          if (current) {
+            current.close();
+          } else {
+            openSinglePanel(group.nodeId, entry.id, entry.label, undefined, activePanels.size);
+          }
+        });
+        fragment.append(btn);
+      }
+    }
+    list.replaceChildren(fragment);
   }
+
+  async function open(nodeId, preferred = liveRun?.status === "running" ? "live" : null, panelId = null) {
+    if (stopped) return;
+    if (panelId !== null) {
+      openSinglePanel(nodeId, panelId, "", preferred, activePanels.size);
+      return;
+    }
+    let panels = [];
+    try {
+      const data = await fetchJSON(`dashboard-panels/${scopeKey(nodeId)}`, "Could not list dashboard panels.");
+      panels = data.panels ?? [];
+    } catch {
+      panels = [];
+    }
+    if (panels.length <= 1) {
+      const first = panels[0] ?? { id: "default", label: "" };
+      openSinglePanel(nodeId, first.id, first.label, preferred, activePanels.size);
+      return;
+    }
+    const baseOffset = activePanels.size;
+    panels.forEach((entry, idx) => {
+      openSinglePanel(nodeId, entry.id, entry.label, preferred, baseOffset + idx);
+    });
+  }
+
+  const visualizeDrawer = document.querySelector("#panel-visualize");
+  const visualizeToggle = document.querySelector('#panel-switcher button[aria-controls="panel-visualize"]');
+
+  if (visualizeDrawer && !visualizeDrawer.hidden) {
+    refreshVisualizeList();
+  }
+  visualizeToggle?.addEventListener("click", () => {
+    if (visualizeDrawer && !visualizeDrawer.hidden) refreshVisualizeList();
+  });
 
   window.addEventListener("message", event => {
-    if (board.hidden || event.origin !== "null" || event.source !== frame?.contentWindow) return;
+    if (event.origin !== "null") return;
+    const panel = [...activePanels].find(p => p.frame?.contentWindow === event.source);
+    if (!panel || panel.element.hidden) return;
     const data = event.data;
     if (data?.type === "dashboard-ready") {
-      ready = true;
-      sendSnapshot();
-    } else if (data?.type === "dashboard-open-node" && scope === null && graph.some(node => node.id === data.nodeId)) {
-      open(data.nodeId, runSelect.value);
+      panel.ready = true;
+      panel.sendSnapshot();
+    } else if (data?.type === "dashboard-open-node" && panel.scope === null && graph.some(node => node.id === data.nodeId)) {
+      panel.setScope(data.nodeId, "default", "", panel.element.querySelector('[data-dash="run"]').value);
+    } else if (data?.type === "dashboard-open-panel" && typeof data.panelId === "string") {
+      const targetNode = data.nodeId ?? null;
+      if (targetNode === null || graph.some(node => node.id === targetNode)) {
+        openSinglePanel(targetNode, data.panelId, "", panel.element.querySelector('[data-dash="run"]').value, activePanels.size);
+      }
     } else if (data?.type === "dashboard-set-setting") {
-      changeSetting(data, event.source);
+      panel.changeSetting(data, event.source);
     }
   });
 
   window.addEventListener("workspace-stop", event => {
     stopped = event.detail.phase === "stopped";
-    workflowButton.disabled = stopped;
     if (stopped) {
       frames.clear();
-      closeBoard();
+      for (const panel of [...activePanels]) panel.close();
     }
   });
 
   function track(event) {
     if (event.result) {
-      if (!board.hidden) listRuns(runSelect.value);
+      for (const panel of activePanels) {
+        panel.listRuns(panel.element.querySelector('[data-dash="run"]').value);
+      }
       return;
     }
     if (!event.run_id) {
       if (event.error && liveRun?.status === "running") {
         liveRun.status = "failed";
         frames.clear();
-        if (following) sendSnapshot();
+        for (const panel of activePanels) {
+          if (panel.following) panel.sendSnapshot();
+        }
       }
       return;
     }
@@ -321,10 +529,10 @@ export function initDashboards(project, revealBoard) {
       frames.clear();
       metrics.clear();
       settingChanges.clear();
-      if (!board.hidden) {
-        runVersion++;
-        runSelect.value = "live";
-        following = true;
+      for (const panel of activePanels) {
+        panel.runVersion++;
+        panel.element.querySelector('[data-dash="run"]').value = "live";
+        panel.following = true;
       }
     } else if (liveRun?.id === event.run_id) {
       if (id === undefined) {
@@ -352,7 +560,9 @@ export function initDashboards(project, revealBoard) {
         else if (status !== "skipped") step.finished_at = time;
       }
     }
-    if (following) sendSnapshot();
+    for (const panel of activePanels) {
+      if (panel.following) panel.sendSnapshot();
+    }
   }
 
   return { open, track };

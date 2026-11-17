@@ -28,7 +28,8 @@ from .web import STATIC, matches_ui_host, serve, ui_address
 VIEW_PATH = re.compile(
     r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view"
     r"(/(?:app\.css|app\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
-    r"dashboard-(?:assets|settings)/(?:workflow|[0-9]{1,8})|"
+    r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
+    r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
     r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")

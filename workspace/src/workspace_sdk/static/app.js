@@ -10,7 +10,12 @@ graph.append(edgeLabels);
 const graphPlane = document.querySelector("#graph-plane");
 const graphViewport = document.querySelector(".graph-scroll");
 const dashboardBoard = document.querySelector("#dashboard");
-const dashboardHandle = dashboardBoard.querySelector(".dock-heading");
+
+function visibleDashboards() {
+  return [...graph.querySelectorAll(".dashboard-panel:not([hidden])")].filter(
+    panel => document.fullscreenElement !== panel,
+  );
+}
 const zoomIn = document.querySelector("#zoom-in");
 const zoomOut = document.querySelector("#zoom-out");
 const zoomReset = document.querySelector("#zoom-reset");
@@ -108,11 +113,11 @@ function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
   graph.style.minHeight = `${height}px`;
   const graphSize = layoutSize(graph);
   const bounds = graphDrawingBounds(graphSize.width, graphSize.height);
-  if (!dashboardBoard.hidden && document.fullscreenElement !== dashboardBoard) {
-    bounds.left = Math.min(bounds.left, dashboardBoard.offsetLeft - 24);
-    bounds.top = Math.min(bounds.top, dashboardBoard.offsetTop - 24);
-    bounds.right = Math.max(bounds.right, dashboardBoard.offsetLeft + dashboardBoard.offsetWidth + 24);
-    bounds.bottom = Math.max(bounds.bottom, dashboardBoard.offsetTop + dashboardBoard.offsetHeight + 24);
+  for (const panel of visibleDashboards()) {
+    bounds.left = Math.min(bounds.left, panel.offsetLeft - 24);
+    bounds.top = Math.min(bounds.top, panel.offsetTop - 24);
+    bounds.right = Math.max(bounds.right, panel.offsetLeft + panel.offsetWidth + 24);
+    bounds.bottom = Math.max(bounds.bottom, panel.offsetTop + panel.offsetHeight + 24);
   }
   const scaledWidth = (bounds.right - bounds.left) * scale;
   const scaledHeight = (bounds.bottom - bounds.top) * scale;
@@ -211,8 +216,7 @@ function frameGraphBounds(bounds, fit = false) {
 }
 
 fitGraph.addEventListener("click", () => {
-  const items = [...Array.from(nodes.values(), item => item.node), ...edgeLabels.children];
-  if (!dashboardBoard.hidden && document.fullscreenElement !== dashboardBoard) items.push(dashboardBoard);
+  const items = [...Array.from(nodes.values(), item => item.node), ...edgeLabels.children, ...visibleDashboards()];
   const bounds = graphBounds(items);
   for (const point of edgePoints) {
     bounds.left = Math.min(bounds.left, point.x);
@@ -234,7 +238,7 @@ function animateWheelZoom(time) {
 }
 
 graphViewport.addEventListener("wheel", event => {
-  if (!zoomSettings || event.ctrlKey || event.metaKey || !event.deltaY || event.target.closest("#dashboard")) return;
+  if (!zoomSettings || event.ctrlKey || event.metaKey || !event.deltaY || event.target.closest(".dashboard-panel")) return;
   event.preventDefault();
   if (graphViewport.matches(".is-dragging-node, .is-dragging-dashboard")) return;
   const pixelUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graphViewport.clientHeight : 1;
@@ -259,7 +263,7 @@ graphViewport.addEventListener("wheel", event => {
 
 let pan = null;
 graphViewport.addEventListener("pointerdown", event => {
-  if (pan || !event.isPrimary || event.button !== 0 || event.target.closest(".node, #dashboard") ||
+  if (pan || !event.isPrimary || event.button !== 0 || event.target.closest(".node, .dashboard-panel") ||
       graphViewport.classList.contains("is-dragging-node")) return;
   cancelWheelZoom();
   graphViewport.setPointerCapture(event.pointerId);
@@ -284,17 +288,25 @@ graphViewport.addEventListener("lostpointercapture", event => {
   graphViewport.classList.remove("is-panning");
 });
 
-function revealDashboard() {
+function focusDashboard(panel) {
+  for (const item of graph.querySelectorAll(".dashboard-panel")) {
+    item.classList.toggle("is-focused", item === panel);
+  }
+}
+
+function revealDashboard(panel = dashboardBoard, staggerIndex = 0) {
+  focusDashboard(panel);
+  const handle = panel.querySelector(".dock-heading");
   const margin = 12;
-  const targetWidth = 740;
-  const targetHeight = 480;
+  const targetWidth = 560;
+  const targetHeight = 420;
   const areas = graphAreas();
   const room = area => Math.min(
     (area.right - area.left - 2 * margin) / targetWidth,
     (area.bottom - area.top - 2 * margin) / targetHeight,
   );
   const viewport = graphViewport.getBoundingClientRect();
-  if (!dashboardBoard.style.left) {
+  if (!panel.style.left) {
     let candidates = areas;
     if (nodes.size) {
       const rectangles = Array.from(nodes.values(), ({ node }) => node.getBoundingClientRect());
@@ -313,80 +325,89 @@ function revealDashboard() {
     const width = Math.max(0, Math.min(targetWidth, area.right - area.left - 2 * margin)) * ratio;
     const height = Math.max(0, Math.min(targetHeight, area.bottom - area.top - 2 * margin)) * ratio;
     const { graphX, graphY } = graphAnchor(x, y);
-    dashboardBoard.style.width = `${width}px`;
-    dashboardBoard.style.height = `${height}px`;
-    dashboardBoard.style.left = `${graphX - dashboardBoard.offsetWidth / 2}px`;
-    dashboardBoard.style.top = `${graphY - dashboardBoard.offsetHeight / 2}px`;
+    const offset = staggerIndex * 36 * ratio;
+    panel.style.width = `${width}px`;
+    panel.style.height = `${height}px`;
+    panel.style.left = `${graphX - panel.offsetWidth / 2 + offset}px`;
+    panel.style.top = `${graphY - panel.offsetHeight / 2 + offset}px`;
     layoutGraph();
-  } else if (document.fullscreenElement !== dashboardBoard) {
-    const header = dashboardHandle.getBoundingClientRect();
+  } else if (document.fullscreenElement !== panel) {
+    const header = handle.getBoundingClientRect();
     const visible = areas.some(a => header.top >= a.top + viewport.top &&
       header.bottom <= a.bottom + viewport.top &&
       Math.min(header.right, a.right + viewport.left) - Math.max(header.left, a.left + viewport.left) >= Math.min(160, header.width));
-    if (!visible) frameGraphBounds(graphBounds([dashboardHandle]));
+    if (!visible) frameGraphBounds(graphBounds([handle]));
   }
 }
 
-const dashboardResize = document.querySelector("#dashboard-resize");
 let boardDrag = null;
 
-function changeDashboardBounds(bounds, dx, dy, resize) {
+function changeDashboardBounds(panel, bounds, dx, dy, resize) {
   if (resize) {
-    dashboardBoard.style.width = `${Math.max(0, bounds.width + dx)}px`;
-    dashboardBoard.style.height = `${Math.max(0, bounds.height + dy)}px`;
+    panel.style.width = `${Math.max(0, bounds.width + dx)}px`;
+    panel.style.height = `${Math.max(0, bounds.height + dy)}px`;
   } else {
-    dashboardBoard.style.left = `${bounds.left + dx}px`;
-    dashboardBoard.style.top = `${bounds.top + dy}px`;
+    panel.style.left = `${bounds.left + dx}px`;
+    panel.style.top = `${bounds.top + dy}px`;
   }
 }
 
-function dashboardBounds() {
+function dashboardBounds(panel) {
   return {
-    left: parseFloat(dashboardBoard.style.left),
-    top: parseFloat(dashboardBoard.style.top),
-    ...layoutSize(dashboardBoard),
+    left: parseFloat(panel.style.left),
+    top: parseFloat(panel.style.top),
+    ...layoutSize(panel),
   };
 }
 
-dashboardBoard.addEventListener("pointerdown", event => {
-  if (boardDrag || !event.isPrimary || event.button !== 0 || document.fullscreenElement === dashboardBoard) return;
-  const resize = event.target === dashboardResize;
-  if (!resize && (!dashboardHandle.contains(event.target) || event.target.closest("button"))) return;
+graph.addEventListener("pointerdown", event => {
+  const panel = event.target.closest(".dashboard-panel");
+  if (!panel) return;
+  focusDashboard(panel);
+  if (boardDrag || !event.isPrimary || event.button !== 0 || document.fullscreenElement === panel) return;
+  const resizeHandle = panel.querySelector('[data-dash="resize"]');
+  const handle = panel.querySelector(".dock-heading");
+  const resize = event.target === resizeHandle;
+  if (!resize && (!handle.contains(event.target) || event.target.closest("button"))) return;
   cancelWheelZoom();
   boardDrag = {
-    id: event.pointerId, resize, x: event.clientX, y: event.clientY,
-    scrollLeft: graphViewport.scrollLeft, scrollTop: graphViewport.scrollTop, bounds: dashboardBounds(),
+    panel, id: event.pointerId, resize, x: event.clientX, y: event.clientY,
+    scrollLeft: graphViewport.scrollLeft, scrollTop: graphViewport.scrollTop, bounds: dashboardBounds(panel),
   };
-  dashboardBoard.setPointerCapture(event.pointerId);
-  dashboardBoard.classList.add(resize ? "is-resizing" : "is-moving");
+  panel.setPointerCapture(event.pointerId);
+  panel.classList.add(resize ? "is-resizing" : "is-moving");
   graphViewport.classList.add("is-dragging-dashboard");
   event.preventDefault();
 });
 
-dashboardBoard.addEventListener("pointermove", event => {
+graph.addEventListener("pointermove", event => {
   if (boardDrag?.id !== event.pointerId) return;
   const ratio = 100 / graphZoom;
   const dx = event.clientX - boardDrag.x + graphViewport.scrollLeft - boardDrag.scrollLeft;
   const dy = event.clientY - boardDrag.y + graphViewport.scrollTop - boardDrag.scrollTop;
-  changeDashboardBounds(boardDrag.bounds, dx * ratio, dy * ratio, boardDrag.resize);
+  changeDashboardBounds(boardDrag.panel, boardDrag.bounds, dx * ratio, dy * ratio, boardDrag.resize);
 });
 
-dashboardBoard.addEventListener("lostpointercapture", event => {
+graph.addEventListener("lostpointercapture", event => {
   if (boardDrag?.id !== event.pointerId) return;
+  const { panel } = boardDrag;
   boardDrag = null;
-  dashboardBoard.classList.remove("is-resizing", "is-moving");
+  panel.classList.remove("is-resizing", "is-moving");
   graphViewport.classList.remove("is-dragging-dashboard");
   layoutGraph();
 });
 
-dashboardHandle.addEventListener("keydown", event => {
-  if (event.target !== dashboardHandle || document.fullscreenElement === dashboardBoard) return;
+graph.addEventListener("keydown", event => {
+  const panel = event.target.closest(".dashboard-panel");
+  if (!panel) return;
+  const handle = panel.querySelector(".dock-heading");
+  if (event.target !== handle || document.fullscreenElement === panel) return;
   const direction = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[event.key];
   if (!direction) return;
   event.preventDefault();
   cancelWheelZoom();
   const step = 1600 / graphZoom;
-  changeDashboardBounds(dashboardBounds(), direction[0] * step, direction[1] * step, event.shiftKey);
+  changeDashboardBounds(panel, dashboardBounds(panel), direction[0] * step, direction[1] * step, event.shiftKey);
   layoutGraph();
 });
 
