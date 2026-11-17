@@ -4,6 +4,26 @@ A local workspace for humans and AI agents to build, run, and inspect Python flo
 
 ## Quick start
 
+### Launcher scripts
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and make it available on your PATH. From the repository root, run the launcher for your platform.
+
+**Linux**
+
+```sh
+./run-workspace.sh
+```
+
+**Windows PowerShell**
+
+```powershell
+.\run-workspace.bat
+```
+
+The launchers open `workspace-test/sheets-demo` by default. Pass an existing project directory as the first argument to open that project. The launcher creates a Python 3.12 virtual environment if the project lacks one and installs the local SDK into its `.venv`. Install any flow-specific dependencies in the same environment. Open the URL printed in the terminal, then select a sheet and choose **Run flow**.
+
+### Run the ticket example from the CLI
+
 From the repository root, use [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the Workspace SDK into a Python 3.12 environment.
 
 ```sh
