@@ -23,6 +23,33 @@ from .ui_settings import ZoomSettings
 STATIC = Path(__file__).with_name("static")
 NODE_FILES_ROUTE = r"node-files/([0-9]{1,8})"
 NODE_SOURCE_ROUTE = r"node-source/([0-9]{1,8})"
+FLOW_VIEW_ASSETS = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/canvas-layout.js": ("canvas-layout.js", "text/javascript; charset=utf-8"),
+    "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
+    "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
+    "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
+}
+FLOW_VIEW_SUBPATH_PATTERN = (
+    r"(/(?:app\.css|app\.js|canvas-layout\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
+    r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
+    r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
+    r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+)
+_FLOW_VIEW_SUBPATH_RE = re.compile(FLOW_VIEW_SUBPATH_PATTERN)
+
+
+def is_flow_view_route(method: str, subpath: str) -> bool:
+    """Return True when subpath is an allowed GET or POST Flow View route."""
+    if _FLOW_VIEW_SUBPATH_RE.fullmatch(subpath) is None:
+        return False
+    if method == "GET":
+        return subpath != "/run" and not subpath.startswith("/node-source/")
+    if method == "POST":
+        return subpath == "/run" or subpath.startswith(("/node-source/", "/dashboard-settings/"))
+    return False
 
 
 def matches_ui_host(request: BaseHTTPRequestHandler) -> bool:
@@ -35,6 +62,55 @@ def matches_ui_host(request: BaseHTTPRequestHandler) -> bool:
 def ui_address(ipv4: str, port: int) -> str:
     browser_ip = "127.0.0.1" if ipv4 == "0.0.0.0" else ipv4
     return f"http://{browser_ip}:{port}"
+
+
+class UIRequestHandler(BaseHTTPRequestHandler):
+    """Shared HTTP transport helpers for the per-flow UI server and Workspace proxy."""
+
+    def send_bytes(self, data: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
+        self.send_bytes(json.dumps(data).encode(), "application/json", status)
+
+    send_source = send_json
+
+    def local_request(self) -> bool:
+        return matches_ui_host(self)
+
+    def valid_post_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        return self.local_request() and origin in (None, f"http://{self.headers.get('Host')}")
+
+    def read_json_dict(self, max_bytes: int = 1024 * 1024) -> dict:
+        size = int(self.headers.get("Content-Length", "0"))
+        if not 0 < size <= max_bytes:
+            raise ValueError
+        payload = json.loads(self.rfile.read(size))
+        if not isinstance(payload, dict):
+            raise ValueError
+        return payload
+
+    def send_source_edit(self, edit_fn: Callable[[], dict[str, str]], *, not_found_error: str) -> None:
+        try:
+            result = edit_fn()
+        except FileNotFoundError:
+            self.send_json({"error": not_found_error}, HTTPStatus.NOT_FOUND)
+        except SourceChanged:
+            self.send_json({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
+        except (UnicodeError, SyntaxError):
+            self.send_json({"error": "Could not read or write the file in its original encoding."}, HTTPStatus.BAD_REQUEST)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+        except (OSError, RuntimeError):
+            self.send_json({"error": "Could not read or write the file."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        else:
+            self.send_json(result)
 
 
 def serve(
@@ -76,24 +152,10 @@ def serve(
     source_lock = Lock()
     run_status = "ready"
 
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(UIRequestHandler):
         def log_request(self, code="-", size="-"):
             if self.path != "/status":
                 super().log_request(code, size)
-
-        def send_bytes(self, data, content_type, status=HTTPStatus.OK):
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def send_source(self, data, status=HTTPStatus.OK):
-            self.send_bytes(json.dumps(data).encode(), "application/json", status)
-
-        def local_request(self):
-            return matches_ui_host(self)
 
         def scoped_steps(self, scope):
             return steps if scope == "workflow" else (steps[int(scope)],)
@@ -102,14 +164,7 @@ def serve(
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
-            asset = {
-                "/": ("index.html", "text/html; charset=utf-8"),
-                "/app.css": ("app.css", "text/css; charset=utf-8"),
-                "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
-                "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
-                "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
-            }.get(self.path)
+            asset = FLOW_VIEW_ASSETS.get(self.path)
             if asset:
                 name, content_type = asset
                 self.send_bytes((STATIC / name).read_bytes(), content_type)
@@ -192,8 +247,7 @@ def serve(
 
         def do_POST(self):
             nonlocal run_status
-            origin = self.headers.get("Origin")
-            if not self.local_request() or origin not in (None, f"http://{self.headers.get('Host')}"):
+            if not self.valid_post_origin():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
@@ -205,12 +259,7 @@ def serve(
                 self.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
                 return
             try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 1024 * 1024:
-                    raise ValueError
-                inputs = json.loads(self.rfile.read(size))
-                if not isinstance(inputs, dict):
-                    raise ValueError
+                inputs = self.read_json_dict()
             except (ValueError, UnicodeError):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
                 return
@@ -268,7 +317,8 @@ def serve(
             ):
                 self.send_source({"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST)
                 return
-            try:
+
+            def perform_edit() -> dict[str, str]:
                 if index >= len(graph):
                     raise FileNotFoundError
                 with source_lock:
@@ -286,19 +336,9 @@ def serve(
                                 and setting.default == declarations[0].default for setting in declarations
                             )
                         }, indent=2) + "\n"
-                    result = edit_source_file(path, source, revision, initial=initial)
-            except FileNotFoundError:
-                self.send_source({"error": "This source file is unavailable in the node folder."}, HTTPStatus.NOT_FOUND)
-            except SourceChanged:
-                self.send_source({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
-            except (UnicodeError, SyntaxError):
-                self.send_source({"error": "Could not read or write the file in its original encoding."}, HTTPStatus.BAD_REQUEST)
-            except ValueError as error:
-                self.send_source({"error": str(error)}, HTTPStatus.BAD_REQUEST)
-            except (OSError, RuntimeError):
-                self.send_source({"error": "Could not read or write the file."}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            else:
-                self.send_source(result)
+                    return edit_source_file(path, source, revision, initial=initial)
+
+            self.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")
 
         def stream_run(self, inputs):
             nonlocal run_status

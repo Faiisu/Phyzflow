@@ -284,9 +284,10 @@ button:disabled { cursor: default; opacity: .52; }
 }
 .visualize-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: .5rem;
+  gap: .3rem .5rem;
   padding: .35rem .7rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -719,6 +720,72 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .stack-locations { font: .68rem/1.5 var(--mono); }
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.exit-visualize-mode {
+  position: fixed;
+  top: .6rem;
+  right: .75rem;
+  z-index: 20;
+  padding: .34rem .72rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #cbd5e1;
+  font-size: .72rem;
+  font-weight: 600;
+  opacity: .55;
+  transition: opacity .15s ease, background .15s ease, border-color .15s ease;
+}
+.exit-visualize-mode:hover, .exit-visualize-mode:focus-visible {
+  opacity: 1;
+  background: rgba(15, 23, 42, 0.92);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+body.is-visualize-mode :is(#panel-toolbar, .outline-stack, .overlay-stack, #panel-switcher, #panel-zoom, .node, #graph > canvas, .edge-labels) {
+  display: none !important;
+}
+body.is-visualize-mode .graph-scroll {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-width: thin !important;
+  touch-action: pan-y !important;
+  cursor: default !important;
+}
+body.is-visualize-mode .graph-scroll::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+}
+body.is-visualize-mode #graph-plane {
+  width: 100% !important;
+  min-width: 100% !important;
+  min-height: 100dvh !important;
+  background-image: radial-gradient(#323640 .8px, transparent .9px);
+}
+body.is-visualize-mode #graph {
+  position: relative !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  min-height: 100dvh !important;
+  transform: none !important;
+  padding: 0 !important;
+  display: block !important;
+}
+body.is-visualize-mode .dashboard-panel:not([hidden]) {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+body.is-visualize-mode .dashboard-panel .dock-heading {
+  min-height: 28px;
+  padding: .2rem .55rem;
+}
+body.is-visualize-mode .dashboard-panel :is(.dashboard-controls, .dashboard-actions) {
+  display: none !important;
+}
 
 @media (max-width: 600px) {
   :root { --edge: .5rem; --panel-top: 4.2rem; }

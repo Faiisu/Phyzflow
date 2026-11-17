@@ -1,4 +1,5 @@
 import { createEdgeRouter, pointAlongEdge, traceEdge } from "./edge-routing.js";
+import { createCanvasLayout, snapStep } from "./canvas-layout.js";
 import { initDashboards } from "./dashboard-ui.js";
 
 const graph = document.querySelector("#graph");
@@ -9,12 +10,9 @@ edgeLabels.setAttribute("aria-hidden", "true");
 graph.append(edgeLabels);
 const graphPlane = document.querySelector("#graph-plane");
 const graphViewport = document.querySelector(".graph-scroll");
-const dashboardBoard = document.querySelector("#dashboard");
-
+let canvasLayout = null;
 function visibleDashboards() {
-  return [...graph.querySelectorAll(".dashboard-panel:not([hidden])")].filter(
-    panel => document.fullscreenElement !== panel,
-  );
+  return canvasLayout ? canvasLayout.visibleDashboards() : [];
 }
 const zoomIn = document.querySelector("#zoom-in");
 const zoomOut = document.querySelector("#zoom-out");
@@ -102,6 +100,10 @@ function graphDrawingBounds(width, height) {
 }
 
 function layoutGraph(nextZoom = graphZoom, center = false, anchor = null) {
+  if (document.body.classList.contains("is-visualize-mode")) {
+    canvasLayout?.updateVisualizeScrollHeight();
+    return;
+  }
   // Use fractional outer dimensions so scrollbar visibility cannot resize the graph.
   const { width, height } = layoutSize(graphViewport);
   const { graphX, graphY } = anchor ?? graphAnchor();
@@ -238,7 +240,8 @@ function animateWheelZoom(time) {
 }
 
 graphViewport.addEventListener("wheel", event => {
-  if (!zoomSettings || event.ctrlKey || event.metaKey || !event.deltaY || event.target.closest(".dashboard-panel")) return;
+  if (!zoomSettings || event.ctrlKey || event.metaKey || !event.deltaY ||
+      event.target.closest(".dashboard-panel") || document.body.classList.contains("is-visualize-mode")) return;
   event.preventDefault();
   if (graphViewport.matches(".is-dragging-node, .is-dragging-dashboard")) return;
   const pixelUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graphViewport.clientHeight : 1;
@@ -264,7 +267,7 @@ graphViewport.addEventListener("wheel", event => {
 let pan = null;
 graphViewport.addEventListener("pointerdown", event => {
   if (pan || !event.isPrimary || event.button !== 0 || event.target.closest(".node, .dashboard-panel") ||
-      graphViewport.classList.contains("is-dragging-node")) return;
+      graphViewport.classList.contains("is-dragging-node") || document.body.classList.contains("is-visualize-mode")) return;
   cancelWheelZoom();
   graphViewport.setPointerCapture(event.pointerId);
   graphViewport.classList.add("is-panning");
@@ -288,183 +291,19 @@ graphViewport.addEventListener("lostpointercapture", event => {
   graphViewport.classList.remove("is-panning");
 });
 
-function focusDashboard(panel) {
-  for (const item of graph.querySelectorAll(".dashboard-panel")) {
-    item.classList.toggle("is-focused", item === panel);
-  }
-}
-
-function revealDashboard(panel = dashboardBoard) {
-  focusDashboard(panel);
-  const handle = panel.querySelector(".dock-heading");
-  const margin = 12;
-  const targetWidth = 600;
-  const targetHeight = 400;
-  const areas = graphAreas();
-  const room = area => Math.min(
-    (area.right - area.left - 2 * margin) / targetWidth,
-    (area.bottom - area.top - 2 * margin) / targetHeight,
-  );
-  const viewport = graphViewport.getBoundingClientRect();
-  if (!panel.style.left) {
-    let candidates = areas;
-    if (nodes.size) {
-      const rectangles = Array.from(nodes.values(), ({ node }) => node.getBoundingClientRect());
-      const top = Math.min(...rectangles.map(rect => rect.top)) - viewport.top;
-      const bottom = Math.max(...rectangles.map(rect => rect.bottom)) - viewport.top;
-      const clearAreas = areas.flatMap(area => [
-        { ...area, bottom: Math.min(area.bottom, top) },
-        { ...area, top: Math.max(area.top, bottom) },
-      ]).filter(area => room(area) >= .6);
-      if (clearAreas.length) candidates = clearAreas;
-    }
-    const area = candidates.reduce((best, next) => room(next) > room(best) ? next : best);
-    const x = (area.left + area.right) / 2;
-    const y = (area.top + area.bottom) / 2;
-    const ratio = 100 / graphZoom;
-    const width = Math.round(Math.max(280, Math.min(targetWidth, area.right - area.left - 2 * margin)) * ratio / WORKSPACE_STEP) * WORKSPACE_STEP;
-    const height = Math.round(Math.max(220, Math.min(targetHeight, area.bottom - area.top - 2 * margin)) * ratio / WORKSPACE_STEP) * WORKSPACE_STEP;
-    const { graphX, graphY } = graphAnchor(x, y);
-    const gap = 20 * ratio;
-
-    const others = visibleDashboards()
-      .filter(other => other !== panel && other.style.left)
-      .map(other => ({
-        left: parseFloat(other.style.left),
-        top: parseFloat(other.style.top),
-        width: other.offsetWidth || parseFloat(other.style.width) || width,
-        height: other.offsetHeight || parseFloat(other.style.height) || height,
-      }));
-
-    const overlaps = (lx, ty) => others.some(box =>
-      lx < box.left + box.width + gap &&
-      lx + width + gap > box.left &&
-      ty < box.top + box.height + gap &&
-      ty + height + gap > box.top
-    );
-
-    let left = graphX - width / 2;
-    let top = graphY - height / 2;
-    if (others.length) {
-      const baseLeft = Math.min(...others.map(b => b.left));
-      const baseTop = Math.min(...others.map(b => b.top));
-      const maxRowWidth = Math.max(width * 2 + gap * 2, (area.right - area.left) * ratio);
-      left = baseLeft;
-      top = baseTop;
-      let guard = 0;
-      while (overlaps(left, top) && guard++ < 48) {
-        const blocker = others.find(box =>
-          left < box.left + box.width + gap &&
-          left + width + gap > box.left &&
-          top < box.top + box.height + gap &&
-          top + height + gap > box.top
-        );
-        const nextLeft = blocker.left + blocker.width + gap;
-        if (nextLeft + width - baseLeft <= maxRowWidth) {
-          left = nextLeft;
-        } else {
-          left = baseLeft;
-          top = blocker.top + blocker.height + gap;
-        }
-      }
-    }
-
-    panel.style.width = `${width}px`;
-    panel.style.height = `${height}px`;
-    panel.style.left = `${snapStep(left)}px`;
-    panel.style.top = `${snapStep(top)}px`;
-    layoutGraph();
-  } else if (document.fullscreenElement !== panel) {
-    const header = handle.getBoundingClientRect();
-    const visible = areas.some(a => header.top >= a.top + viewport.top &&
-      header.bottom <= a.bottom + viewport.top &&
-      Math.min(header.right, a.right + viewport.left) - Math.max(header.left, a.left + viewport.left) >= Math.min(160, header.width));
-    if (!visible) frameGraphBounds(graphBounds([handle]));
-  }
-}
-
-const WORKSPACE_STEP = 20;
-let boardDrag = null;
-
-function snapStep(value) {
-  return Math.round(value / WORKSPACE_STEP) * WORKSPACE_STEP;
-}
-
-function snapDashboardSize(value) {
-  return Math.max(0, snapStep(value));
-}
-
-function changeDashboardBounds(panel, bounds, dx, dy, resize) {
-  if (resize) {
-    const width = snapDashboardSize(bounds.width + dx);
-    const height = snapDashboardSize(bounds.height + dy);
-    panel.style.width = `${width}px`;
-    panel.style.height = `${height}px`;
-    panel.dataset.resizeSize = `${Math.round(panel.offsetWidth || width)} × ${Math.round(panel.offsetHeight || height)}`;
-  } else {
-    panel.style.left = `${snapStep(bounds.left + dx)}px`;
-    panel.style.top = `${snapStep(bounds.top + dy)}px`;
-  }
-}
-
-function dashboardBounds(panel) {
-  return {
-    left: parseFloat(panel.style.left),
-    top: parseFloat(panel.style.top),
-    ...layoutSize(panel),
-  };
-}
-
-graph.addEventListener("pointerdown", event => {
-  const panel = event.target.closest(".dashboard-panel");
-  if (!panel) return;
-  focusDashboard(panel);
-  if (boardDrag || !event.isPrimary || event.button !== 0 || document.fullscreenElement === panel) return;
-  const resizeHandle = panel.querySelector('[data-dash="resize"]');
-  const handle = panel.querySelector(".dock-heading");
-  const resize = event.target === resizeHandle;
-  if (!resize && (!handle.contains(event.target) || event.target.closest("button"))) return;
-  cancelWheelZoom();
-  boardDrag = {
-    panel, id: event.pointerId, resize, x: event.clientX, y: event.clientY,
-    scrollLeft: graphViewport.scrollLeft, scrollTop: graphViewport.scrollTop, bounds: dashboardBounds(panel),
-  };
-  panel.setPointerCapture(event.pointerId);
-  panel.classList.add(resize ? "is-resizing" : "is-moving");
-  graphViewport.classList.add("is-dragging-dashboard");
-  event.preventDefault();
-});
-
-graph.addEventListener("pointermove", event => {
-  if (boardDrag?.id !== event.pointerId) return;
-  const ratio = 100 / graphZoom;
-  const dx = event.clientX - boardDrag.x + graphViewport.scrollLeft - boardDrag.scrollLeft;
-  const dy = event.clientY - boardDrag.y + graphViewport.scrollTop - boardDrag.scrollTop;
-  changeDashboardBounds(boardDrag.panel, boardDrag.bounds, dx * ratio, dy * ratio, boardDrag.resize);
-});
-
-graph.addEventListener("lostpointercapture", event => {
-  if (boardDrag?.id !== event.pointerId) return;
-  const { panel } = boardDrag;
-  boardDrag = null;
-  panel.classList.remove("is-resizing", "is-moving");
-  delete panel.dataset.resizeSize;
-  graphViewport.classList.remove("is-dragging-dashboard");
-  layoutGraph();
-});
-
-graph.addEventListener("keydown", event => {
-  const panel = event.target.closest(".dashboard-panel");
-  if (!panel) return;
-  const handle = panel.querySelector(".dock-heading");
-  if (event.target !== handle || document.fullscreenElement === panel) return;
-  const direction = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[event.key];
-  if (!direction) return;
-  event.preventDefault();
-  cancelWheelZoom();
-  const step = WORKSPACE_STEP;
-  changeDashboardBounds(panel, dashboardBounds(panel), direction[0] * step, direction[1] * step, event.shiftKey);
-  layoutGraph();
+canvasLayout = createCanvasLayout({
+  graph,
+  graphPlane,
+  graphViewport,
+  nodes,
+  getZoom: () => graphZoom,
+  graphAreas,
+  graphAnchor,
+  graphBounds,
+  frameGraphBounds,
+  layoutGraph,
+  layoutSize,
+  cancelWheelZoom,
 });
 
 function setPanel(name, visible) {
@@ -1513,7 +1352,12 @@ try {
   const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
-  dashboards = initDashboards(project, revealDashboard);
+  dashboards = initDashboards(
+    project,
+    canvasLayout.revealDashboard,
+    canvasLayout.releaseDashboard,
+    canvasLayout.setVisualizeModeLayout,
+  );
   zoomSettings = project.zoom;
   const name = document.querySelector("#project-name");
   name.textContent = project.name;

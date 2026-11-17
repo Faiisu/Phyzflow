@@ -1,10 +1,9 @@
 from dataclasses import dataclass, replace
 from ipaddress import IPv4Address
+import json
 from pathlib import Path
 import sys
 from typing import Callable, TypedDict
-
-from .project import read_project_settings
 
 
 class ZoomSettings(TypedDict):
@@ -19,18 +18,37 @@ class UISettings:
     ipv4: str = "127.0.0.1"
 
 
-def validate_ipv4(value: object) -> str:
+@dataclass(frozen=True)
+class DeploySettings:
+    ipv4: str
+    port: int
+    container_port: int
+    context: str | None
+
+
+def read_project_settings(root: Path) -> dict:
+    """Read setting.json from a project root, returning {} when absent."""
+    try:
+        values = json.loads((root / "setting.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("setting.json must contain a JSON object.")
+    return values
+
+
+def validate_ipv4(value: object, label: str = "The UI IP") -> str:
     try:
         if isinstance(value, str):
             return str(IPv4Address(value))
     except ValueError:
         pass
-    raise ValueError("The UI IP must be an IPv4 address such as 127.0.0.1.")
+    raise ValueError(f"{label} must be an IPv4 address such as 127.0.0.1.")
 
 
-def validate_port(value: object) -> int:
-    if type(value) is not int or not 0 <= value <= 65535:
-        raise ValueError("The UI port must be an integer between 0 and 65535.")
+def validate_port(value: object, label: str = "The UI port", *, minimum: int = 0) -> int:
+    if type(value) is not int or not minimum <= value <= 65535:
+        raise ValueError(f"{label} must be an integer between {minimum} and 65535.")
     return value
 
 
@@ -51,6 +69,31 @@ def load_ui_settings(
     if type(smooth_ms) is not int or not 0 <= smooth_ms <= 1000:
         raise ValueError("zoom.smooth_ms must be an integer between 0 and 1000.")
     return UISettings(port, {"speed": speed, "smooth_ms": smooth_ms}, ipv4)
+
+
+def load_deploy_settings(
+    project: Path, *, ipv4: str | None = None, port: int | None = None,
+    container_port: int | None = None, context: str | None = None,
+) -> DeploySettings:
+    """Validate and resolve Docker deployment settings from setting.json and CLI overrides."""
+    values = read_project_settings(project).get("deploy", {})
+    if not isinstance(values, dict):
+        raise ValueError("deploy must be a JSON object in setting.json.")
+    unknown = values.keys() - {"ipv4", "port", "container_port", "context"}
+    if unknown:
+        raise ValueError(f"Unknown deploy settings: {', '.join(sorted(unknown))}.")
+
+    resolved_ipv4 = validate_ipv4(values.get("ipv4", "127.0.0.1") if ipv4 is None else ipv4, "deploy.ipv4")
+    resolved_port = validate_port(values.get("port", 8080) if port is None else port, "deploy.port")
+    resolved_container_port = validate_port(
+        values.get("container_port", 8000) if container_port is None else container_port,
+        "deploy.container_port",
+        minimum=1,
+    )
+    resolved_context = values.get("context") if context is None else context
+    if resolved_context is not None and (not isinstance(resolved_context, str) or not resolved_context.strip()):
+        raise ValueError("deploy.context must be a non-empty Docker context name or null.")
+    return DeploySettings(resolved_ipv4, resolved_port, resolved_container_port, resolved_context)
 
 
 def prompt_ui_settings(settings: UISettings) -> UISettings:

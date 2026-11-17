@@ -1,7 +1,5 @@
 """Deploy a request/response project to a local Linux ARM64 Docker engine."""
 
-from dataclasses import dataclass
-from ipaddress import IPv4Address
 import json
 from pathlib import Path
 import subprocess
@@ -10,53 +8,11 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from urllib.request import ProxyHandler, build_opener
 
-from .project import read_project_settings
+from .ui_settings import DeploySettings, load_deploy_settings
 
 
 class DeploymentError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True)
-class DeploySettings:
-    ipv4: str
-    port: int
-    container_port: int
-    context: str | None
-
-
-def load_deploy_settings(
-    project: Path, *, ipv4: str | None = None, port: int | None = None,
-    container_port: int | None = None, context: str | None = None,
-) -> DeploySettings:
-    values = read_project_settings(project).get("deploy", {})
-    if not isinstance(values, dict):
-        raise ValueError("deploy must be a JSON object in setting.json.")
-    unknown = values.keys() - {"ipv4", "port", "container_port", "context"}
-    if unknown:
-        raise ValueError(f"Unknown deploy settings: {', '.join(sorted(unknown))}.")
-
-    if ipv4 is None:
-        ipv4 = values.get("ipv4", "127.0.0.1")
-    if port is None:
-        port = values.get("port", 8080)
-    if container_port is None:
-        container_port = values.get("container_port", 8000)
-    if context is None:
-        context = values.get("context")
-    try:
-        if not isinstance(ipv4, str):
-            raise ValueError
-        ipv4 = str(IPv4Address(ipv4))
-    except ValueError:
-        raise ValueError("deploy.ipv4 must be an IPv4 address such as 127.0.0.1.") from None
-    if type(port) is not int or not 0 <= port <= 65535:
-        raise ValueError("deploy.port must be an integer between 0 and 65535.")
-    if type(container_port) is not int or not 1 <= container_port <= 65535:
-        raise ValueError("deploy.container_port must be an integer between 1 and 65535.")
-    if context is not None and (not isinstance(context, str) or not context.strip()):
-        raise ValueError("deploy.context must be a non-empty Docker context name or null.")
-    return DeploySettings(ipv4, port, container_port, context)
 
 
 def wait_for_http(url: str) -> None:

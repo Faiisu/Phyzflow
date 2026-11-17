@@ -16,20 +16,11 @@ from typing import Callable
 from .flow import Flow, Input, Output, Step
 from .node_settings import NodeSetting, parse_setting_defaults
 from .node_sources import node_settings_path, read_node_source
+from .ui_settings import read_project_settings
 
 
 class ValidationError(ValueError):
     """A project cannot be loaded or its declared flow cannot be run."""
-
-
-def read_project_settings(root: Path) -> dict:
-    try:
-        values = json.loads((root / "setting.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    if not isinstance(values, dict):
-        raise ValueError("setting.json must contain a JSON object.")
-    return values
 
 
 def source_location(function: Callable) -> tuple[str | None, int | None]:

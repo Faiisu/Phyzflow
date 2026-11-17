@@ -2,10 +2,9 @@
 
 from contextlib import nullcontext
 from dataclasses import dataclass
-from hashlib import sha256
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 import json
 import multiprocessing
 from multiprocessing.connection import Connection
@@ -16,26 +15,27 @@ import re
 from threading import Lock
 import traceback
 from urllib.request import ProxyHandler, build_opener
-from uuid import uuid4
 
-from .node_sources import SourceChanged, edit_source_file
 from .project import ValidationError, load_project
-from .sheets import create_sheet, discover_flows
-from .ui_settings import UISettings, ZoomSettings
-from .web import STATIC, matches_ui_host, serve, ui_address
-
-
-VIEW_PATH = re.compile(
-    r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view"
-    r"(/(?:app\.css|app\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
-    r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
-    r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
-    r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+from .sheets import (
+    archive_sheet_directory,
+    can_delete_sheet,
+    create_sheet,
+    discover_flows,
+    edit_sheet_flow_source,
+    source_stamp,
 )
+from .ui_settings import UISettings, ZoomSettings
+from .web import FLOW_VIEW_SUBPATH_PATTERN, STATIC, UIRequestHandler, is_flow_view_route, ui_address
+
+
+VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
 
 
 def serve_flow(root: Path, zoom: ZoomSettings, ready: Connection) -> None:
+    from .web import serve
+
     def report_address(address: str) -> None:
         ready.send({"url": address})
         ready.close()
@@ -68,29 +68,6 @@ class ReloadConflict(RuntimeError):
 
 class ReloadDeferred(RuntimeError):
     pass
-
-
-def source_stamp(root: Path, *, main: bool) -> str:
-    # Track the sheet's Python tree, including new helpers that cannot be imported yet.
-    entries = []
-    for directory, folders, files in os.walk(root):
-        path = Path(directory)
-        folders[:] = [
-            name for name in folders
-            if not name.startswith(".") and name != "__pycache__"
-            and not (main and path == root and name == "flows")
-            and not (path / name / "pyvenv.cfg").is_file()
-        ]
-        for name in files:
-            if not name.endswith(".py") and not (path == root and name == "pyproject.toml"):
-                continue
-            source = path / name
-            try:
-                stat = source.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            entries.append((str(source.relative_to(root)), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
-    return sha256(json.dumps(sorted(entries)).encode()).hexdigest()
 
 
 def terminate(process: BaseProcess) -> None:
@@ -203,38 +180,20 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
     sheets_lock = Lock()
     closing = False
 
-    def can_delete(sheet: FlowSheet) -> bool:
-        return sheet.root.parent == root / "flows" and not sheet.root.parent.is_symlink() and not sheet.root.is_symlink()
-
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(UIRequestHandler):
         def log_request(self, code="-", size="-"):
             if self.path != "/workspace":
                 super().log_request(code, size)
 
-        def send_bytes(self, data: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
-            self.send_bytes(json.dumps(data).encode(), "application/json", status)
-
-        def local_request(self) -> bool:
-            return matches_ui_host(self)
-
         def create_sheet(self) -> None:
             try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 4096 or self.headers.get_content_type() != "application/json":
+                if self.headers.get_content_type() != "application/json":
                     raise ValueError
-                data = json.loads(self.rfile.read(size))
-            except ValueError:
+                data = self.read_json_dict(4096)
+            except (ValueError, UnicodeError):
                 self.send_json({"error": "Send a JSON object with a sheet name."}, HTTPStatus.BAD_REQUEST)
                 return
-            value = data.get("name") if isinstance(data, dict) else None
+            value = data.get("name")
 
             try:
                 with sheets_lock:
@@ -256,25 +215,16 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             self.send_json({"index": index}, HTTPStatus.CREATED)
 
         def delete_sheet(self, index: int) -> None:
-            trash = root / ".workspace" / "deleted-flows"
             with sheets_lock:
                 sheet = sheets[index]
                 if closing or sheet is None:
                     self.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
                     return
-                if not can_delete(sheet):
+                if not can_delete_sheet(root, sheet.root):
                     self.send_json({"error": "Only sheets stored directly in this Workspace can be deleted."}, HTTPStatus.BAD_REQUEST)
                     return
                 try:
-                    if trash.parent.is_symlink() or trash.is_symlink():
-                        raise OSError
-                    archive = trash / uuid4().hex
-                    archive.mkdir(parents=True)
-                    try:
-                        sheet.archive(archive / sheet.root.name)
-                    except OSError:
-                        archive.rmdir()
-                        raise
+                    archive_sheet_directory(root, sheet.root, sheet.archive)
                 except OSError:
                     self.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
@@ -293,40 +243,27 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             source = revision = None
             if self.command == "POST":
                 try:
-                    size = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < size <= 1024 * 1024 or self.headers.get_content_type() != "application/json":
+                    if self.headers.get_content_type() != "application/json":
                         raise ValueError
-                    data = json.loads(self.rfile.read(size))
-                    if not isinstance(data, dict):
-                        raise ValueError
+                    data = self.read_json_dict()
                     source, revision = data.get("source"), data.get("revision")
                     if not isinstance(source, str) or not isinstance(revision, str):
                         raise ValueError
-                except ValueError:
+                except (ValueError, UnicodeError):
                     self.send_json({"error": "Send the source and revision as a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
                     return
 
             sheet = sheets[index] if index < len(sheets) else None
-            try:
+
+            def perform_edit() -> dict[str, str]:
                 if sheet is None:
                     raise FileNotFoundError
                 with sheet.lock:
-                    path = sheet.root / "flow.py"
-                    if sheet.closing or path.resolve() != path or not path.is_file():
+                    if sheet.closing:
                         raise FileNotFoundError
-                    result = edit_source_file(path, source, revision)
-            except FileNotFoundError:
-                self.send_json({"error": "This sheet's flow.py is unavailable."}, HTTPStatus.NOT_FOUND)
-            except SourceChanged:
-                self.send_json({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
-            except (UnicodeError, SyntaxError):
-                self.send_json({"error": "Could not read or write the file in its original encoding."}, HTTPStatus.BAD_REQUEST)
-            except ValueError as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
-            except (OSError, RuntimeError):
-                self.send_json({"error": "Could not read or write the file."}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            else:
-                self.send_json(result)
+                    return edit_sheet_flow_source(sheet.root, source, revision)
+
+            self.send_source_edit(perform_edit, not_found_error="This sheet's flow.py is unavailable.")
 
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}
@@ -406,13 +343,13 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                         continue
                     status = sheet.status()
                     flows.append({
-                        "name": sheet.title, "status": status, "deletable": can_delete(sheet),
+                        "name": sheet.title, "status": status, "deletable": can_delete_sheet(root, sheet.root),
                         "revision": sheet.revision, "changed_source": sheet.changed_source(status),
                     })
                 self.send_json({"name": root.name, "flows": flows})
                 return
             view = self.view_route()
-            if view is not None and view[2] != "/run" and not view[2].startswith("/node-source/"):
+            if view is not None and is_flow_view_route("GET", view[2]):
                 self.forward_view(*view)
                 return
             asset = {
@@ -427,8 +364,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             self.send_bytes((STATIC / filename).read_bytes(), f"{content_type}; charset=utf-8")
 
         def do_POST(self) -> None:
-            origin = self.headers.get("Origin")
-            if not self.local_request() or origin not in (None, f"http://{self.headers.get('Host')}"):
+            if not self.valid_post_origin():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
             if source := FLOW_SOURCE_PATH.fullmatch(self.path):
@@ -438,7 +374,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 self.create_sheet()
                 return
             view = self.view_route()
-            if view is not None and (view[2] == "/run" or view[2].startswith(("/node-source/", "/dashboard-settings/"))):
+            if view is not None and is_flow_view_route("POST", view[2]):
                 self.forward_view(*view)
                 return
             command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload|reload/([0-9a-f]{64}))", self.path)

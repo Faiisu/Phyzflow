@@ -1,11 +1,16 @@
 """Discover and create the Python projects represented by Workspace sheets."""
 
 from contextlib import ExitStack
+from hashlib import sha256
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
+from typing import Callable
 from unicodedata import category, normalize
+from uuid import uuid4
 
+from .node_sources import edit_source_file
 from .ui_settings import load_ui_settings
 
 
@@ -44,6 +49,65 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     if (root / "flow.py").is_file():
         flows.insert(0, ("Main", root))
     return flows
+
+
+def source_stamp(root: Path, *, main: bool = False) -> str:
+    """Compute a working-tree stamp across the sheet's Python files and pyproject.toml."""
+    # Track the sheet's Python tree, including new helpers that cannot be imported yet.
+    entries = []
+    for directory, folders, files in os.walk(root):
+        path = Path(directory)
+        folders[:] = [
+            name for name in folders
+            if not name.startswith(".") and name != "__pycache__"
+            and not (main and path == root and name == "flows")
+            and not (path / name / "pyvenv.cfg").is_file()
+        ]
+        for name in files:
+            if not name.endswith(".py") and not (path == root and name == "pyproject.toml"):
+                continue
+            source = path / name
+            try:
+                stat = source.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            entries.append((str(source.relative_to(root)), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+    return sha256(json.dumps(sorted(entries)).encode()).hexdigest()
+
+
+def can_delete_sheet(workspace_root: Path, sheet_root: Path) -> bool:
+    """Return True when sheet_root is a direct, non-symlink folder under workspace_root/flows."""
+    return (
+        sheet_root.parent == workspace_root / "flows"
+        and not sheet_root.parent.is_symlink()
+        and not sheet_root.is_symlink()
+    )
+
+
+def archive_sheet_directory(
+    workspace_root: Path, sheet_root: Path, move_fn: Callable[[Path], None],
+) -> None:
+    """Archive a deleted sheet folder under .workspace/deleted-flows without following symlinks."""
+    trash = workspace_root / ".workspace" / "deleted-flows"
+    if trash.parent.is_symlink() or trash.is_symlink():
+        raise OSError
+    archive = trash / uuid4().hex
+    archive.mkdir(parents=True)
+    try:
+        move_fn(archive / sheet_root.name)
+    except OSError:
+        archive.rmdir()
+        raise
+
+
+def edit_sheet_flow_source(
+    sheet_root: Path, source: str | None, revision: str | None,
+) -> dict[str, str]:
+    """Read or update a sheet's flow.py entrypoint with symlink and revision checks."""
+    path = sheet_root / "flow.py"
+    if path.resolve() != path or not path.is_file():
+        raise FileNotFoundError
+    return edit_source_file(path, source, revision)
 
 
 def write_new_file(path: Path, content: str, cleanup: ExitStack) -> None:
