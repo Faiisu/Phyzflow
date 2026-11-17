@@ -6,6 +6,7 @@ from hashlib import sha256
 from importlib.machinery import PathFinder, SourceFileLoader
 import importlib.util
 from inspect import signature
+import json
 from pathlib import Path
 import sys
 import tomllib
@@ -19,6 +20,16 @@ from .node_sources import node_settings_path, read_node_source
 
 class ValidationError(ValueError):
     """A project cannot be loaded or its declared flow cannot be run."""
+
+
+def read_project_settings(root: Path) -> dict:
+    try:
+        values = json.loads((root / "setting.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("setting.json must contain a JSON object.")
+    return values
 
 
 def source_location(function: Callable) -> tuple[str | None, int | None]:

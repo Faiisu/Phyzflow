@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import TypedDict
+
+from .project import read_project_settings
 
 
 class ZoomSettings(TypedDict):
@@ -16,12 +17,7 @@ class UISettings:
 
 
 def load_ui_settings(root: Path, port_override: int | None) -> UISettings:
-    try:
-        settings = json.loads((root / "setting.json").read_text())
-    except FileNotFoundError:
-        settings = {}
-    if not isinstance(settings, dict):
-        raise ValueError("setting.json must contain a JSON object.")
+    settings = read_project_settings(root)
 
     port = settings.get("port", 18080) if port_override is None else port_override
     if type(port) is not int or not 0 <= port <= 65535:

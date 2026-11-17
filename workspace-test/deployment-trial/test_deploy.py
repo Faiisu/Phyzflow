@@ -72,6 +72,33 @@ class DeployTests(unittest.TestCase):
         self.assertNotIn(secret, logs.stdout + logs.stderr + json.dumps(error))
         self.assertNotIn("traceback", diagnostic)
 
+    def test_project_deploy_settings_publish_the_configured_container_port(self) -> None:
+        with TemporaryDirectory() as temporary:
+            project = Path(temporary) / "trial"
+            copytree(TRIAL, project, ignore=ignore_patterns("__pycache__", "model.pkl"))
+            server = project / "serve.py"
+            server.write_text(server.read_text().replace('("0.0.0.0", 8000)', '("0.0.0.0", 8001)'))
+            (project / "setting.json").write_text(json.dumps({
+                "deploy": {"ipv4": "127.0.0.1", "port": 0, "container_port": 8001, "context": CONTEXT},
+            }))
+            result = subprocess.run(
+                [CLI, "deploy", "--sdk", SDK], cwd=project, capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            deployment = json.loads(result.stdout)
+            self.addCleanup(self.docker, "stop", deployment["container_id"])
+            self.assertEqual(deployment["ipv4"], "127.0.0.1")
+            self.assertEqual(deployment["container_port"], 8001)
+            self.assertGreater(deployment["port"], 0)
+            self.assertEqual(
+                self.docker("port", deployment["container_id"], "8001/tcp").stdout.strip(),
+                f"127.0.0.1:{deployment['port']}",
+            )
+            self.assertEqual(
+                post(deployment["url"], {"text": "Urgent: duplicate invoice charge"}),
+                (200, {"category": "billing", "priority": "urgent"}),
+            )
+
 
     def test_invalid_builds_never_publish_a_container(self) -> None:
         failures = (

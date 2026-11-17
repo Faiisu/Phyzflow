@@ -1,5 +1,7 @@
 """Deploy a request/response project to a local Linux ARM64 Docker engine."""
 
+from dataclasses import dataclass
+from ipaddress import IPv4Address
 import json
 from pathlib import Path
 import subprocess
@@ -8,9 +10,53 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from urllib.request import ProxyHandler, build_opener
 
+from .project import read_project_settings
+
 
 class DeploymentError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class DeploySettings:
+    ipv4: str
+    port: int
+    container_port: int
+    context: str | None
+
+
+def load_deploy_settings(
+    project: Path, *, ipv4: str | None = None, port: int | None = None,
+    container_port: int | None = None, context: str | None = None,
+) -> DeploySettings:
+    values = read_project_settings(project).get("deploy", {})
+    if not isinstance(values, dict):
+        raise ValueError("deploy must be a JSON object in setting.json.")
+    unknown = values.keys() - {"ipv4", "port", "container_port", "context"}
+    if unknown:
+        raise ValueError(f"Unknown deploy settings: {', '.join(sorted(unknown))}.")
+
+    if ipv4 is None:
+        ipv4 = values.get("ipv4", "127.0.0.1")
+    if port is None:
+        port = values.get("port", 8080)
+    if container_port is None:
+        container_port = values.get("container_port", 8000)
+    if context is None:
+        context = values.get("context")
+    try:
+        if not isinstance(ipv4, str):
+            raise ValueError
+        ipv4 = str(IPv4Address(ipv4))
+    except ValueError:
+        raise ValueError("deploy.ipv4 must be an IPv4 address such as 127.0.0.1.") from None
+    if type(port) is not int or not 0 <= port <= 65535:
+        raise ValueError("deploy.port must be an integer between 0 and 65535.")
+    if type(container_port) is not int or not 1 <= container_port <= 65535:
+        raise ValueError("deploy.container_port must be an integer between 1 and 65535.")
+    if context is not None and (not isinstance(context, str) or not context.strip()):
+        raise ValueError("deploy.context must be a non-empty Docker context name or null.")
+    return DeploySettings(ipv4, port, container_port, context)
 
 
 def wait_for_http(url: str) -> None:
@@ -28,8 +74,16 @@ def wait_for_http(url: str) -> None:
         sleep(0.2)
 
 
-def deploy(project: Path, sdk: Path, context: str | None, port: int) -> int:
-    docker = ["docker", "--context", context] if context else ["docker"]
+def deploy(
+    project: Path, sdk: Path, context: str | None = None, port: int | None = None,
+    *, ipv4: str | None = None, container_port: int | None = None,
+) -> int:
+    try:
+        settings = load_deploy_settings(project, ipv4=ipv4, port=port, container_port=container_port, context=context)
+    except (OSError, ValueError) as error:
+        print(f"Deployment settings: {error}", file=sys.stderr)
+        return 1
+    docker = ["docker", "--context", settings.context] if settings.context else ["docker"]
 
     def execute(*args: str, capture: bool = False) -> str:
         result = subprocess.run(
@@ -37,10 +91,6 @@ def deploy(project: Path, sdk: Path, context: str | None, port: int) -> int:
             stdout=subprocess.PIPE if capture else sys.stderr,
         )
         return result.stdout.strip() if capture else ""
-
-    if not 0 <= port <= 65535:
-        print("Deployment: port must be between 0 and 65535.", file=sys.stderr)
-        return 1
 
     require_smoke = (project / "smoke_test.py").is_file()
     phase = "Build"
@@ -77,25 +127,34 @@ def deploy(project: Path, sdk: Path, context: str | None, port: int) -> int:
                 build, capture=True,
             )
             execute("start", candidate, capture=True)
+            candidate_url = f"http://127.0.0.1:{settings.container_port}"
             execute(
                 "exec", candidate, "python", "-c",
-                "from workspace_sdk.deploy import wait_for_http; wait_for_http('http://127.0.0.1:8000')",
+                f"from workspace_sdk.deploy import wait_for_http; wait_for_http({candidate_url!r})",
             )
-            execute("exec", candidate, "python", "smoke_test.py", "http://127.0.0.1:8000")
+            execute("exec", candidate, "python", "smoke_test.py", candidate_url)
             execute("rm", "-f", candidate, capture=True)
             candidate = ""
 
         phase = "Publication"
-        binding = f"127.0.0.1:{port or ''}:8000"
+        binding = f"{settings.ipv4}:{settings.port or ''}:{settings.container_port}"
         live = execute(
             "create", "--rm", "--pull", "never", "--env", environment,
             "--publish", binding, build, capture=True,
         )
         execute("start", live, capture=True)
-        address = execute("port", live, "8000/tcp", capture=True)
-        url = f"http://{address}"
+        addresses = execute("port", live, f"{settings.container_port}/tcp", capture=True)
+        prefix = f"{settings.ipv4}:"
+        published_port = next((line.removeprefix(prefix) for line in addresses.splitlines() if line.startswith(prefix)), "")
+        if not published_port.isdecimal():
+            raise DeploymentError(f"Docker did not report a published port on {settings.ipv4}.")
+        host = "127.0.0.1" if settings.ipv4 == "0.0.0.0" else settings.ipv4
+        url = f"http://{host}:{published_port}"
         wait_for_http(url)
-        print(json.dumps({"build_id": build, "container_id": live, "url": url}))
+        print(json.dumps({
+            "build_id": build, "container_id": live, "url": url,
+            "ipv4": settings.ipv4, "port": int(published_port), "container_port": settings.container_port,
+        }))
         live = ""
         return 0
     except (DeploymentError, OSError, subprocess.CalledProcessError) as error:

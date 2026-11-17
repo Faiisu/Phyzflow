@@ -45,8 +45,10 @@ def main() -> int:
     ui_command.add_argument("--single-flow", action="store_true", help="Open the current flow without sheets.")
     deploy_parser = commands.add_parser("deploy", help="Validate and serve a Linux ARM64 build.")
     deploy_parser.add_argument("--sdk", type=Path, required=True, help="Path to the Workspace SDK source.")
-    deploy_parser.add_argument("--context", help="Local Docker context.")
-    deploy_parser.add_argument("--port", type=int, default=8080, help="Loopback port, or 0 for an available port.")
+    deploy_parser.add_argument("--context", help="Override deploy.context in setting.json.")
+    deploy_parser.add_argument("--ipv4", help="Host IPv4 bind address (default: 127.0.0.1).")
+    deploy_parser.add_argument("--port", type=int, help="Host port (default: 8080), or 0 for an available port.")
+    deploy_parser.add_argument("--container-port", type=int, help="Port used by the container service (default: 8000).")
     args = parser.parse_args()
 
     if args.command == "init" and args.directory is not None and args.project is not None:
@@ -77,7 +79,10 @@ def main() -> int:
     if args.command == "deploy":
         from .deploy import deploy
 
-        return deploy(root, args.sdk.resolve(), args.context, args.port)
+        return deploy(
+            root, args.sdk.resolve(), args.context, args.port,
+            ipv4=args.ipv4, container_port=args.container_port,
+        )
 
     if args.command == "ui":
         try:

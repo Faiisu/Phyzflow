@@ -18,9 +18,22 @@ cd workspace-test/deployment-trial
 ../../.venv/bin/workspace deploy --sdk ../../workspace
 ```
 
-The command uses the selected Docker context. Add `--context colima` if the target engine is Colima and its context is not selected. The default host port is 8080. Use `--port 0` to let Docker choose a free port, or `--port` with an explicit port.
+Set deployment defaults in the project's [setting.json](setting.json). The top-level `port` setting continues to control the Flow Editor.
 
-The command builds the Dockerfile and runs `workspace check` on the exact image. If the project includes a `smoke_test.py`, the image must include it in the working directory. The smoke test calls the same prediction handler used in service, from a candidate container with no published ports or external network. Once the checks pass, the command serves that image on the host's IPv4 loopback address. The final JSON reports `build_id`, `container_id`, and `url`. Build and check output goes to standard error.
+| Key under `deploy` | Default | Purpose |
+| --- | --- | --- |
+| `ipv4` | `127.0.0.1` | IPv4 address on the Docker host. Use `0.0.0.0` to publish on all IPv4 interfaces. |
+| `port` | `8080` | Published host port. Set it to `0` to let Docker choose a free port. |
+| `container_port` | `8000` | Port the HTTP service listens on inside the container. Pre-publication smoke tests use this port too. |
+| `context` | `null` | Docker context name. Set it to `colima` to select that engine, or leave it null to use the current context. |
+
+Override those values for a single deployment with `--ipv4`, `--port`, `--container-port`, or `--context`. For example:
+
+```sh
+../../.venv/bin/workspace deploy --sdk ../../workspace --context colima --port 9090
+```
+
+The command builds the Dockerfile and runs `workspace check` on the exact image. If the project includes a `smoke_test.py`, the image must include it in the working directory. The smoke test calls the same prediction handler used in service, from a candidate container with no published ports or external network. Once the checks pass, the command publishes the image at the configured address and returns `build_id`, `container_id`, `url`, `ipv4`, `port`, and `container_port` as JSON. When binding to `0.0.0.0`, the reported URL uses loopback for requests from the same machine. Clients on the network use the Docker host's reachable IP address and the reported host port. Build and check output goes to standard error.
 
 At the default URL:
 
