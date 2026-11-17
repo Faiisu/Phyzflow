@@ -130,16 +130,21 @@ def edit_source_file(
         current_revision = "missing"
     else:
         current_revision = source_revision(content)
-    if path.suffix == ".py":
+    if source is not None and revision != current_revision:
+        raise SourceChanged
+
+    python_source = path.suffix == ".py"
+    if python_source:
         encoding, _ = detect_encoding(BytesIO(content).readline)
     else:
         encoding = "utf-8-sig" if content.startswith(BOM_UTF8) else "utf-8"
-    text = content.decode(encoding)
+    try:
+        text = content.decode(encoding)
+    except LookupError:
+        raise ValueError("Could not read the file. Check the Python encoding declaration.") from None
     if source is None:
         return {"source": text.replace("\r\n", "\n").replace("\r", "\n"), "revision": current_revision}
 
-    if revision != current_revision:
-        raise SourceChanged
     if "\r\n" in text and "\n" not in text.replace("\r\n", ""):
         source = source.replace("\r\n", "\n").replace("\n", "\r\n")
     updated = source.encode(encoding)
@@ -147,6 +152,16 @@ def edit_source_file(
         raise ValueError("The editor supports source files up to 128 KiB.")
     if updated == content and current_revision != "missing":
         return {"revision": source_revision(content)}
+    if python_source:
+        message = "Saving would change how the file is read. Check the Python encoding declaration."
+        try:
+            saved_encoding, _ = detect_encoding(BytesIO(updated).readline)
+            reopened = updated.decode(saved_encoding)
+        except (LookupError, SyntaxError, UnicodeError):
+            raise ValueError(message) from None
+        if reopened != source:
+            raise ValueError(message)
+
     with NamedTemporaryFile(dir=path.parent, prefix=".workspace-edit-", delete=False) as stream:
         pending = Path(stream.name)
         try:

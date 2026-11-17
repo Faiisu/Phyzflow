@@ -59,7 +59,7 @@ class WorkspaceSheetTests(unittest.TestCase):
 
                 edit.click()
                 expect(editor).to_have_value(updated)
-                external = updated + "# Edited outside the Workspace\n"
+                external = "# coding: unknown-encoding\n" + updated
                 source.write_text(external)
                 draft = updated + "# Browser draft\n"
                 editor.fill(draft)
@@ -67,6 +67,30 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(dialog.get_by_role("status")).to_contain_text("changed on disk")
                 expect(editor).to_have_value(draft)
                 self.assertEqual(source.read_text(), external)
+
+    def test_editing_flow_source_rejects_an_unreadable_encoding_change(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            cli = Path(sys.executable).with_name("workspace")
+            subprocess.run([cli, "init", "--with-main"], cwd=root, check=True, capture_output=True)
+            source = root / "flow.py"
+            original = source.read_bytes()
+
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                page.get_by_role("button", name="Edit flow.py").click()
+                dialog = page.get_by_role("dialog", name="Edit flow.py")
+                editor = dialog.get_by_role("textbox", name="Source code")
+                expect(editor).to_have_value(original.decode())
+
+                for encoding in ("unknown-encoding", "latin-1", "base64"):
+                    with self.subTest(encoding=encoding):
+                        draft = f"# coding: {encoding}\n# Café\n" + original.decode()
+                        editor.fill(draft)
+                        dialog.get_by_role("button", name="Save", exact=True).click()
+                        expect(dialog.get_by_role("status")).to_contain_text("Check the Python encoding declaration")
+                        expect(editor).to_have_value(draft)
+                        self.assertEqual(source.read_bytes(), original)
 
     def test_fixing_unavailable_sheet_flow_source_restores_the_graph_and_run(self):
         with TemporaryDirectory() as temp, browser_page() as page:
