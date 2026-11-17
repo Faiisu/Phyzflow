@@ -89,6 +89,30 @@ export function initDashboards(project, revealBoard) {
   const metrics = new Map();
   const settingChanges = new Map();
   const activePanels = new Set();
+  const savedLayouts = new Map();
+  let availablePanels = [];
+
+  function layoutKey(scope, panelId) {
+    return `${scope ?? "workflow"}::${panelId || "default"}`;
+  }
+
+  function savePanelLayout(scope, panelId, element) {
+    if (!element.style.left) return;
+    savedLayouts.set(layoutKey(scope, panelId), {
+      left: element.style.left,
+      top: element.style.top,
+      width: element.style.width,
+      height: element.style.height,
+    });
+  }
+
+  function applyPanelLayout(scope, panelId, element) {
+    const saved = savedLayouts.get(layoutKey(scope, panelId));
+    element.style.left = saved?.left ?? "";
+    element.style.top = saved?.top ?? "";
+    element.style.width = saved?.width ?? "";
+    element.style.height = saved?.height ?? "";
+  }
 
   function scopeKey(scope) {
     return scope === null ? "workflow" : graph.findIndex(node => node.id === scope);
@@ -281,6 +305,9 @@ export function initDashboards(project, revealBoard) {
     };
 
     panel.setScope = function setScope(nodeId, panelId = "default", panelLabel = "", preferred = liveRun?.status === "running" ? "live" : null, staggerIndex = 0) {
+      if (!element.hidden && activePanels.has(panel)) {
+        savePanelLayout(panel.scope, panel.panelId, element);
+      }
       panel.scope = nodeId;
       panel.panelId = panelId;
       panel.panelLabel = panelLabel;
@@ -289,6 +316,7 @@ export function initDashboards(project, revealBoard) {
       panel.following = preferred === "live";
       panel.settings = {};
       updateHeading();
+      applyPanelLayout(nodeId, panelId, element);
       if (element.hidden) panel.opener = document.activeElement;
       element.hidden = false;
       activePanels.add(panel);
@@ -300,6 +328,7 @@ export function initDashboards(project, revealBoard) {
 
     panel.close = function close() {
       if (element.hidden && !activePanels.has(panel)) return;
+      savePanelLayout(panel.scope, panel.panelId, element);
       if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
       panel.loadVersion++;
       panel.listVersion++;
@@ -356,11 +385,20 @@ export function initDashboards(project, revealBoard) {
 
   function syncVisualizeDrawer() {
     const list = document.querySelector("#visualize-list");
-    if (!list) return;
-    for (const button of list.querySelectorAll("button[data-vis-panel]")) {
-      const nodeId = button.dataset.visNode === "" ? null : button.dataset.visNode;
-      const panelId = button.dataset.visPanel;
-      button.setAttribute("aria-pressed", String(Boolean(findPanel(nodeId, panelId))));
+    if (list) {
+      for (const button of list.querySelectorAll("button[data-vis-panel]")) {
+        const nodeId = button.dataset.visNode === "" ? null : button.dataset.visNode;
+        const panelId = button.dataset.visPanel;
+        button.setAttribute("aria-pressed", String(Boolean(findPanel(nodeId, panelId))));
+      }
+    }
+    const openAllBtn = document.querySelector("#visualize-open-all");
+    const closeAllBtn = document.querySelector("#visualize-close-all");
+    if (openAllBtn) {
+      openAllBtn.disabled = !availablePanels.length || availablePanels.every(item => findPanel(item.nodeId, item.panelId));
+    }
+    if (closeAllBtn) {
+      closeAllBtn.disabled = activePanels.size === 0;
     }
   }
 
@@ -396,11 +434,16 @@ export function initDashboards(project, revealBoard) {
       .filter(res => res.status === "fulfilled" && res.value.panels.length > 0)
       .map(res => res.value);
 
+    availablePanels = groups.flatMap(group =>
+      group.panels.map(entry => ({ nodeId: group.nodeId, panelId: entry.id, label: entry.label })),
+    );
+
     if (!groups.length) {
       const empty = document.createElement("p");
       empty.className = "muted";
       empty.textContent = "No dashboards found in this flow.";
       list.replaceChildren(empty);
+      syncVisualizeDrawer();
       return;
     }
 
@@ -441,6 +484,7 @@ export function initDashboards(project, revealBoard) {
       }
     }
     list.replaceChildren(fragment);
+    syncVisualizeDrawer();
   }
 
   async function open(nodeId, preferred = liveRun?.status === "running" ? "live" : null, panelId = null) {
@@ -469,6 +513,17 @@ export function initDashboards(project, revealBoard) {
 
   const visualizeDrawer = document.querySelector("#panel-visualize");
   const visualizeToggle = document.querySelector('#panel-switcher button[aria-controls="panel-visualize"]');
+
+  document.querySelector("#visualize-open-all")?.addEventListener("click", () => {
+    for (const item of availablePanels) {
+      if (!findPanel(item.nodeId, item.panelId)) {
+        openSinglePanel(item.nodeId, item.panelId, item.label, undefined, activePanels.size);
+      }
+    }
+  });
+  document.querySelector("#visualize-close-all")?.addEventListener("click", () => {
+    for (const panel of [...activePanels]) panel.close();
+  });
 
   if (visualizeDrawer && !visualizeDrawer.hidden) {
     refreshVisualizeList();

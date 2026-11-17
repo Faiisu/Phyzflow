@@ -294,12 +294,12 @@ function focusDashboard(panel) {
   }
 }
 
-function revealDashboard(panel = dashboardBoard, staggerIndex = 0) {
+function revealDashboard(panel = dashboardBoard) {
   focusDashboard(panel);
   const handle = panel.querySelector(".dock-heading");
   const margin = 12;
-  const targetWidth = 560;
-  const targetHeight = 420;
+  const targetWidth = 600;
+  const targetHeight = 400;
   const areas = graphAreas();
   const room = area => Math.min(
     (area.right - area.left - 2 * margin) / targetWidth,
@@ -322,14 +322,57 @@ function revealDashboard(panel = dashboardBoard, staggerIndex = 0) {
     const x = (area.left + area.right) / 2;
     const y = (area.top + area.bottom) / 2;
     const ratio = 100 / graphZoom;
-    const width = Math.max(0, Math.min(targetWidth, area.right - area.left - 2 * margin)) * ratio;
-    const height = Math.max(0, Math.min(targetHeight, area.bottom - area.top - 2 * margin)) * ratio;
+    const width = Math.round(Math.max(280, Math.min(targetWidth, area.right - area.left - 2 * margin)) * ratio / WORKSPACE_STEP) * WORKSPACE_STEP;
+    const height = Math.round(Math.max(220, Math.min(targetHeight, area.bottom - area.top - 2 * margin)) * ratio / WORKSPACE_STEP) * WORKSPACE_STEP;
     const { graphX, graphY } = graphAnchor(x, y);
-    const offset = staggerIndex * 36 * ratio;
+    const gap = 20 * ratio;
+
+    const others = visibleDashboards()
+      .filter(other => other !== panel && other.style.left)
+      .map(other => ({
+        left: parseFloat(other.style.left),
+        top: parseFloat(other.style.top),
+        width: other.offsetWidth || parseFloat(other.style.width) || width,
+        height: other.offsetHeight || parseFloat(other.style.height) || height,
+      }));
+
+    const overlaps = (lx, ty) => others.some(box =>
+      lx < box.left + box.width + gap &&
+      lx + width + gap > box.left &&
+      ty < box.top + box.height + gap &&
+      ty + height + gap > box.top
+    );
+
+    let left = graphX - width / 2;
+    let top = graphY - height / 2;
+    if (others.length) {
+      const baseLeft = Math.min(...others.map(b => b.left));
+      const baseTop = Math.min(...others.map(b => b.top));
+      const maxRowWidth = Math.max(width * 2 + gap * 2, (area.right - area.left) * ratio);
+      left = baseLeft;
+      top = baseTop;
+      let guard = 0;
+      while (overlaps(left, top) && guard++ < 48) {
+        const blocker = others.find(box =>
+          left < box.left + box.width + gap &&
+          left + width + gap > box.left &&
+          top < box.top + box.height + gap &&
+          top + height + gap > box.top
+        );
+        const nextLeft = blocker.left + blocker.width + gap;
+        if (nextLeft + width - baseLeft <= maxRowWidth) {
+          left = nextLeft;
+        } else {
+          left = baseLeft;
+          top = blocker.top + blocker.height + gap;
+        }
+      }
+    }
+
     panel.style.width = `${width}px`;
     panel.style.height = `${height}px`;
-    panel.style.left = `${graphX - panel.offsetWidth / 2 + offset}px`;
-    panel.style.top = `${graphY - panel.offsetHeight / 2 + offset}px`;
+    panel.style.left = `${snapStep(left)}px`;
+    panel.style.top = `${snapStep(top)}px`;
     layoutGraph();
   } else if (document.fullscreenElement !== panel) {
     const header = handle.getBoundingClientRect();
@@ -340,15 +383,27 @@ function revealDashboard(panel = dashboardBoard, staggerIndex = 0) {
   }
 }
 
+const WORKSPACE_STEP = 20;
 let boardDrag = null;
+
+function snapStep(value) {
+  return Math.round(value / WORKSPACE_STEP) * WORKSPACE_STEP;
+}
+
+function snapDashboardSize(value) {
+  return Math.max(0, snapStep(value));
+}
 
 function changeDashboardBounds(panel, bounds, dx, dy, resize) {
   if (resize) {
-    panel.style.width = `${Math.max(0, bounds.width + dx)}px`;
-    panel.style.height = `${Math.max(0, bounds.height + dy)}px`;
+    const width = snapDashboardSize(bounds.width + dx);
+    const height = snapDashboardSize(bounds.height + dy);
+    panel.style.width = `${width}px`;
+    panel.style.height = `${height}px`;
+    panel.dataset.resizeSize = `${Math.round(panel.offsetWidth || width)} × ${Math.round(panel.offsetHeight || height)}`;
   } else {
-    panel.style.left = `${bounds.left + dx}px`;
-    panel.style.top = `${bounds.top + dy}px`;
+    panel.style.left = `${snapStep(bounds.left + dx)}px`;
+    panel.style.top = `${snapStep(bounds.top + dy)}px`;
   }
 }
 
@@ -393,6 +448,7 @@ graph.addEventListener("lostpointercapture", event => {
   const { panel } = boardDrag;
   boardDrag = null;
   panel.classList.remove("is-resizing", "is-moving");
+  delete panel.dataset.resizeSize;
   graphViewport.classList.remove("is-dragging-dashboard");
   layoutGraph();
 });
@@ -406,7 +462,7 @@ graph.addEventListener("keydown", event => {
   if (!direction) return;
   event.preventDefault();
   cancelWheelZoom();
-  const step = 1600 / graphZoom;
+  const step = WORKSPACE_STEP;
   changeDashboardBounds(panel, dashboardBounds(panel), direction[0] * step, direction[1] * step, event.shiftKey);
   layoutGraph();
 });
@@ -1043,8 +1099,8 @@ function enableNodeDragging(steps) {
       graphViewport.classList.add("is-dragging-node");
     }
     const scale = graph.getBoundingClientRect().width / layoutSize(graph).width;
-    drag.node.style.left = `${drag.left + dx / scale}px`;
-    drag.node.style.top = `${drag.top + dy / scale}px`;
+    drag.node.style.left = `${snapStep(drag.left + dx / scale)}px`;
+    drag.node.style.top = `${snapStep(drag.top + dy / scale)}px`;
     if (redraw === null) {
       redraw = requestAnimationFrame(() => {
         redraw = null;
