@@ -51,7 +51,7 @@ function updateStatus(sheet, status) {
 
 function showNotice() {
   reloadFlow.disabled = !active || active.pending;
-  editFlowSource.disabled = !active?.frame || active.pending || active.status === "unavailable";
+  editFlowSource.disabled = !active || active.pending;
   const reloadError = active?.reloadError ?? "";
   reloadMessage.hidden = !reloadError;
   if (reloadMessage.textContent !== reloadError) reloadMessage.textContent = reloadError;

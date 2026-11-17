@@ -68,6 +68,67 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(editor).to_have_value(draft)
                 self.assertEqual(source.read_text(), external)
 
+    def test_fixing_unavailable_sheet_flow_source_restores_the_graph_and_run(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            cli = Path(sys.executable).with_name("workspace")
+            subprocess.run([cli, "init", "--with-main"], cwd=root, check=True, capture_output=True)
+            source = root / "flow.py"
+            corrected = source.read_text().replace('"Start"', '"Recovered"')
+            invalid = "def broken(\n"
+
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
+                edit = page.get_by_role("button", name="Edit flow.py")
+                reload_flow = page.get_by_role("button", name="Reload flow")
+                dialog = page.get_by_role("dialog", name="Edit flow.py")
+                editor = dialog.get_by_role("textbox", name="Source code")
+                save = dialog.get_by_role("button", name="Save", exact=True)
+                close = dialog.get_by_role("button", name="Close", exact=True)
+                status = dialog.get_by_role("status")
+
+                edit.click()
+                expect(editor).to_be_editable()
+                editor.fill(invalid)
+                save.click()
+                expect(status).to_contain_text("Saved.")
+                self.assertEqual(source.read_text(), invalid)
+                close.click()
+                reload_flow.click()
+                tab = page.get_by_role("tab", name="Main")
+                expect(tab).to_contain_text("Unavailable")
+                expect(page.get_by_text(f"Syntax: {source}:1", exact=False)).to_be_visible()
+
+                edit.click(timeout=3000)
+                expect(editor).to_have_value(invalid)
+                external = invalid + "# External edit\n"
+                source.write_text(external)
+                editor.fill(corrected)
+                save.click()
+                expect(status).to_contain_text("changed on disk")
+                expect(editor).to_have_value(corrected)
+                self.assertEqual(source.read_text(), external)
+                page.once("dialog", lambda prompt: prompt.accept())
+                close.click()
+
+                edit.click()
+                expect(editor).to_have_value(external)
+                editor.fill(corrected)
+                save.click()
+                expect(status).to_contain_text("Saved.")
+                self.assertEqual(source.read_text(), corrected)
+                close.click()
+                reload_flow.click()
+                expect(flow.get_by_role("button", name="Inspect Recovered")).to_be_visible()
+                flow.get_by_role("button", name="Run flow").click()
+                expect(tab).to_contain_text("Succeeded")
+                self.assertEqual(
+                    json.loads(flow.locator("#result pre").inner_text()),
+                    {"message": "Hello from Workspace"},
+                )
+
     def test_init_with_main_creates_a_runnable_project_and_preserves_existing_files(self):
         with TemporaryDirectory() as temp:
             root = Path(temp).resolve()
