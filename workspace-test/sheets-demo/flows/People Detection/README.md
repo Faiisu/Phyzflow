@@ -19,6 +19,10 @@ OpenCV's built-in CPU detector works best with standing people whose full bodies
 are in view. The sheet processes up to 10 frames per second. The actual rate
 depends on the camera and CPU.
 
+If frames stop arriving, Workspace retries reads briefly, then reopens the
+camera once. The run reports an error if the reopened camera still cannot
+deliver a frame.
+
 Click **Stop** on the sheet tab to release the camera. Use **Open flow** before
 starting another run. The camera keeps running if you close the dashboard or
 browser during a run. Workspace streams the JPEG previews only in the live

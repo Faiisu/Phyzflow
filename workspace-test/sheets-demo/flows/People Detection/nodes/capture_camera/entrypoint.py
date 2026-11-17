@@ -10,25 +10,33 @@ def capture_camera() -> Iterator["ndarray"]:
     """Capture frames from the default local camera."""
     import cv2
 
-    camera = cv2.VideoCapture(0)
-    try:
-        if not camera.isOpened():
-            raise RuntimeError("Could not open the default camera. Check camera permissions and try again.")
-        next_frame_at = 0.0
-        retry_until = None
-        while True:
-            ok, frame = camera.read()
-            now = monotonic()
-            if not ok or frame is None or not frame.size:
-                if retry_until is None:
-                    retry_until = now + 2.0
-                if now >= retry_until:
-                    raise RuntimeError("The camera stopped delivering frames. Reconnect it and try again.")
-                sleep(0.1)
-                continue
+    reopening = False
+    while True:
+        camera = cv2.VideoCapture(0)
+        try:
+            if not camera.isOpened():
+                if reopening:
+                    raise RuntimeError("Could not reopen the camera after losing its feed. Reconnect it and try again.")
+                raise RuntimeError("Could not open the default camera. Check camera permissions and try again.")
+            next_frame_at = 0.0
             retry_until = None
-            if now >= next_frame_at:
-                next_frame_at = now + 0.1
-                yield frame
-    finally:
-        camera.release()
+            while True:
+                ok, frame = camera.read()
+                now = monotonic()
+                if not ok or frame is None or not frame.size:
+                    if retry_until is None:
+                        retry_until = now + 2.0
+                    if now >= retry_until:
+                        if reopening:
+                            raise RuntimeError("The camera delivered no frames after reopening. Reconnect it and try again.")
+                        reopening = True
+                        break
+                    sleep(0.1)
+                    continue
+                reopening = False
+                retry_until = None
+                if now >= next_frame_at:
+                    next_frame_at = now + 0.1
+                    yield frame
+        finally:
+            camera.release()

@@ -18,13 +18,22 @@ from pathlib import Path
 from time import sleep
 
 class TestCamera:
+    sessions = 0
+
     def __init__(self, index):
+        assert index == 0
+        self.session = TestCamera.sessions
+        TestCamera.sessions += 1
+        if self.session:
+            assert Path(f"released-{self.session - 1}").exists()
         self.reads = 0
 
     def isOpened(self):
         return True
 
     def read(self):
+        if self.session != 1:
+            return False, None
         self.reads += 1
         if self.reads == 1:
             return False, None
@@ -39,7 +48,7 @@ class TestCamera:
         return True, np.full((240, 320, 3), self.reads * 20, dtype=np.uint8)
 
     def release(self):
-        Path("camera-released").touch()
+        Path(f"released-{self.session}").touch()
 
 class TestDetector:
     winSize = (64, 128)
@@ -97,10 +106,12 @@ class PeopleDetectionTests(unittest.TestCase):
                     self.assertAlmostEqual(channel, 80, delta=2)
 
                 (sheet / "disconnect").touch()
-                expect(dashboard.get_by_role("status")).to_have_text("Camera run failed. Open the Run panel for details.")
+                expect(dashboard.get_by_role("status")).to_have_text(
+                    "Camera run failed. Open the Run panel for details.", timeout=10_000,
+                )
                 expect(camera).to_be_hidden()
                 self.assertIsNone(camera.get_attribute("src"))
-                self.assertTrue((sheet / "camera-released").exists())
+                self.assertTrue((sheet / "released-2").exists())
                 expect(run).to_be_enabled()
                 history = list((sheet / ".workspace" / "runs").glob("*.json"))
                 self.assertEqual(len(history), 1)
