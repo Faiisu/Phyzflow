@@ -18,9 +18,21 @@
     <span id="workspace-name" class="workspace-name">Workspace</span>
     <div id="sheet-tabs" class="sheet-tabs" role="tablist" aria-label="Flows"></div>
     <button type="button" id="new-sheet" aria-label="New sheet" title="New sheet" disabled>+</button>
+    <button type="button" id="edit-flow-source" aria-haspopup="dialog" disabled>Edit flow.py</button>
     <button type="button" id="reload-flow" disabled>Reload flow</button>
     <span id="reload-message" role="status" hidden></span>
   </footer>
+  <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
+    <form>
+      <h1 id="flow-source-title">Edit flow.py</h1>
+      <textarea id="flow-source-input" aria-label="Source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" disabled></textarea>
+      <p id="flow-source-message" role="status"></p>
+      <div class="dialog-actions">
+        <button type="button" id="close-flow-source">Close</button>
+        <button type="submit" disabled>Save</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="create-sheet" class="sheet-dialog" aria-labelledby="create-sheet-title">
     <form>
       <h1 id="create-sheet-title">New sheet</h1>

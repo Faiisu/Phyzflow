@@ -17,6 +17,7 @@ import traceback
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
+from .node_sources import SourceChanged, edit_source_file
 from .project import ValidationError, load_project
 from .sheets import create_sheet, discover_flows
 from .ui_settings import UISettings, ZoomSettings
@@ -29,6 +30,7 @@ VIEW_PATH = re.compile(
     r"dashboard-(?:assets|settings)/(?:workflow|[0-9]{1,8})|"
     r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
+FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
 
 
 def serve_flow(root: Path, zoom: ZoomSettings, ready: Connection) -> None:
@@ -242,6 +244,45 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             sheet = sheets[index]
             return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
 
+        def flow_source(self, index: int) -> None:
+            source = revision = None
+            if self.command == "POST":
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 1024 * 1024 or self.headers.get_content_type() != "application/json":
+                        raise ValueError
+                    data = json.loads(self.rfile.read(size))
+                    if not isinstance(data, dict):
+                        raise ValueError
+                    source, revision = data.get("source"), data.get("revision")
+                    if not isinstance(source, str) or not isinstance(revision, str):
+                        raise ValueError
+                except ValueError:
+                    self.send_json({"error": "Send the source and revision as a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
+                    return
+
+            sheet = sheets[index] if index < len(sheets) else None
+            try:
+                if sheet is None:
+                    raise FileNotFoundError
+                with sheet.lock:
+                    path = sheet.root / "flow.py"
+                    if sheet.closing or path.resolve() != path or not path.is_file():
+                        raise FileNotFoundError
+                    result = edit_source_file(path, source, revision)
+            except FileNotFoundError:
+                self.send_json({"error": "This sheet's flow.py is unavailable."}, HTTPStatus.NOT_FOUND)
+            except SourceChanged:
+                self.send_json({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
+            except (UnicodeError, SyntaxError):
+                self.send_json({"error": "Could not read or write the file in its original encoding."}, HTTPStatus.BAD_REQUEST)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, RuntimeError):
+                self.send_json({"error": "Could not read or write the file."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json(result)
+
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}
             body = None
@@ -300,6 +341,9 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if source := FLOW_SOURCE_PATH.fullmatch(self.path):
+                self.flow_source(int(source[1]))
+                return
             if self.path == "/workspace":
                 with sheets_lock:
                     if not closing:
@@ -338,6 +382,9 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             origin = self.headers.get("Origin")
             if not self.local_request() or origin not in (None, f"http://{self.headers.get('Host')}"):
                 self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if source := FLOW_SOURCE_PATH.fullmatch(self.path):
+                self.flow_source(int(source[1]))
                 return
             if self.path == "/flows":
                 self.create_sheet()

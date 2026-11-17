@@ -16,6 +16,58 @@ from browser_support import browser_page, local_ui, show_panel
 
 
 class WorkspaceSheetTests(unittest.TestCase):
+    def test_editing_sheet_flow_source_saves_to_disk_and_applies_on_reload(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            cli = Path(sys.executable).with_name("workspace")
+            subprocess.run([cli, "init", "--with-main"], cwd=root, check=True, capture_output=True)
+            source = root / "flow.py"
+            original = source.read_text()
+            (root / "nodes" / "start" / "finish.py").write_text(
+                'def finish():\n    return {"message": "Finished"}\n'
+            )
+            updated = original.replace(
+                'from nodes.start.entrypoint import start',
+                'from nodes.start.entrypoint import start\nfrom nodes.start.finish import finish',
+            ).replace(
+                'steps=(Step("Start", start, {}),),',
+                'steps=(Step("Start", start, {}), Step("Finish", finish, {})),',
+            ).replace('output=Output("Start")', 'output=Output("Finish")')
+
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
+                edit = page.get_by_role("button", name="Edit flow.py")
+                edit.click()
+                dialog = page.get_by_role("dialog", name="Edit flow.py")
+                editor = dialog.get_by_role("textbox", name="Source code")
+                expect(editor).to_have_value(original)
+                editor.fill(updated)
+                dialog.get_by_role("button", name="Save", exact=True).click()
+                expect(dialog.get_by_role("status")).to_contain_text("Saved.")
+                self.assertEqual(source.read_text(), updated)
+                dialog.get_by_role("button", name="Close", exact=True).click()
+                page.get_by_role("button", name="Reload flow").click()
+                expect(flow.get_by_role("button", name="Inspect Finish")).to_be_visible()
+                flow.get_by_role("button", name="Run flow").click()
+                expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
+                self.assertEqual(
+                    json.loads(flow.locator("#result pre").inner_text()),
+                    {"message": "Finished"},
+                )
+
+                edit.click()
+                expect(editor).to_have_value(updated)
+                external = updated + "# Edited outside the Workspace\n"
+                source.write_text(external)
+                draft = updated + "# Browser draft\n"
+                editor.fill(draft)
+                dialog.get_by_role("button", name="Save", exact=True).click()
+                expect(dialog.get_by_role("status")).to_contain_text("changed on disk")
+                expect(editor).to_have_value(draft)
+                self.assertEqual(source.read_text(), external)
+
     def test_init_with_main_creates_a_runnable_project_and_preserves_existing_files(self):
         with TemporaryDirectory() as temp:
             root = Path(temp).resolve()

@@ -118,7 +118,7 @@ def source_revision(content: bytes) -> str:
     return sha256(content).hexdigest()
 
 
-def edit_node_source(
+def edit_source_file(
     path: Path, source: str | None, revision: str | None, *, initial: str | None = None,
 ) -> dict[str, str]:
     try:

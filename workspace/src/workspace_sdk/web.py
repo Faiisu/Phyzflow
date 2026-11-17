@@ -13,7 +13,7 @@ from typing import Any
 from .dashboard import ASSET_ROUTE, SETTINGS_ROUTE, dashboard_assets
 from .flow import Flow, Output
 from .history import RunHistory
-from .node_sources import SourceChanged, edit_node_source, node_files, node_source_path
+from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
 from .node_settings import LiveSettings, SettingsStore, parse_setting_defaults
 from .project import ordered_steps, relative_source, setting_files, source_location
 from .runner import run
@@ -278,7 +278,7 @@ def serve(
                                 and setting.default == declarations[0].default for setting in declarations
                             )
                         }, indent=2) + "\n"
-                    result = edit_node_source(path, source, revision, initial=initial)
+                    result = edit_source_file(path, source, revision, initial=initial)
             except FileNotFoundError:
                 self.send_source({"error": "This source file is unavailable in the node folder."}, HTTPStatus.NOT_FOUND)
             except SourceChanged:
