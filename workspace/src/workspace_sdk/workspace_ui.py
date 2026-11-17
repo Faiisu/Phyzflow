@@ -2,6 +2,7 @@
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+from hashlib import sha256
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,7 @@ import traceback
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
+from .node_sources import SourceChanged, edit_source_file
 from .project import ValidationError, load_project
 from .sheets import create_sheet, discover_flows
 from .ui_settings import UISettings, ZoomSettings
@@ -29,6 +31,7 @@ VIEW_PATH = re.compile(
     r"dashboard-(?:assets|settings)/(?:workflow|[0-9]{1,8})|"
     r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
+FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
 
 
 def serve_flow(root: Path, zoom: ZoomSettings, ready: Connection) -> None:
@@ -62,6 +65,33 @@ class ReloadConflict(RuntimeError):
     pass
 
 
+class ReloadDeferred(RuntimeError):
+    pass
+
+
+def source_stamp(root: Path, *, main: bool) -> str:
+    # Track the sheet's Python tree, including new helpers that cannot be imported yet.
+    entries = []
+    for directory, folders, files in os.walk(root):
+        path = Path(directory)
+        folders[:] = [
+            name for name in folders
+            if not name.startswith(".") and name != "__pycache__"
+            and not (main and path == root and name == "flows")
+            and not (path / name / "pyvenv.cfg").is_file()
+        ]
+        for name in files:
+            if not name.endswith(".py") and not (path == root and name == "pyproject.toml"):
+                continue
+            source = path / name
+            try:
+                stat = source.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            entries.append((str(source.relative_to(root)), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+    return sha256(json.dumps(sorted(entries)).encode()).hexdigest()
+
+
 def terminate(process: BaseProcess) -> None:
     if process.is_alive():
         process.terminate()
@@ -72,7 +102,7 @@ def terminate(process: BaseProcess) -> None:
 
 
 class FlowSheet:
-    def __init__(self, title: str, root: Path, zoom: ZoomSettings):
+    def __init__(self, title: str, root: Path, zoom: ZoomSettings, *, main: bool = False):
         self.title = title
         self.root = root
         self.zoom = zoom
@@ -81,8 +111,17 @@ class FlowSheet:
         self.revision = 0
         self.closing = False
         self.lock = Lock()
+        self.main = main
+        self.attempted_source: str | None = None
 
-    def open(self, *, reload: bool = False) -> int:
+    def changed_source(self, status: str) -> str | None:
+        attempted = self.attempted_source
+        if attempted is None or status == "stopped":
+            return None
+        stamp = source_stamp(self.root, main=self.main)
+        return stamp if stamp != attempted else None
+
+    def open(self, *, reload: bool = False, automatic_source: str | None = None) -> int:
         with self.lock:
             if self.closing:
                 raise RuntimeError("Workspace is shutting down.")
@@ -92,7 +131,9 @@ class FlowSheet:
                     raise ReloadConflict("This flow is running. Wait for it to finish or stop it before reloading.")
                 if status == "unavailable" and self.worker is not None and self.worker.process.is_alive():
                     raise ReloadConflict("Could not verify the run status. Try reloading again or stop the flow first.")
-                self.stop_worker()
+                if automatic_source is not None and self.changed_source(status) != automatic_source:
+                    raise ReloadDeferred
+                self.stop_worker(status="opening")
                 self.revision += 1
             if self.worker is not None:
                 if self.worker.process.is_alive():
@@ -100,6 +141,8 @@ class FlowSheet:
                 terminate(self.worker.process)
                 self.worker = None
 
+            self.attempted_source = automatic_source or source_stamp(self.root, main=self.main)
+            self.inactive_status = "opening"
             context = multiprocessing.get_context("spawn")
             incoming, outgoing = context.Pipe(duplex=False)
             process = context.Process(target=serve_flow, args=(self.root, self.zoom, outgoing))
@@ -126,8 +169,8 @@ class FlowSheet:
                 self.closing = True
             self.stop_worker()
 
-    def stop_worker(self) -> None:
-        self.inactive_status = "stopped"
+    def stop_worker(self, *, status: str = "stopped") -> None:
+        self.inactive_status = status
         if self.worker is not None:
             terminate(self.worker.process)
             self.worker = None
@@ -152,7 +195,10 @@ class FlowSheet:
 
 
 def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISettings) -> None:
-    sheets: list[FlowSheet | None] = [FlowSheet(title, path, settings.zoom) for title, path in flows]
+    def make_sheet(title: str, path: Path) -> FlowSheet:
+        return FlowSheet(title, path, settings.zoom, main=path == root)
+
+    sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
     sheets_lock = Lock()
     closing = False
 
@@ -196,7 +242,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                         return
                     directory = create_sheet(root, value).parent
                     index = len(sheets)
-                    sheets.append(FlowSheet(directory.name, directory, settings.zoom))
+                    sheets.append(make_sheet(directory.name, directory))
             except FileExistsError:
                 self.send_json({"error": "That sheet name is already in use. Choose another name."}, HTTPStatus.CONFLICT)
                 return
@@ -241,6 +287,45 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 return None
             sheet = sheets[index]
             return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
+
+        def flow_source(self, index: int) -> None:
+            source = revision = None
+            if self.command == "POST":
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 1024 * 1024 or self.headers.get_content_type() != "application/json":
+                        raise ValueError
+                    data = json.loads(self.rfile.read(size))
+                    if not isinstance(data, dict):
+                        raise ValueError
+                    source, revision = data.get("source"), data.get("revision")
+                    if not isinstance(source, str) or not isinstance(revision, str):
+                        raise ValueError
+                except ValueError:
+                    self.send_json({"error": "Send the source and revision as a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
+                    return
+
+            sheet = sheets[index] if index < len(sheets) else None
+            try:
+                if sheet is None:
+                    raise FileNotFoundError
+                with sheet.lock:
+                    path = sheet.root / "flow.py"
+                    if sheet.closing or path.resolve() != path or not path.is_file():
+                        raise FileNotFoundError
+                    result = edit_source_file(path, source, revision)
+            except FileNotFoundError:
+                self.send_json({"error": "This sheet's flow.py is unavailable."}, HTTPStatus.NOT_FOUND)
+            except SourceChanged:
+                self.send_json({"error": "This file changed on disk. Reopen it before saving."}, HTTPStatus.CONFLICT)
+            except (UnicodeError, SyntaxError):
+                self.send_json({"error": "Could not read or write the file in its original encoding."}, HTTPStatus.BAD_REQUEST)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, RuntimeError):
+                self.send_json({"error": "Could not read or write the file."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json(result)
 
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}
@@ -300,24 +385,30 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if source := FLOW_SOURCE_PATH.fullmatch(self.path):
+                self.flow_source(int(source[1]))
+                return
             if self.path == "/workspace":
                 with sheets_lock:
                     if not closing:
                         known = {sheet.root for sheet in sheets if sheet is not None}
                         sheets.extend(
-                            FlowSheet(title, path, settings.zoom)
+                            make_sheet(title, path)
                             for title, path in discover_flows(root)
                             if path not in known
                         )
                     current = list(sheets)
-                self.send_json({
-                    "name": root.name,
-                    "flows": [
-                        {"name": sheet.title, "status": sheet.status(), "deletable": can_delete(sheet), "revision": sheet.revision}
-                        if sheet is not None else None
-                        for sheet in current
-                    ],
-                })
+                flows = []
+                for sheet in current:
+                    if sheet is None:
+                        flows.append(None)
+                        continue
+                    status = sheet.status()
+                    flows.append({
+                        "name": sheet.title, "status": status, "deletable": can_delete(sheet),
+                        "revision": sheet.revision, "changed_source": sheet.changed_source(status),
+                    })
+                self.send_json({"name": root.name, "flows": flows})
                 return
             view = self.view_route()
             if view is not None and view[2] != "/run" and not view[2].startswith("/node-source/"):
@@ -339,6 +430,9 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             if not self.local_request() or origin not in (None, f"http://{self.headers.get('Host')}"):
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if source := FLOW_SOURCE_PATH.fullmatch(self.path):
+                self.flow_source(int(source[1]))
+                return
             if self.path == "/flows":
                 self.create_sheet()
                 return
@@ -346,7 +440,7 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
             if view is not None and (view[2] == "/run" or view[2].startswith(("/node-source/", "/dashboard-settings/"))):
                 self.forward_view(*view)
                 return
-            command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload)", self.path)
+            command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload|reload/([0-9a-f]{64}))", self.path)
             if command is None or (index := int(command[1])) >= len(sheets):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -362,11 +456,13 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                 self.send_json({"status": "stopped"})
                 return
             try:
-                revision = sheet.open(reload=command[2] == "reload")
+                revision = sheet.open(reload=command[2].startswith("reload"), automatic_source=command[3])
                 prefix = f"/revision/{revision}" if revision else ""
                 self.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision})
             except ReloadConflict as error:
                 self.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
+            except ReloadDeferred:
+                self.send_json({"deferred": True}, HTTPStatus.CONFLICT)
             except (OSError, RuntimeError, EOFError) as error:
                 self.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
 

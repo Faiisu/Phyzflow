@@ -1,0 +1,40 @@
+:root {
+  color-scheme: dark;
+  --surface: #171e2b;
+  --panel: #202b3d;
+  --line: #3b4b63;
+  --ink: #eef3fb;
+  --muted: #b0bfd3;
+  --output: #ffbf78;
+  background: var(--surface);
+  color: var(--ink);
+  font: 14px system-ui, sans-serif;
+}
+
+body { margin: 0; }
+main { padding: clamp(12px, 4vw, 28px); }
+p { margin: 0; color: var(--muted); }
+
+.equation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(6px, 3vw, 18px);
+  margin: 12px 0;
+}
+
+.reading {
+  display: grid;
+  gap: 6px;
+  padding: clamp(8px, 3vw, 18px);
+  background: var(--panel);
+  border-block-start: 2px solid var(--line);
+}
+
+.reading span { color: var(--muted); font-size: 0.9rem; }
+output, .operator { font-family: ui-monospace, monospace; }
+.reading output { font-size: clamp(1.2rem, 7vw, 3rem); overflow-wrap: anywhere; }
+.operator { color: var(--muted); white-space: nowrap; }
+.result { border-color: var(--output); }
+.result output { color: var(--output); }
+.elapsed output { margin-inline-start: 8px; color: var(--ink); }

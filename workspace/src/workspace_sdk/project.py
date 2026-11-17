@@ -198,8 +198,11 @@ class CheckedSourceLoader(SourceFileLoader):
 
     def get_code(self, fullname: str) -> CodeType:
         if self.checked is None:
-            source = self.get_data(self.path)
-            code = self.source_to_code(source, self.path)
+            try:
+                source = self.get_data(self.path)
+                code = self.source_to_code(source, self.path)
+            except SyntaxError as error:
+                raise ValidationError(f"Syntax: {self.source_path}:{error.lineno}: {error.msg}") from error
             digest = sha256(source).hexdigest()
         else:
             code, digest = self.checked

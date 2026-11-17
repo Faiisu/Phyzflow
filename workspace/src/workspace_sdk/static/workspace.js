@@ -6,6 +6,14 @@ const reopen = document.querySelector("#open-flow");
 const newSheet = document.querySelector("#new-sheet");
 const reloadFlow = document.querySelector("#reload-flow");
 const reloadMessage = document.querySelector("#reload-message");
+const sourceChangeMessage = document.querySelector("#source-change-message");
+const editFlowSource = document.querySelector("#edit-flow-source");
+const sourceDialog = document.querySelector("#flow-source");
+const sourceForm = sourceDialog.querySelector("form");
+const sourceInput = sourceForm.querySelector("#flow-source-input");
+const sourceMessage = sourceForm.querySelector("#flow-source-message");
+const saveSource = sourceForm.querySelector('button[type="submit"]');
+const closeSource = sourceForm.querySelector("#close-flow-source");
 const createDialog = document.querySelector("#create-sheet");
 const createForm = createDialog.querySelector("form");
 const sheetTitle = createForm.querySelector("#sheet-title");
@@ -21,6 +29,7 @@ const cancelDelete = deleteForm.querySelector('button[type="button"]');
 const sheets = [];
 let active = null;
 let sheetToDelete = null;
+let sourceDraft = null;
 
 const labels = {
   ready: "Ready", opening: "Opening…", running: "Running", succeeded: "Succeeded",
@@ -43,9 +52,12 @@ function updateStatus(sheet, status) {
 
 function showNotice() {
   reloadFlow.disabled = !active || active.pending;
-  const reloadError = active?.reloadError ?? "";
-  reloadMessage.hidden = !reloadError;
-  if (reloadMessage.textContent !== reloadError) reloadMessage.textContent = reloadError;
+  editFlowSource.disabled = !active || active.pending;
+  const change = active?.sourceChange ? "Source changed. Reload pending." : "";
+  const reloadText = active?.reloadError || change;
+  reloadMessage.hidden = !reloadText;
+  if (reloadMessage.textContent !== reloadText) reloadMessage.textContent = reloadText;
+  sourceChangeMessage.hidden = !change;
   const snapshot = Boolean(active?.frameStopped);
   notice.classList.toggle("is-snapshot", snapshot);
   if (!active) {
@@ -70,6 +82,83 @@ function showNotice() {
 reopen.addEventListener("click", () => openFlow(active));
 reloadFlow.addEventListener("click", () => openFlow(active, "reload"));
 
+async function requestFlowSource(sheet, changes) {
+  const response = await fetch(`/flows/${sheet.index}/source`, changes && {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? "Could not access flow.py.");
+  return data;
+}
+
+function flowSourceIsDirty() {
+  return sourceDialog.open && sourceDraft && sourceInput.value !== sourceDraft.source;
+}
+
+function mayCloseSource() {
+  return !closeSource.disabled && (!flowSourceIsDirty() || window.confirm("Discard unsaved changes to flow.py?"));
+}
+
+editFlowSource.addEventListener("click", async () => {
+  const sheet = active;
+  sourceDraft = null;
+  sourceInput.value = "";
+  sourceInput.disabled = saveSource.disabled = closeSource.disabled = true;
+  sourceMessage.textContent = "Loading source…";
+  sourceDialog.showModal();
+  try {
+    const { source, revision } = await requestFlowSource(sheet);
+    sourceDraft = { sheet, source, revision };
+    sourceInput.value = source;
+    sourceInput.disabled = false;
+    sourceInput.focus();
+    sourceMessage.textContent = "";
+  } catch (error) {
+    sourceMessage.textContent = error.message;
+  } finally {
+    closeSource.disabled = false;
+    if (sourceInput.disabled) closeSource.focus();
+  }
+});
+
+sourceInput.addEventListener("input", () => {
+  saveSource.disabled = !flowSourceIsDirty();
+});
+
+sourceForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!flowSourceIsDirty() || saveSource.disabled) return;
+  const source = sourceInput.value;
+  const { sheet, revision } = sourceDraft;
+  sourceInput.readOnly = saveSource.disabled = closeSource.disabled = true;
+  sourceMessage.textContent = "Saving…";
+  try {
+    const saved = await requestFlowSource(sheet, { source, revision });
+    sourceDraft = { sheet, source, revision: saved.revision };
+    sourceMessage.textContent = "Saved. Python changes reload automatically.";
+  } catch (error) {
+    sourceMessage.textContent = error.message;
+  } finally {
+    sourceInput.readOnly = closeSource.disabled = false;
+    saveSource.disabled = !flowSourceIsDirty();
+  }
+});
+
+closeSource.addEventListener("click", () => {
+  if (mayCloseSource()) sourceDialog.close();
+});
+sourceDialog.addEventListener("cancel", event => {
+  if (!mayCloseSource()) event.preventDefault();
+});
+window.addEventListener("beforeunload", event => {
+  if (flowSourceIsDirty()) {
+    event.preventDefault();
+    event.returnValue = true;
+  }
+});
+
 function hasUnsavedSource(sheet) {
   return sheet.frame?.contentDocument?.documentElement.hasAttribute("data-unsaved-source");
 }
@@ -82,7 +171,7 @@ async function command(sheet, action) {
   const response = await fetch(`/flows/${sheet.index}/${action}`, { method: "POST" });
   const data = await response.json();
   if (!response.ok) {
-    throw Object.assign(new Error(data.error ?? "The action failed."), { status: data.status });
+    throw Object.assign(new Error(data.error ?? "The action failed."), { status: data.status, deferred: data.deferred });
   }
   return data;
 }
@@ -100,8 +189,12 @@ function showFrame(sheet, revision) {
   }
 }
 
-async function openFlow(sheet, action = "open") {
+async function openFlow(sheet, action = "open", automaticSource = null) {
   if (sheet.pending || ((action === "reload" || sheet.frameStopped) && !mayReplaceView(sheet))) return;
+  const previous = { status: sheet.status, error: sheet.error, reloadError: sheet.reloadError };
+  const frozen = automaticSource && sheet.frame?.contentDocument?.documentElement;
+  if (frozen) frozen.inert = true;
+  sheet.watching = true;
   sheet.pending = true;
   sheet.version++;
   sheet.error = null;
@@ -109,12 +202,17 @@ async function openFlow(sheet, action = "open") {
   updateStatus(sheet, "opening");
   showNotice();
   try {
-    const { revision } = await command(sheet, action);
+    const { revision } = await command(sheet, automaticSource ? `reload/${automaticSource}` : action);
     sheet.revision = revision;
+    sheet.sourceChange = null;
     showFrame(sheet, revision);
     updateStatus(sheet, "ready");
   } catch (error) {
-    if (error.status) {
+    if (error.deferred || (automaticSource && error.status)) {
+      sheet.error = previous.error;
+      sheet.reloadError = previous.reloadError;
+      updateStatus(sheet, error.status ?? previous.status);
+    } else if (error.status) {
       sheet.reloadError = error.message;
       updateStatus(sheet, error.status);
     } else {
@@ -122,10 +220,23 @@ async function openFlow(sheet, action = "open") {
       updateStatus(sheet, "unavailable");
     }
   } finally {
+    if (frozen) frozen.inert = false;
     sheet.pending = false;
     sheet.version++;
     showNotice();
   }
+}
+
+function checkSourceChange(sheet, source) {
+  if (sheet.sourceChange !== source) {
+    sheet.sourceChange = source;
+    sheet.sourceChangedAt = performance.now();
+  }
+  if (!source || performance.now() - sheet.sourceChangedAt < 500 ||
+      ["running", "opening"].includes(sheet.status) || hasUnsavedSource(sheet) ||
+      sheet.frame?.contentDocument?.querySelector("#node-files")?.open ||
+      (sheet === active && sourceDialog.open && (flowSourceIsDirty() || closeSource.disabled))) return;
+  void openFlow(sheet, "reload", source);
 }
 
 function notifyFrameOfStop(sheet, phase, discardUnsaved = false) {
@@ -149,6 +260,7 @@ async function stopFlow(sheet) {
   notifyFrameOfStop(sheet, "stopping");
   try {
     await command(sheet, "stop");
+    sheet.sourceChange = null;
     retainStoppedFrame(sheet, true);
     updateStatus(sheet, "stopped");
   } catch (error) {
@@ -332,8 +444,8 @@ async function pollStatus() {
     syncSheets(flows);
     for (const sheet of sheets.filter(Boolean)) {
       if (flows[sheet.index] && !sheet.frameStopped && !sheet.pending && sheet.version === versions[sheet.index]) {
-        const { status, revision } = flows[sheet.index];
-        if (revision !== sheet.revision && status !== "unavailable" && status !== "stopped" && !hasUnsavedSource(sheet)) {
+        const { status, revision, changed_source } = flows[sheet.index];
+        if (revision !== sheet.revision && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;
           sheet.reloadError = null;
@@ -342,6 +454,7 @@ async function pollStatus() {
         if (status === "stopped") retainStoppedFrame(sheet, false);
         if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
         updateStatus(sheet, status);
+        if (sheet.watching) checkSourceChange(sheet, changed_source);
       }
     }
     showNotice();
