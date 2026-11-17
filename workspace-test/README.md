@@ -123,6 +123,8 @@ Select **×** next to a sheet's **Stop** button and confirm **Delete sheet**. Wo
 
 Git tracks [Live Counter](sheets-demo/flows/Live%20Counter/README.md) and [Telemetry Control Room](sheets-demo/flows/Telemetry%20Control%20Room/README.md) as shared examples. Additional sheets created under `sheets-demo/flows/` stay local to your checkout.
 
+To check whether Workspace found a custom sheet such as **Whisper Medium ASR**, run `.venv/bin/workspace --project workspace-test/sheets-demo sheets` from the repository root. The output lists each discovered sheet and its `flow.py` path.
+
 ## Acceptance tests and overhead baseline
 
 Run the verification suite and demo benchmark in a checkout with the original sample flow, before the node exercise or in a separate checkout. Install Google Chrome and the optional test dependencies. From the repository root:
