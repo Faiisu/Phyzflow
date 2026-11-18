@@ -189,6 +189,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 }
 .workspace-list-heading { display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .workspace-list-heading h1 { margin: 0; font-size: clamp(1.55rem, 4vw, 2.15rem); }
+.workspace-list-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
 .workspace-list-heading button {
   padding: .48rem .82rem;
   border: 1px solid var(--accent);
@@ -204,3 +205,18 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #registered-workspaces span, .dialog-hint { color: var(--muted); font: .76rem/1.5 var(--mono); overflow-wrap: anywhere; }
 #create-workspace h2 { margin: 0; font-size: 1.15rem; }
 #create-workspace-status:empty { display: none; }
+
+.sign-in { width: min(28rem, calc(100% - 2rem)); }
+.sign-in h1 { margin: 0 0 1.5rem; font-size: clamp(1.4rem, 4vw, 1.9rem); }
+.sign-in form { display: grid; gap: .65rem; }
+.sign-in label { color: var(--muted); font-size: .85rem; }
+.sign-in input {
+  width: 100%;
+  padding: .56rem .65rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #191b20;
+  color: inherit;
+  font: inherit;
+}
+.sign-in input:focus-visible, .sign-in button:focus-visible { outline: 2px solid var(--accent); }

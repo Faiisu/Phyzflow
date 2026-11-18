@@ -11,7 +11,10 @@
   <main class="workspace-list">
     <header class="workspace-list-heading">
       <h1>Workspaces</h1>
-      <button type="button" id="new-workspace">Create Workspace</button>
+      <div class="workspace-list-actions">
+        <button type="button" id="new-workspace">Create Workspace</button>
+        <button type="button" id="add-workspace">Add Workspace</button>
+      </div>
     </header>
     <p id="workspace-list-message" role="status">Loading Workspaces…</p>
     <ul id="registered-workspaces" aria-label="Registered Workspaces"></ul>
@@ -21,7 +24,7 @@
       <h2 id="create-workspace-title">Create Workspace</h2>
       <label for="workspace-path">New folder path</label>
       <input id="workspace-path" name="path" required autofocus>
-      <p class="dialog-hint">Enter an absolute path on the Phyzflow host. The parent folder must already exist.</p>
+      <p id="workspace-path-hint" class="dialog-hint">Enter an absolute path on the Phyzflow host. The parent folder must already exist.</p>
       <p id="create-workspace-status" role="status"></p>
       <p id="create-workspace-error" class="dialog-error" role="alert" hidden></p>
       <div class="dialog-actions">

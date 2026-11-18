@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phyzflow | Sign in</title>
+  <link rel="stylesheet" href="/workspace.css">
+</head>
+<body class="landing">
+  <main class="workspace-list sign-in">
+    <h1>Sign in to Phyzflow</h1>
+    <form method="post" action="/login">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" value="admin" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <p class="dialog-error" role="alert" hidden>Incorrect username or password.</p>
+      <div class="dialog-actions">
+        <button type="submit">Sign in</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>
