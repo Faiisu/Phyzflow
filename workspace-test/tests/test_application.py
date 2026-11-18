@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 import json
 import select
 import signal
+from stat import S_IMODE
 import subprocess
 import sys
 import unittest
@@ -40,14 +41,106 @@ def application(state: Path):
                 process.wait()
 
 
+def sign_in(page, url: str, state: Path) -> None:
+    page.goto(f"{url}/login")
+    page.get_by_label("Password").fill((state / "admin" / "initial-password").read_text().strip())
+    page.get_by_role("button", name="Sign in").click()
+    expect(page.get_by_role("heading", name="Workspaces")).to_be_visible()
+
+
 class ApplicationTests(unittest.TestCase):
+    def test_sign_in_with_the_installation_administrator(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            state = Path(temp).resolve() / "state"
+            with application(state) as url:
+                page.goto(url)
+                expect(page.get_by_role("heading", name="Sign in to Phyzflow")).to_be_visible()
+                page.get_by_label("Username").fill("admin")
+                page.get_by_label("Password").fill("incorrect")
+                page.get_by_role("button", name="Sign in").click()
+                expect(page.get_by_role("alert")).to_contain_text("Incorrect username or password.")
+                self.assertFalse(page.context.cookies(url))
+
+                page.get_by_label("Username").fill("admin")
+                page.get_by_label("Password").fill((state / "admin" / "initial-password").read_text().strip())
+                page.get_by_role("button", name="Sign in").click()
+                expect(page.get_by_role("heading", name="Workspaces")).to_be_visible()
+
+    def test_independent_installations_keep_a_private_administrator_credential_after_restart(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            first, second = parent / "first", parent / "second"
+            with application(first) as first_url, application(second) as second_url:
+                first_delivery = first / "admin" / "initial-password"
+                second_delivery = second / "admin" / "initial-password"
+                for delivery in (first_delivery, second_delivery):
+                    self.assertEqual(S_IMODE(delivery.parent.stat().st_mode), 0o700)
+                    self.assertEqual(S_IMODE(delivery.stat().st_mode), 0o600)
+                first_password = first_delivery.read_text().strip()
+                self.assertNotEqual(first_password, second_delivery.read_text().strip())
+                page.goto(second_url)
+                page.get_by_label("Password").fill(first_password)
+                page.get_by_role("button", name="Sign in").click()
+                expect(page.get_by_role("alert")).to_be_visible()
+                page.get_by_label("Username").fill("other")
+                page.get_by_label("Password").fill(second_delivery.read_text().strip())
+                page.get_by_role("button", name="Sign in").click()
+                expect(page.get_by_role("alert")).to_be_visible()
+                sign_in(page, second_url, second)
+                sign_in(page, first_url, first)
+                self.assertEqual(page.request.get(f"{second_url}/workspaces").status, 200)
+                first_delivery.unlink()
+
+            with application(first) as url:
+                self.assertFalse(first_delivery.exists())
+                self.assertEqual(page.request.get(f"{url}/workspaces").status, 401)
+                page.goto(url)
+                page.get_by_label("Password").fill(first_password)
+                page.get_by_role("button", name="Sign in").click()
+                expect(page.get_by_role("heading", name="Workspaces")).to_be_visible()
+
+    def test_app_requires_a_session_for_workspace_and_flow_routes_and_same_origin_for_writes(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state = parent / "state"
+            root = parent / "Diagnostics"
+            with application(state) as url:
+                sign_in(page, url, state)
+                page.get_by_role("button", name="Create Workspace").click()
+                page.get_by_label("New folder path").fill(str(root))
+                page.get_by_role("button", name="Create", exact=True).click()
+                page.get_by_role("link", name="Diagnostics").click(timeout=20_000)
+                frame = page.locator('iframe[title="Main flow"]')
+                expect(frame).to_be_visible()
+                workspace = page.url.rstrip("/")
+                view = frame.content_frame.locator("html").evaluate("document => document.baseURI").rstrip("/")
+                self.assertEqual(page.request.get(f"{workspace}/flows/0/source").status, 200)
+                self.assertEqual(page.request.get(f"{view}/history").status, 200)
+                guest = page.context.browser.new_context()
+                try:
+                    for target in (
+                        f"{url}/workspaces", f"{workspace}/", f"{workspace}/workspace",
+                        f"{workspace}/flows/0/source", f"{view}/", f"{view}/history", f"{view}/live-run",
+                    ):
+                        with self.subTest(method="GET", target=target):
+                            self.assertEqual(guest.request.get(target).status, 401)
+                    for target in (f"{url}/workspaces", f"{workspace}/flows/0/source", f"{view}/run"):
+                        with self.subTest(method="POST", target=target):
+                            self.assertEqual(guest.request.post(target, headers={"Origin": url}).status, 401)
+                finally:
+                    guest.close()
+
+                for headers in ({}, {"Origin": "https://untrusted.example"}):
+                    self.assertEqual(page.request.post(f"{view}/run", headers=headers).status, 403)
+                expect(page.get_by_role("tab", name="Main")).to_contain_text("Ready")
+
     def test_create_and_reopen_a_workspace_after_application_restart(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             parent = Path(temp).resolve()
             root = parent / "Diagnostics"
             state = parent / "state"
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
@@ -63,7 +156,7 @@ class ApplicationTests(unittest.TestCase):
                 expect(page.get_by_role("tab", name="Main")).to_be_visible()
 
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 page.get_by_role("link", name="Diagnostics").click()
                 expect(page.get_by_role("tab", name="Main")).to_be_visible()
 
@@ -73,7 +166,7 @@ class ApplicationTests(unittest.TestCase):
             root = parent / "Diagnostics"
             state = parent / "state"
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
@@ -124,7 +217,7 @@ def finish(interpreter):
                 )
 
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 page.get_by_role("link", name="Diagnostics").click()
                 flow = page.frame_locator('iframe[title="Main flow"]')
                 flow.get_by_role("button", name="Run flow").click()
