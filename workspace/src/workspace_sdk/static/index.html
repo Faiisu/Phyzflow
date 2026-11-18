@@ -150,6 +150,17 @@
       </section>
       <section class="dock-content run-console" aria-labelledby="run-console-heading">
         <h3 id="run-console-heading">Run console</h3>
+        <div class="console-settings">
+          <label class="console-toggle" for="save-console-logs">
+            <input type="checkbox" id="save-console-logs" checked>
+            <span>Save console logs</span>
+          </label>
+          <label class="console-retention" for="console-retention-days">
+            <span>Retention (days)</span>
+            <input type="number" id="console-retention-days" min="1" max="3650" value="7">
+          </label>
+        </div>
+        <p id="console-settings-message" class="muted" role="status" hidden></p>
         <div class="console-stream">
           <h4 id="stdout-label">stdout</h4>
           <pre id="console-stdout" role="log" aria-labelledby="stdout-label" tabindex="0"></pre>
