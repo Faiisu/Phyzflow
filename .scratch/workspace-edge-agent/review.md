@@ -42,7 +42,23 @@ export PYTHONPATH="$PWD/workspace/src:$PWD/workspace-test:$PWD/workspace-test/te
 
 This focused run executed 25 tests: 24 passed; the existing command-retention test had one transient child exit code 1, with no stderr captured by its original assertion. The exact isolated test then passed all 32 launches, and passed again after adding failure diagnostics. No production change was inferred from that transient failure. Its assertion now includes the failed job and retained stderr to make any recurrence diagnosable, without retries or weakened expectations.
 
-The two new regressions were rerun after strengthening the ambient-PYTHONHOME check and bounding the browser poll observation; both passed. The existing UI edit recovery test independently demonstrated red then green. The focused suite's passing cases cover history privacy, successful output when history persistence fails, selected interpreters, source reload and browser drafts, command environment isolation/offline installation/output/cancellation, sheet coordination, durable identities, crash recovery, and process cleanup. `git diff --check` passed. The parent integration task will run the final combined gate after merging this branch.
+The two new regressions were rerun after strengthening the ambient-PYTHONHOME check and bounding the browser poll observation; both passed. The existing UI edit recovery test independently demonstrated red then green. The focused suite's passing cases cover history privacy, successful output when history persistence fails, selected interpreters, source reload and browser drafts, command environment isolation/offline installation/output/cancellation, sheet coordination, durable identities, crash recovery, and process cleanup. `git diff --check` passed.
+
+After merging `feature/edge-agent-review-fixes` into `feature/workspace-edge-agent` and syncing the updated SDK files into `default-workspace/.venv`, the final combined integration gate ran from the repository root:
+
+```sh
+PYTHONPATH="$PWD/workspace/src:$PWD/workspace-test:$PWD/workspace-test/tests" /tmp/phyzflow-edge08-venv/bin/python -m unittest test_agent test_agent_edit test_agent_edit_ui test_agent_jobs test_agent_commands test_agent_persistence test_agent_remote test_agent_mcp.MCPAgentTests test_auto_reload test_architecture_deepening test_validation -v
+```
+
+Result: **60 tests passed in 112.320 seconds** (`OK`), including `test_agent_edit_reloads_graph_and_recovers_validation_failure`, `test_validation_and_run_use_only_operator_permitted_inference_environment`, `test_browser_refreshes_history_for_run_completed_between_live_polls`, and `test_command_retention_limit_rejects_new_jobs_without_eviction`.
+
+Plain-SDK optional MCP skip verification from the repository root:
+
+```sh
+PYTHONPATH="$PWD/workspace/src:$PWD/workspace-test:$PWD/workspace-test/tests" /Users/faiisu/projects.nosync/Phyzflow/default-workspace/.venv/bin/python -m unittest test_agent_mcp -v
+```
+
+Result: **1 test ran and was explicitly skipped** (`skipped 'requires optional workspace-sdk[mcp] extra'`).
 
 ## Remaining limits
 
