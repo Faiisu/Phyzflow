@@ -19,14 +19,8 @@ class FlowBusy(RuntimeError):
 
 @contextmanager
 def sheet_lock(root):
-    # Windows keeps the existing UI behavior; the Edge agent targets POSIX.
-    if os.name != 'posix':
-        yield None
-        return
-    import fcntl
-
     directory = root / '.workspace'
-    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=0o700 if os.name == 'posix' else 0o777, exist_ok=True)
     if directory.is_symlink():
         raise ValueError('Workspace state must not be a symbolic link.')
     path = directory / 'execution.lock'
@@ -34,13 +28,28 @@ def sheet_lock(root):
         raise ValueError('Workspace lock must not be a symbolic link.')
     with path.open('a+b') as stream:
         try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if os.name == 'posix':
+                import fcntl
+
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                import msvcrt
+
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
             raise FlowBusy('This sheet already has an active run or reload.') from None
         try:
             yield stream
         finally:
-            fcntl.flock(stream, fcntl.LOCK_UN)
+            if os.name == 'posix':
+                fcntl.flock(stream, fcntl.LOCK_UN)
+            else:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
 
 
 def sheet_busy(root):
