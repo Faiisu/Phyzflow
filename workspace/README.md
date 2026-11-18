@@ -15,11 +15,20 @@ Build a release on macOS from the repository root with `sh workspace/release/mac
 
 ## Sign in to the local Phyzflow application
 
-Run `workspace app` from an environment with the SDK installed. Open the loopback address printed by the application. Use `--state-dir` to choose a separate state directory for another installation.
+Install the SDK with MCP support in the application environment. From the repository root:
+
+```sh
+uv pip install './workspace[mcp]'
+workspace app
+```
+
+Open the loopback address printed by the application. Use `--state-dir` to choose a separate state directory for another installation.
 
 On first startup Phyzflow generates a password for the built-in `admin` account. Read the password on the host from `~/.phyzflow/admin/initial-password` or from `admin/initial-password` under your selected state directory. The application account owns the directory and can read the file. Save the password securely and remove the delivery file once you have signed in. Phyzflow keeps the password verifier in the state directory and uses the same credential on subsequent starts. The browser session lasts up to 12 hours and ends when the application restarts.
 
 Keep application state separate from Workspace folders.
+
+Select **MCP access** on the landing page, name the client, and select the Workspaces it can access. Copy the generated token when it appears. Configure the MCP client for Streamable HTTP at `/mcp` on the application origin and supply `Authorization: Bearer <token>`. The `list_workspaces` tool lists granted Workspaces, and `inspect_workspace` lists sheets for a Workspace ID. Select an existing token to save new grants or revoke it. Changes apply on the next request, including for clients that are already connected.
 
 ## Work on a selected project from the CLI
 
