@@ -12,6 +12,7 @@ import signal
 import socket
 import subprocess
 import sys
+from tempfile import NamedTemporaryFile
 from threading import Event, Thread
 import time
 
@@ -116,37 +117,63 @@ def find_openssl() -> str:
 
 def generate_tls_cert(cert_file: Path, key_file: Path, advertise_host: str) -> None:
     """Generate a localhost/IPv4 self-signed TLS certificate for the central router."""
-    san_entries = ["DNS:localhost", "IP:127.0.0.1"]
+    alt_names = ["DNS.1 = localhost", "IP.1 = 127.0.0.1"]
     if advertise_host != "127.0.0.1":
-        san_entries.append(f"IP:{advertise_host}")
-    env = dict(os.environ)
-    if os.name != "posix":
-        # Prevent Git/MSYS2 openssl from rewriting '/CN=localhost' as a filesystem path.
-        env["MSYS_NO_PATHCONV"] = "1"
-        env["MSYS2_ARG_CONV_EXCL"] = "*"
-    result = subprocess.run(
+        alt_names.append(f"IP.2 = {advertise_host}")
+    config_text = "\n".join(
         [
-            find_openssl(),
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-keyout",
-            str(key_file),
-            "-out",
-            str(cert_file),
-            "-days",
-            "30",
-            "-subj",
-            "/CN=localhost",
-            "-addext",
-            "subjectAltName=" + ",".join(san_entries),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
+            "[req]",
+            "prompt = no",
+            "distinguished_name = req_dn",
+            "x509_extensions = v3_req",
+            "",
+            "[req_dn]",
+            "CN = localhost",
+            "",
+            "[v3_req]",
+            "subjectAltName = @alt_names",
+            "",
+            "[alt_names]",
+            *alt_names,
+            "",
+        ]
     )
+    config_file: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            dir=cert_file.parent,
+            suffix=".cnf",
+            delete=False,
+            encoding="utf-8",
+        ) as stream:
+            stream.write(config_text)
+            config_file = Path(stream.name)
+        result = subprocess.run(
+            [
+                find_openssl(),
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key_file),
+                "-out",
+                str(cert_file),
+                "-days",
+                "30",
+                "-config",
+                str(config_file),
+                "-extensions",
+                "v3_req",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        if config_file is not None:
+            config_file.unlink(missing_ok=True)
     if result.returncode != 0:
         detail = result.stderr.strip() or "openssl failed."
         raise RuntimeError(f"Could not generate TLS certificate: {detail}")
