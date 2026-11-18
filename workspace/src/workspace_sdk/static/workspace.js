@@ -259,6 +259,7 @@ function checkSourceChange(sheet, source) {
     sheet.sourceChangedAt = performance.now();
   }
   if (!source || performance.now() - sheet.sourceChangedAt < 500 ||
+      (editRunningSource && ["succeeded", "failed"].includes(sheet.status)) ||
       ["running", "opening"].includes(sheet.status) || hasUnsavedSource(sheet) ||
       sheet.frame?.contentDocument?.querySelector("#node-files")?.open ||
       (sheet === active && sourceDialog.open && (flowSourceIsDirty() || closeSource.disabled))) return;

@@ -104,7 +104,6 @@ flow = Flow((), (Step("Start", start, {}), Step("Finish", finish, {"detail": Out
                     self.assertEqual(flow_path.read_text(), edited_flow)
                     self.assertEqual(node_path.read_text(), edited_helper)
                     expect(tab).to_contain_text("Running")
-                    page.route("**/reload/**", lambda route: route.abort())
                     (root / "finish-now").touch()
                     result = flow.locator("#result pre")
                     expect(result).to_be_visible()
@@ -112,6 +111,7 @@ flow = Flow((), (Step("Start", start, {}), Step("Finish", finish, {"detail": Out
                         json.loads(result.inner_text()),
                         {"flow": "original", "node": "original", "local": "original"},
                     )
+                    expect(page.locator("#reload-message")).to_have_text("Source changed.")
                     run.click()
                     expect(result).to_contain_text('"updated"')
                     self.assertEqual(
