@@ -1,6 +1,6 @@
 # Workspace development agent
 
-The local agent provides authenticated project inspection without a browser. It is the first slice of remote Edge development: file editing, jobs, central routing, and MCP are delivered by later tickets.
+The local agent provides authenticated project inspection and revision-checked source editing without a browser. Jobs, central routing, and MCP are delivered by later tickets.
 
 ## Start and connect
 
@@ -55,7 +55,7 @@ POST `/request` with `Content-Type: application/json` and `Authorization: Bearer
 }
 ```
 
-`request_id` contains 1–128 characters. Successful responses return `request_id`, `ok: true`, and `result`. Operation errors return `request_id`, `ok: false`, and an `error` with `code`, `stage`, and `message`. Transport or authentication failures use non-200 HTTP status and may omit the request identifier because the request was not accepted. The SDK returns these error objects to callers rather than hiding them behind HTTP exceptions. Only read operations exist in this slice; durable mutation deduplication is introduced with job persistence.
+`request_id` contains 1–128 characters. Successful responses return `request_id`, `ok: true`, and `result`. Operation errors return `request_id`, `ok: false`, and an `error` with `code`, `stage`, and `message`. Transport or authentication failures use non-200 HTTP status and may omit the request identifier because the request was not accepted. The SDK returns these error objects to callers rather than hiding them behind HTTP exceptions. Source mutations require expected revisions. Durable request deduplication is introduced with job persistence; retry a lost edit acknowledgement by reading the current source and revision rather than blindly submitting it again.
 
 | Operation | Arguments | Result |
 | --- | --- | --- |
@@ -63,9 +63,29 @@ POST `/request` with `Content-Type: application/json` and `Authorization: Bearer
 | `list_files` | Optional relative `path`, default `.` | Immediate directory entries with path/kind and `truncated` |
 | `read_file` | Relative `path` | UTF-8 preview, full-file SHA-256 revision when complete, and `truncated` |
 | `search_code` | Literal `query`, 1–512 characters | Matches with path, one-based line, text preview, and `truncated` |
+| `write_file` | Relative `path`, expected `revision`, full `source` | New revision, path, created flag, bounded unified diff |
+| `apply_patch` | Relative `path`, expected `revision`, `old_text`, `new_text` | New revision, path, created flag, bounded unified diff |
 
 Read previews consume at most 64 KiB of file bytes. Invalid UTF-8 bytes are replaced for display. Truncated reads have a null revision because a partial digest must not authorize a full-file edit. Directory listings return at most 500 entries. Search scans at most 2,000 directory entries and returns at most 100 matches, limiting each matching line preview to 1,024 characters. Search is literal and case-sensitive, covering Python, JSON, TOML, JavaScript, HTML, CSS, Markdown, and text files. A truncated result is incomplete; narrow the search or inspect a relevant file directly.
 
 Listings and searches skip Git internals, virtual environments, agent/runtime state, and Python caches. Direct file inspection remains authorized within the configured project, so do not grant access to projects containing secrets the client must not read. Symbolic links and parent/absolute path escapes are rejected. Read-only transport is not a security sandbox against another process already running with the same operating-system account; run the agent under an appropriately restricted account.
 
-Inspecting source uses the same project files and sheet discovery as the existing CLI and Web UI. It does not start, reload, or modify a flow.
+## Editing source
+
+`write_file` creates or replaces one source file. Supply the revision returned by `read_file` for an existing file, or the literal `missing` when creating a new file. New parent directories are created as needed. `apply_patch` replaces one exact, nonempty `old_text` occurrence in an existing file; absent or ambiguous matches are rejected. Both operations require a revision and reject a stale revision with `error.code: conflict`.
+
+Editable extensions are Python, JSON, TOML, HTML, CSS, JavaScript, Markdown, and text. Hidden path components and Python caches are excluded from writes, including agent state, Git metadata, and virtual environments. The shared source editor preserves existing Python encoding declarations and CRLF newlines, checks for conflicting changes before replacement, and writes atomically. Source files have a 128 KiB editor limit; the HTTP request size limit still applies. A read truncated at 64 KiB supplies no revision and must not authorize an edit based on a partial preview.
+
+Successful writes return a unified `diff` bounded to 16,384 characters and `diff_truncated`, along with `path`, `revision`, and `created`. Review the full current file when the diff is truncated. Syntax-invalid Python can be saved so an agent can repair incomplete work; validation happens through the normal Workspace validation/reload path.
+
+```python
+read = client.request("read-flow", "development", "read_file", {"path": "flow.py"})
+result = client.request("rename-node", "development", "apply_patch", {
+    "path": "flow.py",
+    "revision": read["result"]["revision"],
+    "old_text": "Original",
+    "new_text": "Updated",
+})
+```
+
+Inspection and edits use the same project files as the existing CLI and Web UI. Open idle sheets detect Python edits through the existing automatic reload behavior. Active runs keep executing their loaded source until completion; unsaved browser drafts defer reload. The agent reports concurrent file conflicts rather than overwriting another editor's save. Edits to dashboard assets are visible on Reload dashboard.
