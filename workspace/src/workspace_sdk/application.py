@@ -26,10 +26,31 @@ ASSETS = {
 }
 
 
+def same_folder(left: Path, right: Path) -> bool:
+    if left == right:
+        return True
+    try:
+        return left.samefile(right)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def folders_overlap(left: Path, right: Path) -> bool:
+    return (
+        any(same_folder(left, parent) for parent in (right, *right.parents))
+        or any(same_folder(right, parent) for parent in left.parents)
+    )
+
+
 class WorkspaceRegistry:
     def __init__(self, state_dir: Path) -> None:
         state_dir.mkdir(parents=True, exist_ok=True)
         self.path = state_dir / "workspaces.sqlite3"
+        self.protected_folders = [(state_dir, "Phyzflow application data")]
+        sdk = Path(__file__).resolve().parent
+        checkout = sdk.parents[2]
+        if sdk == checkout / "workspace/src/workspace_sdk" and (checkout / "docs/application-spec.md").is_file():
+            self.protected_folders.append((checkout, "the Phyzflow source checkout"))
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE)")
 
@@ -45,10 +66,26 @@ class WorkspaceRegistry:
             row = db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
             return Path(row[0]) if row else None
 
-    def register(self, root: Path) -> str:
+    def register(self, root: Path, action: object) -> str:
+        if action not in ("create", "add"):
+            raise ValueError("Choose whether to create or add a Workspace.")
+        for folder, purpose in self.protected_folders:
+            if folders_overlap(root, folder):
+                raise ValueError(f"This folder overlaps {purpose}. Choose a separate project folder.")
         workspace_id = uuid4().hex
         with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            for (path,) in db.execute("SELECT path FROM workspaces"):
+                registered = Path(path)
+                if same_folder(root, registered):
+                    raise FileExistsError("This Workspace folder is already registered.")
+                if folders_overlap(root, registered):
+                    raise ValueError(f"This folder overlaps a registered Workspace at {registered}.")
             db.execute("INSERT INTO workspaces (id, path) VALUES (?, ?)", (workspace_id, str(root)))
+            if action == "create":
+                create_workspace(root)
+            else:
+                add_workspace(root)
         return workspace_id
 
 
@@ -61,8 +98,11 @@ def requested_root(value: object) -> Path:
     return path.resolve()
 
 
-def create_workspace(root: Path, registry: WorkspaceRegistry) -> str:
-    root.mkdir()
+def create_workspace(root: Path) -> None:
+    try:
+        root.mkdir()
+    except FileExistsError:
+        raise FileExistsError("Choose a new folder that does not already exist.") from None
     try:
         ensure_workspace_environment(root)
         try:
@@ -75,7 +115,12 @@ def create_workspace(root: Path, registry: WorkspaceRegistry) -> str:
         with suppress(OSError):
             root.rmdir()
         raise
-    return registry.register(root)
+
+
+def add_workspace(root: Path) -> None:
+    if not root.is_dir():
+        raise ValueError("Choose an existing project folder.")
+    ensure_workspace_environment(root)
 
 
 def serve_application(state_dir: Path, port: int) -> None:
@@ -143,11 +188,12 @@ def serve_application(state_dir: Path, port: int) -> None:
                 return
             try:
                 if self.headers.get_content_type() != "application/json":
-                    raise ValueError("Send a JSON object with the new folder path.")
-                root = requested_root(self.read_json_dict(8192).get("path"))
-                workspace_id = create_workspace(root, registry)
-            except FileExistsError:
-                self.send_json({"error": "Choose a new folder that does not already exist."}, HTTPStatus.CONFLICT)
+                    raise ValueError("Send a JSON object with the folder path.")
+                body = self.read_json_dict(8192)
+                root = requested_root(body.get("path"))
+                workspace_id = registry.register(root, body.get("action", "create"))
+            except FileExistsError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
             except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, sqlite3.Error) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             else:
