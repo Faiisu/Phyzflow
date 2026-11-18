@@ -75,6 +75,8 @@ Double-click a node under `nodes/` to open its `settings.json` first. The file i
 
 Set `track_generator=True` on a step that returns a Python generator for a downstream node to iterate. The producer stays Running while the iterator is open and succeeds when the iterator is exhausted. Its duration covers the iterator's lifetime, including time between values. The Runner closes unfinished generators at the end of the run and records them as Stopped. The consumer can call `publish_output(value)` to show the latest bounded JSON preview during the run. Live previews are ephemeral.
 
+Open a node’s **Execution** tab to see its status and timing. While the node runs, call `publish_metrics("Indexing", {"Progress (%)": 60, "Rows per second": 42})` from its Python code to update **Live progress and metrics**. Use `record_metrics` for measurements you want to keep in the completed run.
+
 ## Build a dashboard for a workflow or node
 
 Write or have an AI agent generate `index.html`, optionally with `style.css`, `setting.js`, and `dashboard.js`, in the workflow's `dashboards/workflow/` or `dashboards/nodes/<step-id>/` folder. Use the exact step ID for ordinary folder names, including spaces. Percent-encode reserved path characters and non-ASCII characters using UTF-8, and encode the entire name for `.` and `..` as `%2E` and `%2E%2E`. Workspace loads the companion files automatically and executes `setting.js` before `dashboard.js`. Use inline assets, data images, or browser APIs such as canvas. The browser policy restricts resource loads and navigation and isolates the frame from Workspace's page.

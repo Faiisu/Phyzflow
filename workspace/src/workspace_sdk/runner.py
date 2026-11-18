@@ -81,13 +81,14 @@ def run(
     live_frames: bool = False,
     settings: dict[str, dict[str, SettingValue]] | None = None,
     live_settings: LiveSettings | None = None,
+    run_id: str | None = None,
 ) -> RunResult:
     """Execute a flow and emit run and step events to the optional observer."""
     steps = ordered_steps(flow)
     missing = set(flow.inputs).difference(inputs)
     if missing:
         raise ValueError(f"Missing flow inputs: {', '.join(sorted(missing))}.")
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
     outputs = {}
     unsuccessful = set()
     pending_generators: dict[str, Callable[[], None]] = {}

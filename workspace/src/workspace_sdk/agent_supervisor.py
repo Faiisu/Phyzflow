@@ -72,7 +72,8 @@ def main():
         process.wait()
         os.close(control)
         os.close(reader)
-        os.close(owner)
+        if owner >= 0:
+            os.close(owner)
     return exit_with(code)
 
 

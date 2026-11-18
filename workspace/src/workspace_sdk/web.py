@@ -117,9 +117,20 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             self.send_json(result)
 
 
+def sample_input(root: Path) -> dict:
+    fixture = root / "sample.json"
+    if not fixture.is_file():
+        return {}
+    sample = json.loads(fixture.read_text(encoding="utf-8"))
+    if not isinstance(sample, dict) or not isinstance(sample.get("input"), dict):
+        raise ValueError("sample.json must contain an input object.")
+    return sample["input"]
+
+
 def serve(
     flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
     *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str], None] | None = None,
+    run_token: str | None = None,
 ) -> None:
     graph = []
     steps = ordered_steps(flow)
@@ -147,8 +158,7 @@ def serve(
 
     node_files_by_id = {step["id"]: step["file"] for step in graph}
     defaults_files = setting_files(root, steps)
-    fixture = root / "sample.json"
-    default_input = json.loads(fixture.read_text())["input"] if fixture.is_file() else {}
+    default_input = sample_input(root)
     history = RunHistory(root)
     settings = SettingsStore(root)
     live_settings = LiveSettings()
@@ -285,6 +295,13 @@ def serve(
                 self.change_setting(settings_route[1], inputs)
                 return
 
+            run_id = None
+            if run_token is not None:
+                run_id = self.headers.get("X-Phyzflow-Run-Id", "")
+                if self.headers.get("X-Phyzflow-Worker-Token") != run_token or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+                    self.send_error(HTTPStatus.FORBIDDEN)
+                    return
+
             if not run_lock.acquire(blocking=False):
                 self.send_error(HTTPStatus.CONFLICT, "A run is already in progress.")
                 return
@@ -293,7 +310,7 @@ def serve(
                 with sheet_lock(root):
                     clear_external_snapshot(root)
                     run_status = "running"
-                    self.stream_run(inputs)
+                    self.stream_run(inputs, run_id)
             except FlowBusy as error:
                 self.send_error(HTTPStatus.CONFLICT, str(error))
             finally:
@@ -362,12 +379,12 @@ def serve(
 
             self.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")
 
-        def stream_run(self, inputs):
+        def stream_run(self, inputs, run_id):
             nonlocal run_status, live_sequence
             with live_lock:
                 live_events.clear()
                 console_events.clear()
-            console_run_id = None
+            console_run_id = run_id
             event_lock = Lock()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -428,6 +445,8 @@ def serve(
 
             def record_event(event):
                 nonlocal console_run_id
+                if run_id is not None and "run_id" not in event:
+                    event = {**event, "run_id": run_id}
                 with event_lock:
                     if console_run_id is None:
                         console_run_id = event.get("run_id")
@@ -442,7 +461,7 @@ def serve(
                 with capture_console(record_console):
                     result = run_recorded(
                         flow, root, loaded_sources, record_event, inputs=inputs, live_metrics=True, live_frames=True,
-                        live_settings=live_settings,
+                        live_settings=live_settings, run_id=run_id,
                     )
                 completed = {"result": {"status": result.status, "output": result.output}}
                 record_event(completed)
