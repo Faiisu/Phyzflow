@@ -1,6 +1,6 @@
 # Workspace development agent
 
-The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Jobs, results, bounded command output, and mutation identities persist locally across restart. Authenticated central routing supports the same development operations and automatic connector reconnection below; MCP follows in ticket 08.
+The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Jobs, results, bounded command output, and mutation identities persist locally across restart. Authenticated central routing supports the same development operations and automatic connector reconnection below; An optional stdio MCP frontend routes the same operations through central HTTPS, as described below.
 
 ## Start and connect
 
@@ -205,7 +205,7 @@ Verification boundary: real module startup, HTTP disconnect/retry, SIGTERM shutd
 
 ## Develop on an Edge through the central router
 
-The central service holds client/device credentials, device grants, and short-lived routing state. Project files, environments, jobs, and mutation records stay with the existing local agent. An independent connector process uses that agent's authenticated loopback API; it never creates another agent or state-directory owner. No inbound public Edge port is needed. The remote allowlist includes all operations in the request contract above: inspection, revision-checked edits, validation, flow and command jobs, bounded command output, job status, and cancellation. Execution remains on Edge; MCP follows in ticket 08.
+The central service holds client/device credentials, device grants, and short-lived routing state. Project files, environments, jobs, and mutation records stay with the existing local agent. An independent connector process uses that agent's authenticated loopback API; it never creates another agent or state-directory owner. No inbound public Edge port is needed. The remote allowlist includes all operations in the request contract above: inspection, revision-checked edits, validation, flow and command jobs, bounded command output, job status, and cancellation. Execution remains on Edge; An optional stdio MCP frontend routes the same operations through central HTTPS, as described below.
 
 Provision a stable device ID and a different random private token for **each** device and client. Reuse the same device ID/config across connector restarts. Tokens must be at least 16 non-whitespace ASCII characters in account-owned `0600` files; use `secrets.token_urlsafe(32)`. Keep configs and the TLS private key private and outside project/source control. Copy each device token securely only to its matching Edge; give client tokens only to authorized callers. Never pass tokens as command arguments or URL components.
 
@@ -282,3 +282,83 @@ Every endpoint is a JSON POST with a bearer token and no browser `Origin`. Clien
 Central accepts at most 32 pending routes and 64 simultaneous connections. Inner requests retain the local 64 KiB limit; relay envelopes/replies are capped at 1 MiB. Polls wait at most one second; routes wait at most three seconds. Pending routes/replies are discarded after completion or expiry and are never durable. Before delivery, expiry/disconnection returns `unavailable` and removes the queued request so it cannot be executed later. After a poll fetched a request, loss of its reply returns `delivery_unknown`: execution may have happened. This is not confirmation of cancellation. The connector never automatically replays a delivered operation. A slow local acknowledgement can exceed the three-second routing deadline while the device remains connected; this also returns `delivery_unknown`. A local acknowledgement lost after submission is uncertain, never a claim that local execution failed. Retry the exact original mutation ID, project, operation, and arguments to recover the Edge ledger response. A new ID authorizes new work. Device and project scope isolate identical IDs. A queued offline cancellation returns `unavailable` and is removed; explicitly retry it after reconnect and inspect the original job to observe termination. No payload/token access logs are emitted.
 
 Verification: `test_agent_remote` exercises remote edit/validate/run and execution errors, stale revisions, duplicate mutation/command retries after actual delayed HTTP acknowledgements, per-device/project identity and job/output scope, offline cancellation with explicit retry, central restart during a real long-running command, continued original-job output/cancellation after automatic reconnect, and replacement-connector termination without takeover storms. It uses temporary OpenSSL certificates with a localhost SAN, actual verified HTTPS requests, two independent local agent owners and outbound connectors, scoped authentication, local project/path checks, stale sessions, expired/delivered request errors, and real central/connector module processes. It rejects HTTP, untrusted CAs, and mismatched hostnames. This demonstrates the network topology on one macOS host, not physical Edge hardware or deployment across an untrusted public network.
+
+
+## MCP frontend (stdio to central HTTPS)
+
+Install the optional extra in the coding client's Python environment:
+
+```sh
+python -m pip install '/absolute/path/to/workspace[mcp]'
+```
+
+The extra pins `mcp==2.3.0`. Plain SDK installation and local/remote agent modules
+have no MCP dependency. Edge interpreters need only the SDK and their project dependencies.
+
+This release provides a **stdio MCP server**, launched by the coding client. It is
+an authenticated HTTPS bridge to the existing central router, not a public HTTP
+MCP endpoint. Central authenticates the configured client credential and its
+device grants; Edge independently validates project, operation, path, revisions,
+and jobs. The frontend never executes project code or owns job state. No OAuth or
+new internet-facing MCP service is included.
+
+Create an operator-owned private configuration outside the project and source
+control (protect its directory and set the configuration to `0600`):
+
+```json
+{
+  "central_url": "https://central.example.com:18443",
+  "client_token_file": "/absolute/private/developer-token",
+  "ca_file": "/absolute/private/central-ca.pem"
+}
+```
+
+Use the separately scoped central client token described above. The token file
+must be owned by the current user, regular, and inaccessible to group/others.
+Omit `ca_file` for a public CA. TLS certificate and hostname verification remain
+mandatory. Never put tokens in tool arguments, process arguments, URLs, or logs.
+
+Configure an MCP-capable coding client with the equivalent stdio command:
+
+```json
+{
+  "mcpServers": {
+    "workspace-edge": {
+      "command": "/absolute/client-venv/bin/python",
+      "args": ["-m", "workspace_sdk.agent_mcp", "--config", "/absolute/private/mcp.json"]
+    }
+  }
+}
+```
+
+The exact client settings wrapper may differ; the executable and argument list
+are the interface. Stdout carries only MCP messages. The executable also supports
+`--help`. Each process has one configured central identity, so clients needing
+different device grants must use different configurations/processes.
+
+Discover `list_devices`, `inspect_project`, `list_files`, `read_file`,
+`search_code`, `write_file`, `apply_patch`, `validate_flow`, `run_flow`,
+`run_command`, `get_job`, `read_job_output`, and `cancel_job`. Tool schemas expose
+explicit `request_id`, `device_id`, and `project_id` on every project operation,
+and mandatory `revision` on edits. `list_devices` needs no project/request ID.
+Tool names, operation arguments, bounds, results, and diagnostics follow the
+request contract above; omit `operation` and the nested `arguments` envelope
+when supplying tool arguments. For example:
+
+```json
+{"request_id":"inspect-1","device_id":"edge-a","project_id":"development"}
+```
+
+Call that object with `inspect_project`. Mutations retain the exact request ID
+and content through central to Edge. Retry identical requests after uncertain
+acknowledgements; changed content needs a new ID. Validation, flow runs, commands,
+and cancellation use the existing Edge jobs. Poll `get_job`, page command output
+with `next_cursor`, and wait for a terminal cancellation status. Unavailable
+and `delivery_unknown` responses retain their existing meaning. MCP argument
+validation errors use MCP `isError`; accepted routing/Edge responses preserve
+`ok` and `error` inside the returned JSON text block. Do not interpret MCP
+`isError: false` as successful project execution: inspect `ok` and the job status.
+
+A real interactive client, demo topology fixture, UI inspector, transcript and
+reproduction steps are recorded in
+[the ticket 08 evidence](../.scratch/workspace-edge-agent/evidence/08/README.md).

@@ -1,0 +1,5 @@
+{
+  "url": "http://127.0.0.1:18308",
+  "history_text": "Saved run\n\n54c1971a325c4381bef6f5337528e1a4\n\nSource version\n\ncb66e6c67abab9e2fa41c684c6910f6de92c5fcbcd48cd4a8d8e5ac53012d4e0\n\nDuration 1.25 ms\n\nRun input\n\n{}\n\nRun output\n\n{\n  \"type\": \"int\"\n}\nCalculate \u00b7 Succeeded\n\nnested/worker.py:1\n\n0.010 ms\n\nInput\n\n{}\n\nOutput\n\n{\n  \"type\": \"int\"\n}",
+  "source": "def work():\n    return 42\n"
+}
