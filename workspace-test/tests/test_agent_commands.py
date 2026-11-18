@@ -148,12 +148,12 @@ class AgentCommandTests(unittest.TestCase):
                 diagnostic = client.request('failure-output', 'demo', 'read_job_output', {'job_id': job['job_id'], 'stream': 'stderr'})['result']['content']
                 self.assertIn('AssertionError: 1 != 2 : expected failure diagnostic', diagnostic)
 
-    def test_command_retention_limit_rejects_new_jobs_without_eviction(self):
+    def test_commands_exceed_previous_retention_limit_without_eviction(self):
         with TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             with running_agent(root, commands=['python']) as client:
                 first = None
-                for index in range(32):
+                for index in range(33):
                     started = client.request('job-' + str(index), 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'print("retained")']})
                     self.assertTrue(started['ok'], started)
                     first = first or started['result']['job_id']
@@ -161,8 +161,5 @@ class AgentCommandTests(unittest.TestCase):
                     diagnostic = client.request('retention-failure', 'demo', 'read_job_output',
                                                 {'job_id': job['job_id'], 'stream': 'stderr'}) if job['exit_code'] else None
                     self.assertEqual(job['exit_code'], 0, {'job': job, 'stderr': diagnostic})
-                rejected = client.request('full', 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'pass']})
-                self.assertFalse(rejected['ok'])
-                self.assertIn('retention limit (32)', rejected['error']['message'])
                 retained = client.request('retained', 'demo', 'read_job_output', {'job_id': first})
                 self.assertEqual(retained['result']['content'], 'retained\n')

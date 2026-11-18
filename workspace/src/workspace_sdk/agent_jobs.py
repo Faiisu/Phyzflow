@@ -153,8 +153,6 @@ class AgentJobs:
         job_id = uuid4().hex
         job = {'job_id': job_id, 'status': 'queued', 'operation': 'run_command'}
         with self.lock:
-            if sum(item['job']['operation'] == 'run_command' for item in self.jobs.values()) >= 32:
-                raise ValueError('Command job retention limit (32) reached; archive this agent instance before provisioning a new state directory.')
             item = {'project': project['root'], 'job': job, 'cancelled': False,
                     'output': {name: {'data': bytearray(), 'total_bytes': 0} for name in ('stdout', 'stderr')}}
             self.jobs[job_id] = item
