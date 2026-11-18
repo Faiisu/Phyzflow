@@ -1,0 +1,19 @@
+[Unit]
+Description=Workspace Edge development agent
+After=local-fs.target
+
+[Service]
+Type=exec
+User=workspace-agent
+Group=workspace-agent
+WorkingDirectory=/var/lib/workspace-agent
+ExecStart=/opt/workspace-agent-venv/bin/python -m workspace_sdk.agent --config /etc/workspace-agent/agent.json --port 18081
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

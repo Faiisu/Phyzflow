@@ -9,12 +9,15 @@ import json
 import os
 from pathlib import Path
 import stat
+import signal
+from threading import Lock, Thread
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from .node_sources import SourceChanged, edit_source_file
 from .sheets import discover_flows
 from .agent_jobs import AgentJobs
+from .agent_state import AgentState
 from .execution import FlowBusy
 
 MAX_READ_BYTES = 64 * 1024
@@ -67,10 +70,12 @@ def project_path(root: Path, value: object) -> Path:
 
 
 class WorkspaceAgent:
-    def __init__(self, projects):
+    def __init__(self, projects, state=None):
         if not isinstance(projects, dict) or not projects:
             raise ValueError('Configure at least one project.')
-        self.jobs = AgentJobs()
+        self.state = state
+        self.mutation_lock = Lock()
+        self.jobs = AgentJobs(state)
         self.projects = {}
         for name, project in projects.items():
             root = Path(project['root']).expanduser().resolve(strict=True)
@@ -81,8 +86,29 @@ class WorkspaceAgent:
             if not isinstance(commands, list) or any(not isinstance(command, str) or (command != 'python' and not Path(command).is_absolute()) for command in commands):
                 raise ValueError('commands must list python or absolute executable paths.')
             self.projects[name] = {'root': root, 'python': str(python), 'commands': commands}
+            if state and state.directory.resolve().is_relative_to(root):
+                raise ValueError('Agent state directory must be outside configured projects.')
 
     def dispatch(self, request):
+        mutations = {'write_file', 'apply_patch', 'run_flow', 'validate_flow', 'run_command', 'cancel_job'}
+        if (self.state and isinstance(request, dict) and isinstance(request.get('operation'), str)
+                and request['operation'] in mutations):
+            identity, project = request.get('request_id'), request.get('project_id')
+            if (set(request) == {'request_id', 'project_id', 'operation', 'arguments'} and
+                    isinstance(identity, str) and 1 <= len(identity) <= 128 and
+                    isinstance(project, str) and project in self.projects and isinstance(request['arguments'], dict)):
+                fingerprint = sha256(json.dumps({'request': request, 'root': str(self.projects[project]['root']), 'python': self.projects[project]['python']}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                # Keep concurrent delivery behind the committed outcome, including failed edits.
+                with self.mutation_lock:
+                    previous = self.state.lookup(project, identity, fingerprint)
+                    if previous is not None:
+                        return previous
+                    response = self._dispatch(request, (project, identity))
+                    self.state.finish((project, identity), response)
+                    return response
+        return self._dispatch(request)
+
+    def _dispatch(self, request, request_key=None):
         request_id = request.get('request_id') if isinstance(request, dict) else None
         try:
             if not isinstance(request, dict) or set(request) != {'request_id', 'project_id', 'operation', 'arguments'}:
@@ -94,7 +120,7 @@ class WorkspaceAgent:
                 raise AgentError('unknown_project', 'Project is not configured.', 'authorization')
             if not isinstance(operation, str) or not isinstance(arguments, dict):
                 raise AgentError('invalid_request', 'Expected an operation name and arguments object.')
-            result = self.execute(self.projects[project_id], operation, arguments)
+            result = self.execute(self.projects[project_id], operation, arguments, request_key)
             return {'request_id': request_id, 'ok': True, 'result': result}
         except FlowBusy as error:
             return {'request_id': request_id, 'ok': False, 'error': {'code': 'conflict', 'stage': 'execution', 'message': str(error)}}
@@ -105,7 +131,7 @@ class WorkspaceAgent:
         except (OSError, UnicodeError, ValueError, RuntimeError, SyntaxError):
             return {'request_id': request_id, 'ok': False, 'error': {'code': 'unavailable', 'stage': 'filesystem', 'message': 'Could not access the requested project resource.'}}
 
-    def execute(self, project, operation, arguments):
+    def execute(self, project, operation, arguments, request_key=None):
         root = project['root']
         allowed = {'inspect_project': set(), 'list_files': {'path'}, 'read_file': {'path'}, 'search_code': {'query'},
                    'run_command': {'program', 'argv', 'cwd'}, 'read_job_output': {'job_id', 'stream', 'cursor', 'limit'},
@@ -125,7 +151,7 @@ class WorkspaceAgent:
             if not cwd.is_dir():
                 raise AgentError('unavailable', 'Command cwd must be an accessible project directory.', 'command')
             try:
-                return self.jobs.start_command(project, program, argv, cwd)
+                return self.jobs.start_command(project, program, argv, cwd, request_key)
             except (OSError, ValueError) as error:
                 raise AgentError('unavailable', str(error), 'command') from error
         if operation == 'read_job_output':
@@ -145,7 +171,7 @@ class WorkspaceAgent:
             inputs = arguments.get('input', {})
             if not isinstance(inputs, dict):
                 raise AgentError('invalid_arguments', 'Flow input must be an object.')
-            return self.jobs.start(project, operation, sheet, inputs)
+            return self.jobs.start(project, operation, sheet, inputs, request_key)
         if operation in ('write_file', 'apply_patch'):
             return self.edit_file(project, operation, arguments)
         if operation == 'inspect_project':
@@ -252,7 +278,12 @@ def create_agent_server(config: dict, port=0):
     token = token_path.read_text().strip()
     if len(token) < 16:
         raise ValueError('The agent token must contain at least 16 characters.')
-    agent = WorkspaceAgent(config['projects'])
+    state = AgentState(config.get('state_dir', token_path.absolute().parent / (token_path.name + '.state')))
+    try:
+        agent = WorkspaceAgent(config['projects'], state)
+    except BaseException:
+        state.close()
+        raise
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -265,7 +296,10 @@ def create_agent_server(config: dict, port=0):
             self.send_header('Content-Length', str(len(payload)))
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def do_POST(self):
             if not compare_digest(self.headers.get('Authorization', '').encode(), ('Bearer ' + token).encode()):
@@ -284,7 +318,20 @@ def create_agent_server(config: dict, port=0):
                 return
             self.reply(agent.dispatch(data))
 
-    return ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    class AgentServer(ThreadingHTTPServer):
+        request_queue_size = 32
+        daemon_threads = False
+
+        def server_close(self):
+            super().server_close()
+            agent.jobs.close()
+            state.close()
+
+    try:
+        return AgentServer(('127.0.0.1', port), Handler)
+    except BaseException:
+        state.close()
+        raise
 
 
 def main():
@@ -296,7 +343,13 @@ def main():
         config = json.loads(args.config.read_text())
         with create_agent_server(config, args.port) as server:
             print(f'Workspace agent: http://127.0.0.1:{server.server_port}', flush=True)
-            server.serve_forever()
+            def stop(*_):
+                Thread(target=server.shutdown, daemon=True).start()
+            previous = signal.signal(signal.SIGTERM, stop)
+            try:
+                server.serve_forever()
+            finally:
+                signal.signal(signal.SIGTERM, previous)
     except KeyboardInterrupt:
         return 0
     except (OSError, ValueError, KeyError, TypeError) as error:

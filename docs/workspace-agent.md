@@ -1,6 +1,6 @@
 # Workspace development agent
 
-The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Persistent jobs, central routing, and MCP are delivered by later tickets.
+The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Jobs, results, bounded command output, and mutation identities persist locally across restart. Central routing and MCP are delivered by later tickets.
 
 ## Start and connect
 
@@ -11,6 +11,7 @@ Create an operator-owned JSON configuration outside the project:
 ```json
 {
   "token_file": "/absolute/private/agent-token",
+  "state_dir": "/absolute/private/agent-state",
   "projects": {
     "development": {
       "root": "/absolute/path/to/workspace",
@@ -29,7 +30,7 @@ Start the agent:
 python -m workspace_sdk.agent --config /absolute/private/agent.json --port 0
 ```
 
-The process prints `Workspace agent: http://127.0.0.1:<port>` after binding. It accepts only loopback connections and requires a bearer token for every request. A browser `Origin` is rejected. Stop it with Ctrl+C. Startup errors exit nonzero with a diagnostic. This initial foreground launcher is later extended with background-service lifecycle support.
+The process prints `Workspace agent: http://127.0.0.1:<port>` after binding. It accepts only loopback connections and requires a bearer token for every request. A browser `Origin` is rejected. Stop it with Ctrl+C or SIGTERM; managed jobs are cancelled and their groups cleaned up before exit. Startup errors exit nonzero with a diagnostic. A background service configuration is described below.
 
 Connect using the installed SDK:
 
@@ -56,7 +57,7 @@ POST `/request` with `Content-Type: application/json` and `Authorization: Bearer
 }
 ```
 
-`request_id` contains 1–128 characters. Successful responses return `request_id`, `ok: true`, and `result`. Operation errors return `request_id`, `ok: false`, and an `error` with `code`, `stage`, and `message`. Transport or authentication failures use non-200 HTTP status and may omit the request identifier because the request was not accepted. The SDK returns these error objects to callers rather than hiding them behind HTTP exceptions. Source mutations require expected revisions. Durable request deduplication is introduced with job persistence; retry a lost edit acknowledgement by reading the current source and revision rather than blindly submitting it again.
+`request_id` contains 1–128 characters. Successful responses return `request_id`, `ok: true`, and `result`. Operation errors return `request_id`, `ok: false`, and an `error` with `code`, `stage`, and `message`. Transport or authentication failures use non-200 HTTP status and may omit the request identifier because the request was not accepted. The SDK returns these error objects to callers rather than hiding them behind HTTP exceptions. Source mutations require expected revisions. For mutations (`write_file`, `apply_patch`, `validate_flow`, `run_flow`, `run_command`, and `cancel_job`), retry a lost acknowledgement with the **same original request_id and identical content**. The local ledger returns the original response, including its job identifier or error. Reusing the identity with changed content returns `request_conflict`; use a new identity for genuinely new work. Read-only request identities may be reused.
 
 | Operation | Arguments | Result |
 | --- | --- | --- |
@@ -100,7 +101,7 @@ Inspection and edits use the same project files as the existing CLI and Web UI. 
 
 ## Validate and run flows
 
-Flow jobs currently require Linux or macOS. Install Workspace SDK in each configured project interpreter. Each job starts a fresh process in the selected sheet directory with that interpreter, so project imports cannot leak between jobs. Validation uses the same syntax, import, graph, and settings checks as the CLI and UI and does not execute nodes. Both validation and execution return immediately with an agent-owned job identifier; poll `get_job` until `succeeded`, `failed`, or `cancelled` (intermediate states are `queued` and `running`).
+Flow jobs currently require Linux or macOS. Install Workspace SDK in each configured project interpreter. Each job starts a fresh process in the selected sheet directory with that interpreter, so project imports cannot leak between jobs. Validation uses the same syntax, import, graph, and settings checks as the CLI and UI and does not execute nodes. Both validation and execution return immediately with an agent-owned job identifier; poll `get_job` until `succeeded`, `failed`, `cancelled`, or `interrupted` (intermediate states are `queued` and `running`).
 
 ```python
 import time
@@ -116,13 +117,13 @@ while True:
     time.sleep(0.1)
 ```
 
-Completed flow results include `run_id`, `source_version`, JSON-compatible `output`, and safe per-step history diagnostics, including failed and skipped nodes. Source versions describe the source loaded for execution, including uncommitted edits. A failed validation/import returns `error.stage`, exception type, message, and traceback with source locations. These authenticated development results remain in agent memory; they may contain sensitive text. Results are bounded to 128 KiB; non-JSON or larger results return a result-stage diagnostic. Flow worker stdout/stderr is not exposed as command output.
+Completed flow results include `run_id`, `source_version`, JSON-compatible `output`, and safe per-step history diagnostics, including failed and skipped nodes. Source versions describe the source loaded for execution, including uncommitted edits. A failed validation/import returns `error.stage`, exception type, message, and traceback with source locations. These authenticated development results persist in the private agent state; they may contain sensitive text. Results are bounded to 128 KiB; non-JSON or larger results return a result-stage diagnostic. Flow worker stdout/stderr is not exposed as command output.
 
 Execution uses the UI's Runner, node settings, and history recording. History excludes request values and request-derived exception text by default; explicit per-node sample capture keeps its existing behavior. If history cannot be written, successful output still returns with `history_error` and its source version. An already-open UI discovers agent runs, disables Run while active, and refreshes its shared completed history. External live state contains bounded status/timing/source fields only (at most 256 event entries and 128 KiB), without raw inputs, outputs, previews, or traceback text. Final output is available from `get_job`; the UI inspects the saved metadata and diagnostic locations.
 
 A per-sheet operating-system lock coordinates agent execution, UI execution, and UI reload. A conflicting start or explicit reload returns a conflict; automatic source reload waits for completion. Other sheets remain independent. Cancellation terminates the job's process group, waits up to two seconds, and kills an unresponsive worker before releasing its reservation. Poll until `cancelled` before starting another job. Interrupted runs do not receive a fabricated successful history record.
 
-Job state and raw results currently live only in agent memory and do not survive restart. Request deduplication, durable recovery, and service lifecycle belong to the persistence tickets. Do not blindly retry a start whose acknowledgement was lost.
+Completed job state and raw results survive restart in the configured state directory. A job active when the agent crashes becomes `interrupted`, with a recovery diagnostic; it is never silently retried or reported as successful. Retained output is a durable prefix and can end before the last bytes produced during a crash. If a non-job mutation was accepted but its outcome was not committed, retries return `error.code: interrupted`: it **may already have taken effect**. Inspect current files or external effects before deciding whether to issue new work with a new request identifier. There is no promise of an atomic transaction between a source edit or external command effect and SQLite.
 
 
 ## Development commands and output
@@ -148,8 +149,56 @@ page = client.request("output-1", "development", "read_job_output", {
 })
 ```
 
-Command results use the existing `queued`, `running`, `succeeded`, `failed`, and `cancelled` statuses. Completed command jobs include `exit_code`; zero succeeds, nonzero fails, and a negative value reports the terminating POSIX signal. An assertion failure retains its test diagnostic in stderr. Jobs continue when the requesting HTTP client disconnects. Cancel through `cancel_job` and poll until terminal: the agent signals the entire managed process group and escalates to SIGKILL after two seconds even if the group leader already exited. Children must remain in the managed process group; the agent is not a sandbox against programs intentionally escaping the session.
+Command results use the existing `queued`, `running`, `succeeded`, `failed`, and `cancelled` statuses. Completed command jobs include `exit_code`; zero succeeds, nonzero fails, and a negative value reports the terminating POSIX signal. An assertion failure retains its test diagnostic in stderr. Jobs continue when the requesting HTTP client disconnects. Cancel through `cancel_job` and poll until terminal: the agent signals the entire managed process group and escalates to SIGKILL after one second even if the group leader already exited. Children must remain in the managed process group; the agent is not a sandbox against programs intentionally escaping the session.
 
-Output access requires the same bearer token and project authorization as job access. Each stream retains its first 128 KiB in memory and drains/discards subsequent bytes; concurrent readers prevent stdout/stderr pipe deadlocks. Each page reads at most 16 KiB of retained bytes. `next_cursor` is a byte offset; use it unchanged to resume, including while a command runs. `total_bytes` counts all drained bytes and `truncated` indicates discarded bytes. `complete` becomes true at the retained stream's end after the job finishes; an empty live page requires polling again. Content decodes UTF-8 with replacement, so a page boundary inside a multibyte character can show replacement characters. There is no implicit raw output in flow history or the Web UI.
+Output access requires the same bearer token and project authorization as job access. Each stream retains its first 128 KiB in memory and private SQLite state and drains/discards subsequent bytes; concurrent readers prevent stdout/stderr pipe deadlocks. Each page reads at most 16 KiB of retained bytes. `next_cursor` is a byte offset; use it unchanged to resume, including while a command runs. `total_bytes` counts all drained bytes and `truncated` indicates discarded bytes. `complete` becomes true at the retained stream's end after the job finishes; an empty live page requires polling again. Content decodes UTF-8 with replacement, so a page boundary inside a multibyte character can show replacement characters. There is no implicit raw output in flow history or the Web UI.
 
-The agent retains at most 32 command jobs (running plus completed), each with at most 256 KiB of output across both streams. It rejects additional commands with an actionable retention-limit error, bounding command output memory to 8 MiB plus job/request bookkeeping and fixed pipe/read buffers. Restart clears these jobs and output. There is no automatic eviction, disk retention, restart recovery, or durable request deduplication yet. Do not retry a start after losing its acknowledgement. Raw development output can contain sensitive data; restrict the token, operating-system account, and agent lifetime accordingly.
+The agent retains at most 32 command jobs (running plus completed), each with at most 256 KiB of output across both streams. It rejects additional commands with an actionable retention-limit error, bounding command output memory to 8 MiB plus job/request bookkeeping and fixed pipe/read buffers. Restart preserves these jobs and output and does **not** reset capacity. There is no automatic eviction. Mutation identities and their responses are never pruned: deleting an old identity could execute a delayed duplicate again. At capacity, stop the service, archive the entire private state directory, and provision a new explicitly identified agent instance with a new token/state directory; discard all old client retry queues and keep the archive for inspection. Never point clients carrying old requests at a fresh ledger. This deliberate 32-command lifetime admission limit is a current operational limitation. Raw development output, flow results, saved mutation responses, backups, and service logs can contain sensitive data; restrict token, account, directory, backup, and journal access accordingly.
+
+
+## Durable local instance and recovery
+
+`state_dir` is an absolute path to a local filesystem directory, outside every exposed project. If omitted it defaults to `<token_file>.state`. The agent creates it with `0700`, requires current-user ownership/private permissions, and stores its SQLite database and lock with `0600`. Existing insecure directories are rejected. Use one stable state directory per device-local agent instance; do not share it over a network filesystem, run concurrent replicas, or copy it between devices. Keep the same directory and project identity across process restarts. Request identity is scoped by configured project ID within this instance; the fingerprint also includes the configured project root and Python path, so reconfiguring a project cannot return an old outcome for a different root/environment. Arguments are fingerprinted as canonical JSON; raw request payloads are not stored in the ledger.
+
+SQLite commits acceptance before a mutation can take effect. Job admission commits its identifier and queued record before launching the process. A live supervisor owns each job group, and only the agent owns the control pipe writer. Client socket closure has no effect on that pipe. Agent death closes it, and the supervisor sends SIGTERM followed by SIGKILL after one second to the entire group, including children ignoring SIGTERM. Normal command completion also cleans remaining descendants. The supervisor holds the instance lock until cleanup completes, so an immediate replacement can exit with `Another agent is already using this state directory`; retry startup after cleanup. Recovery never signals saved numeric PIDs and cannot kill an unrelated process that reused one. Programs intentionally escaping their process group remain outside this mechanism; use the service cgroup boundary and a restricted account. Request/output cursors and identifiers do not change on restart.
+
+Graceful shutdown stops accepting requests, finishes already accepted handlers, cancels active jobs, joins output collectors, closes SQLite, then releases the instance lock. SIGKILL or power loss instead leaves active jobs `interrupted`; the persisted output may be incomplete. Stop before archiving/copying state. The command cap bounds retained raw command output to 8 MiB (SQLite JSON/base64 encoding adds disk overhead); request identity/response bookkeeping and bounded-per-job flow results grow with accepted work. Monitor available disk space; persistence failure cannot safely promise an outcome and must be investigated before retrying with a new ID.
+
+## Ubuntu 24.04 LTS background service
+
+The following is an operator-run installation template for one Linux Edge machine with Python 3.12 and systemd. Replace paths/account names for the designated development project. It needs no browser or logged-in client. Keep the SDK checkout at `/opt/phyzflow`; ensure the dedicated account can read it and owns its designated project. Do not give this account unrelated serving projects or secrets.
+
+```sh
+sudo apt-get update
+sudo apt-get install -y python3.12-venv
+sudo useradd --system --create-home --home-dir /var/lib/workspace-agent --shell /usr/sbin/nologin workspace-agent
+sudo install -d -o workspace-agent -g workspace-agent -m 0700 /var/lib/workspace-agent/state
+sudo python3.12 -m venv /opt/workspace-agent-venv
+sudo /opt/workspace-agent-venv/bin/python -m pip install /opt/phyzflow/workspace
+sudo install -d -o root -g workspace-agent -m 0750 /etc/workspace-agent
+sudo -u workspace-agent /opt/workspace-agent-venv/bin/python -c 'import os,secrets; fd=os.open("/var/lib/workspace-agent/token",os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(fd,(secrets.token_urlsafe(32)+"\n").encode()); os.close(fd)'
+```
+
+Install the SDK in the selected project Python environment too. Create `/etc/workspace-agent/agent.json` as root, group `workspace-agent`, mode `0640`, using the configuration above with `token_file: /var/lib/workspace-agent/token`, `state_dir: /var/lib/workspace-agent/state`, and the actual absolute development root/interpreter. Validate in the foreground first as `workspace-agent`; require the printed listening address and an authenticated `inspect_project` response, then stop with Ctrl+C. A configured allowlist such as `["python"]` grants arbitrary Python code execution under this account.
+
+Copy [workspace-agent.service](workspace-agent.service) to `/etc/systemd/system/workspace-agent.service` and run:
+
+```sh
+sudo systemd-analyze verify /etc/systemd/system/workspace-agent.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now workspace-agent.service
+sudo systemctl status workspace-agent.service --no-pager
+sudo journalctl -u workspace-agent.service -n 50 --no-pager
+# Stop (also stops active managed jobs), then start or restart explicitly:
+sudo systemctl stop workspace-agent.service
+sudo systemctl start workspace-agent.service
+sudo systemctl restart workspace-agent.service
+# Disable boot startup and stop:
+sudo systemctl disable --now workspace-agent.service
+```
+
+The fixed loopback port is 18081; it is not an Internet endpoint. `Type=exec` confirms the interpreter exec, not HTTP readiness: require the printed address plus an authenticated request. `Restart=on-failure` retries unexpected exits after three seconds; explicit stops remain stopped. `KillMode=mixed` lets the agent cancel jobs first and makes systemd SIGKILL all remaining cgroup processes after the shutdown timeout. See the authoritative [service options](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) and [termination behavior](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html).
+
+For startup failure, inspect the journal for `Agent startup failed`, fix config/token ownership, missing interpreter/project, private state permissions, instance-lock conflict, or occupied loopback port; then `sudo systemctl reset-failed workspace-agent.service` and start again. Test invalid config in the foreground with the same account and interpreter to see a nonzero exit and its diagnostic. Do not delete the database to repair an instance-lock conflict. Restrict system journal access and journal retention because development diagnostics can be sensitive.
+
+Verification boundary: real module startup, HTTP disconnect/retry, SIGTERM shutdown, SIGKILL cleanup, and restart recovery are covered by `test_agent_persistence.py` on macOS/Python 3.12.11. The Ubuntu/systemd template has not been executed on a Linux device or container (Docker daemon unavailable on the implementation host); verify install/start/stop/boot behavior on the target before deployment. No host service is registered by the test suite.
