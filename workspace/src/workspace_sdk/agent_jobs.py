@@ -15,8 +15,19 @@ from .execution import ExternalRun, sheet_lock
 
 def project_environment(project):
     """Start every project process without the agent account's ambient secrets."""
-    return {'PATH': str(Path(project['python']).parent) + os.pathsep + os.defpath,
-            'PYTHONNOUSERSITE': '1', 'PYTHONUNBUFFERED': '1'}
+    if os.name == 'posix':
+        return {'PATH': str(Path(project['python']).parent) + os.pathsep + os.defpath,
+                'PYTHONNOUSERSITE': '1', 'PYTHONUNBUFFERED': '1'}
+    system_root = os.environ.get('SYSTEMROOT', r'C:\Windows')
+    environment = {
+        'PATH': os.pathsep.join([str(Path(project['python']).parent), os.path.join(system_root, 'System32'), os.defpath]),
+        'PYTHONNOUSERSITE': '1',
+        'PYTHONUNBUFFERED': '1',
+    }
+    for key in ('SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP'):
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    return environment
 
 
 class AgentJobs:
@@ -31,6 +42,8 @@ class AgentJobs:
             self.state.save_job(item, request_key)
 
     def spawn(self, argv, *, inherited=-1, **kwargs):
+        if os.name != 'posix':
+            return subprocess.Popen(argv, creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0), **kwargs)
         if not self.state:
             return subprocess.Popen(argv, start_new_session=True,
                                     pass_fds=() if inherited < 0 else (inherited,), **kwargs)
@@ -71,8 +84,6 @@ class AgentJobs:
             thread.join()
 
     def start(self, project, operation, sheet, inputs, request_key=None):
-        if os.name != 'posix':
-            raise ValueError('Agent flow jobs require Linux or macOS.')
         reservation = sheet_lock(sheet)
         descriptor = reservation.__enter__()
         job_id = uuid4().hex
@@ -88,15 +99,17 @@ class AgentJobs:
             environment.update(project.get('inference_environment', {}))
             process = self.spawn([project['python'], '-m', 'workspace_sdk.agent_worker'], cwd=sheet, env=environment,
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                 inherited=descriptor.fileno())
+                                 inherited=-1 if descriptor is None else descriptor.fileno())
             process.stdin.write((json.dumps({'job_id': job_id, 'operation': operation, 'input': inputs}) + '\n').encode())
             process.stdin.close()
         except BaseException:
             if 'process' in locals():
                 if hasattr(process, 'agent_lifeline'):
                     self.finish_process(process)
-                else:
+                elif os.name == 'posix':
                     os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
                 process.wait()
             reservation.__exit__(None, None, None)
             with self.lock:
@@ -129,8 +142,6 @@ class AgentJobs:
         return {'job_id': job_id, 'status': 'queued'}
 
     def start_command(self, project, program, argv, cwd, request_key=None):
-        if os.name != 'posix':
-            raise ValueError('Agent command jobs require Linux or macOS.')
         python = Path(project['python'])
         if not python.is_file() or not os.access(python, os.X_OK):
             raise ValueError('Configured project Python environment is inaccessible; restore or reconfigure it.')
@@ -213,7 +224,7 @@ class AgentJobs:
             # a guardian PID that another collector may already have reaped.
             self.finish_process(item['process'])
             item['process'].wait()
-        elif cancelling:
+        elif cancelling and os.name == 'posix':
             try:
                 os.killpg(item['process'].pid, signal.SIGTERM)
                 deadline = monotonic() + 2
@@ -229,5 +240,9 @@ class AgentJobs:
                 item['process'].wait()
             except ProcessLookupError:
                 pass
+        elif cancelling:
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(item['process'].pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            item['process'].wait()
         with self.lock:
             return json.loads(json.dumps(item['job']))

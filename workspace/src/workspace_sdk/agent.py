@@ -281,7 +281,7 @@ class WorkspaceAgent:
 def create_agent_server(config: dict, port=0):
     token_path = Path(config['token_file']).expanduser()
     info = token_path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+    if not stat.S_ISREG(info.st_mode) or (os.name == 'posix' and (info.st_mode & 0o077 or info.st_uid != os.getuid())):
         raise ValueError('The token file must be owned by the current user and accessible only to that user.')
     token = token_path.read_text().strip()
     if len(token) < 16:

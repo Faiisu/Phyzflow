@@ -37,7 +37,7 @@ def failure(code, message, request_id=None):
 def private_token(filename):
     path = Path(filename)
     info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+    if not stat.S_ISREG(info.st_mode) or (os.name == 'posix' and (info.st_mode & 0o077 or info.st_uid != os.getuid())):
         raise ValueError('Token files must be private and owned by the current user.')
     token = path.read_text().strip()
     if len(token) < 16 or not token.isascii() or any(c.isspace() for c in token):

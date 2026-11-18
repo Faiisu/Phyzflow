@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -90,14 +91,42 @@ def write_private_json(path: Path, payload: dict) -> None:
     os.chmod(path, 0o600)
 
 
+def find_openssl() -> str:
+    """Locate the openssl executable across POSIX and Windows Git installs."""
+    found = shutil.which("openssl")
+    if found:
+        return found
+    if os.name != "posix":
+        candidates = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "openssl.exe",
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "mingw64" / "bin" / "openssl.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "usr" / "bin" / "openssl.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "mingw64" / "bin" / "openssl.exe",
+            Path(os.environ.get("LocalAppData", "")) / "Programs" / "Git" / "usr" / "bin" / "openssl.exe",
+            Path(os.environ.get("LocalAppData", "")) / "Programs" / "Git" / "mingw64" / "bin" / "openssl.exe",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+    raise RuntimeError(
+        "Could not find 'openssl' on PATH"
+        + (" or in Git for Windows." if os.name != "posix" else ".")
+    )
+
+
 def generate_tls_cert(cert_file: Path, key_file: Path, advertise_host: str) -> None:
     """Generate a localhost/IPv4 self-signed TLS certificate for the central router."""
     san_entries = ["DNS:localhost", "IP:127.0.0.1"]
     if advertise_host != "127.0.0.1":
         san_entries.append(f"IP:{advertise_host}")
+    env = dict(os.environ)
+    if os.name != "posix":
+        # Prevent Git/MSYS2 openssl from rewriting '/CN=localhost' as a filesystem path.
+        env["MSYS_NO_PATHCONV"] = "1"
+        env["MSYS2_ARG_CONV_EXCL"] = "*"
     result = subprocess.run(
         [
-            "openssl",
+            find_openssl(),
             "req",
             "-x509",
             "-newkey",
@@ -116,6 +145,7 @@ def generate_tls_cert(cert_file: Path, key_file: Path, advertise_host: str) -> N
         ],
         capture_output=True,
         text=True,
+        env=env,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or "openssl failed."
@@ -143,9 +173,8 @@ def print_mcp_summary(
     print("===========================", flush=True)
 
 
-def run_posix(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
+def run_mcp_stack(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
     """Start the local Edge agent, central TLS router, connector, and Workspace UI."""
-    # Import POSIX-only agent modules after verifying os.name == "posix".
     from workspace_sdk.agent import AgentClient, create_agent_server
     from workspace_sdk.agent_mcp import create_mcp_server
     from workspace_sdk.agent_remote import (
@@ -298,62 +327,12 @@ def run_posix(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
     return 0
 
 
-def run_windows(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
-    """Prepare MCP client templates and start the Workspace Web UI on Windows."""
-    central_host = validate_ipv4(args.central_host, "Central MCP Router IP")
-    central_port = validate_port(args.central_port, "Central MCP Router port")
-    runtime_dir = resolve_runtime_dir(repo_dir, project_dir)
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-
-    mcp_config_path = runtime_dir / "mcp.json"
-    client_token_file = runtime_dir / "client-token"
-    ca_file = runtime_dir / "central-ca.pem"
-    central_url = f"https://{detect_advertise_ipv4(central_host)}:{central_port}"
-    mcp_config = {
-        "central_url": central_url,
-        "client_token_file": str(client_token_file),
-        "ca_file": str(ca_file),
-    }
-    client_snippet = {
-        "mcpServers": {
-            "workspace-edge": {
-                "command": sys.executable,
-                "args": ["-m", "workspace_sdk.agent_mcp", "--config", str(mcp_config_path)],
-            }
-        }
-    }
-    mcp_config_path.write_text(json.dumps(mcp_config, indent=2) + "\n", encoding="utf-8")
-    (runtime_dir / "mcp-client-config.json").write_text(
-        json.dumps(client_snippet, indent=2) + "\n", encoding="utf-8"
-    )
-
-    print("=== Workspace MCP (Windows) ===", flush=True)
-    print(
-        "Note: Local Edge Agent services require POSIX (Linux/macOS or `wsl ./scripts/standalone_n_MCP.sh`).",
-        flush=True,
-    )
-    print(
-        "The MCP client (`python -m workspace_sdk.agent_mcp`) and Web UI run natively on Windows.",
-        flush=True,
-    )
-    print(f"MCP Config Template: {mcp_config_path}", flush=True)
-    print("MCP Client Config (mcpServers):", flush=True)
-    print(json.dumps(client_snippet, indent=2), flush=True)
-    print("===============================", flush=True)
-
-    if args.check_only:
-        return 0
-    os.chdir(project_dir)
-    serve_workspace(project_dir, discover_flows(project_dir), ui_settings)
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True, help="Workspace project directory")
     parser.add_argument("--ui-host", help="Override the UI IPv4 bind address")
     parser.add_argument("--ui-port", type=int, help="Override the UI bind port")
-    parser.add_argument("--central-host", default="127.0.0.1", help="Central MCP router IPv4 bind address")
+    parser.add_argument("--central-host", default="0.0.0.0", help="Central MCP router IPv4 bind address")
     parser.add_argument("--central-port", type=int, default=18443, help="Central MCP router bind port")
     parser.add_argument("--no-prompt", action="store_true", help="Use defaults without interactive prompts")
     parser.add_argument(
@@ -373,9 +352,7 @@ def main() -> int:
         ui_settings = load_ui_settings(project_dir, args.ui_port, ipv4_override=args.ui_host)
         if not args.no_prompt:
             ui_settings = prompt_ui_settings(ui_settings)
-        if os.name == "posix":
-            return run_posix(args, repo_dir, project_dir, ui_settings)
-        return run_windows(args, repo_dir, project_dir, ui_settings)
+        return run_mcp_stack(args, repo_dir, project_dir, ui_settings)
     except KeyboardInterrupt:
         print(file=sys.stderr)
         return 0

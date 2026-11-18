@@ -1,11 +1,15 @@
 """Private, instance-local durable request identities and bounded job artifacts."""
 import base64
-import fcntl
 import json
 import os
 from pathlib import Path
 import sqlite3
 from threading import RLock
+
+if os.name == 'posix':
+    import fcntl
+else:
+    import msvcrt
 
 
 class AgentState:
@@ -13,17 +17,24 @@ class AgentState:
         self.directory = Path(directory).expanduser().absolute()
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = self.directory.lstat()
-        if self.directory.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if self.directory.is_symlink() or (os.name == 'posix' and (info.st_uid != os.getuid() or info.st_mode & 0o077)):
             raise ValueError('Agent state directory must be private (0700) and owned by the current user.')
         self.owner = (self.directory / 'owner.lock').open('a+b')
         os.chmod(self.owner.name, 0o600)
         try:
-            fcntl.flock(self.owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.name == 'posix':
+                fcntl.flock(self.owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                self.owner.seek(0)
+                msvcrt.locking(self.owner.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
             self.owner.close()
             raise ValueError('Another agent is already using this state directory.') from None
         database = self.directory / 'state.sqlite3'
-        fd = os.open(database, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        if database.is_symlink():
+            self.owner.close()
+            raise ValueError('Agent state database must not be a symbolic link.')
+        fd = os.open(database, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         os.close(fd)
         os.chmod(database, 0o600)
         self.lock = RLock()
@@ -85,4 +96,10 @@ class AgentState:
 
     def close(self):
         self.db.close()
+        if os.name != 'posix':
+            try:
+                self.owner.seek(0)
+                msvcrt.locking(self.owner.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
         self.owner.close()
