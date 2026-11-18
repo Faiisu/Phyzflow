@@ -303,6 +303,23 @@ class SheetEditLease:
             self._write_json_atomic(self._lock_path(create_dir=True), updated)
             return self._snapshot(updated, session_id)
 
+    def mark_disconnected(self, session_id: str) -> dict | None:
+        with self._lock:
+            self._load_sessions()
+            if (
+                not session_id
+                or session_id in self.invalidated_sessions
+                or session_id in self.closed_sessions
+                or session_id in self._closing_sessions
+            ):
+                return None
+            current = self._read_lock()
+            if current is None or current["session_id"] != session_id:
+                return None
+            updated = {**current, "disconnected": True}
+            self._write_json_atomic(self._lock_path(create_dir=True), updated)
+            return self._snapshot(updated)
+
     def register_process(self, session_id: str, process: Popen, lifeline: int | None = None) -> None:
         with self._lock:
             self._load_sessions()
@@ -416,19 +433,42 @@ class SheetEditLease:
             self._load_sessions()
             current = self._read_lock()
             if current is None:
-                return {"forced": False, "previous_owner": None}
+                return {"forced": False, "previous_owner": None, "generation": self._generation}
             old_session = current["session_id"]
             previous_owner = current["owner"]
+            next_gen = max(self._generation, int(current.get("generation", 0))) + 1
             self.invalidated_sessions.add(old_session)
-            self._save_sessions(invalidated_id=old_session)
+            self._closing_sessions.add(old_session)
+            self._save_sessions(generation=next_gen, invalidated_id=old_session)
             entries = self.owned_processes.pop(old_session, [])
-        for process, lifeline in entries:
-            _close_entry(process, lifeline)
+        try:
+            for process, lifeline in entries:
+                _close_entry(process, lifeline)
+        finally:
+            with self._lock:
+                self._closing_sessions.discard(old_session)
+                current = self._read_lock()
+                if current is not None and current["session_id"] == old_session:
+                    self._lock_path().unlink(missing_ok=True)
+        return {"forced": True, "previous_owner": previous_owner, "generation": next_gen}
+
+    def is_invalidated(self, session_id: str) -> bool:
         with self._lock:
+            self._load_sessions()
+            return session_id in self.invalidated_sessions
+
+    def stage_draft(self, principal: str, session_id: str, path: str, source: str) -> dict:
+        if not path:
+            raise ValueError("A file path is required.")
+        with self._lock:
+            self.verify_write(principal, session_id or "")
             current = self._read_lock()
-            if current is not None and current["session_id"] == old_session:
-                self._lock_path().unlink(missing_ok=True)
-        return {"forced": True, "previous_owner": previous_owner}
+            assert current is not None
+            drafts = dict(current.get("unsaved_draft") or {})
+            drafts[path] = source
+            updated = {**current, "unsaved_draft": drafts}
+            self._write_json_atomic(self._lock_path(create_dir=True), updated)
+            return self._snapshot(updated, session_id)
 
     def verify_write(self, principal: str, session_id: str | None) -> None:
         with self._lock:
@@ -460,10 +500,26 @@ class SheetEditLease:
                     snapshot=self._snapshot(None),
                 )
 
-    def write_locked(self, principal: str, session_id: str | None, operation: Callable[[], T]) -> T:
+    def write_locked(
+        self,
+        principal: str,
+        session_id: str | None,
+        operation: Callable[[], T],
+        *,
+        path: str | None = None,
+    ) -> T:
         with self._lock:
             self.verify_write(principal, session_id)
-            return operation()
+            result = operation()
+            if path is not None and session_id is not None:
+                current = self._read_lock()
+                if current is not None and current["session_id"] == session_id:
+                    drafts = current.get("unsaved_draft")
+                    if isinstance(drafts, dict) and path in drafts:
+                        remaining = {key: value for key, value in drafts.items() if key != path}
+                        updated = {**current, "unsaved_draft": remaining or None}
+                        self._write_json_atomic(self._lock_path(create_dir=True), updated)
+            return result
 
     def close(self) -> None:
         with self._lock:

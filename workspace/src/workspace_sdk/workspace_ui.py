@@ -243,7 +243,6 @@ class FlowSheet:
                 if automatic_source is not None and self.changed_source(status) != automatic_source:
                     raise ReloadDeferred
                 self.stop_worker(status="opening")
-                self.revision += 1
             if self.worker is not None:
                 if (
                     self.worker.url
@@ -265,9 +264,11 @@ class FlowSheet:
             try:
                 self.start_worker()
             except BaseException:
+                if reload:
+                    self.revision += 1
                 self.inactive_status = "unavailable"
                 raise
-            if replacing:
+            if reload or replacing:
                 self.revision += 1
             self.inactive_status = "ready"
             return self.revision
@@ -709,6 +710,7 @@ def workspace_routes(
                         "web",
                         session_id,
                         lambda: edit_sheet_flow_source(sheet.root, source, revision),
+                        path="flow.py",
                     )
 
             self.request.send_source_edit(perform_edit, not_found_error="This sheet's flow.py is unavailable.")
@@ -723,8 +725,8 @@ def workspace_routes(
                     raise ValueError
                 data = self.request.read_json_dict(8192)
                 action = data.get("action")
-                if action not in ("acquire", "heartbeat", "release"):
-                    raise ValueError("Choose acquire, heartbeat, or release.")
+                if action not in ("acquire", "heartbeat", "release", "force_open"):
+                    raise ValueError("Choose acquire, heartbeat, release, or force_open.")
                 session_id = data.get("session_id")
                 if session_id is not None and not isinstance(session_id, str):
                     raise ValueError("session_id must be a string.")
@@ -738,8 +740,31 @@ def workspace_routes(
                     result = sheet.edit_lease.acquire("web", "web", "Web editor", session_id=session_id)
                 elif action == "heartbeat":
                     result = sheet.edit_lease.heartbeat("web", session_id or "")
-                else:
+                elif action == "release":
                     result = sheet.edit_lease.release("web", session_id or "")
+                else:
+                    force_info = sheet.edit_lease.force_open()
+                    reload_error = None
+                    if force_info["forced"] and sheet.status() not in ("running", "stopping"):
+                        try:
+                            sheet.open(reload=True)
+                        except ReloadConflict:
+                            pass
+                        except (OSError, RuntimeError, EOFError) as error:
+                            reload_error = str(error) or "The flow process exited."
+                    if data.get("acquire"):
+                        edit_lock = sheet.edit_lease.acquire("web", "web", "Web editor", session_id=session_id)
+                    else:
+                        edit_lock = sheet.edit_lease.status(session_id)
+                    result = {
+                        "forced": force_info["forced"],
+                        "previous_owner": force_info["previous_owner"],
+                        "revision": sheet.revision,
+                        "status": sheet.status(),
+                        "edit_lock": edit_lock,
+                    }
+                    if reload_error is not None:
+                        result["reload_error"] = reload_error
             except SheetLockedError as error:
                 self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
             except (ValueError, OSError) as error:
@@ -817,7 +842,7 @@ def workspace_routes(
                         if revision != sheet.revision:
                             self.request.send_error(HTTPStatus.CONFLICT, "The flow has been reloaded. Refresh its sheet.")
                             return
-                        if worker is None or worker.process.poll() is not None:
+                        if worker is None or not worker.url or worker.process.poll() is not None:
                             self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Open the flow first.")
                             return
                         upstream = HTTPConnection(worker.url.removeprefix("http://"), timeout=2)

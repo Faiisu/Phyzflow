@@ -435,6 +435,7 @@ def serve(
                         "web",
                         self.headers.get("X-Phyzflow-Edit-Session"),
                         apply_node_edit,
+                        path=relative,
                     )
 
             self.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")

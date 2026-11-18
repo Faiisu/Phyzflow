@@ -24,6 +24,7 @@
     <button type="button" id="reload-flow" disabled>Reload flow</button>
     <span id="reload-message" role="status" hidden></span>
     <span id="edit-lock-message" class="edit-lock-message" aria-live="polite" hidden></span>
+    <button type="button" id="force-open-flow" hidden>Force Open</button>
   </footer>
   <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
     <form>
@@ -32,6 +33,7 @@
       <p id="flow-source-message" role="status"></p>
       <p id="source-change-message" aria-live="polite" hidden>Source changed. Reload pending.</p>
       <div class="dialog-actions">
+        <button type="button" id="force-open-source" hidden>Force Open</button>
         <button type="button" id="close-flow-source">Close</button>
         <button type="submit" disabled>Save</button>
       </div>
@@ -57,6 +59,22 @@
       <div class="dialog-actions">
         <button type="button" autofocus>Cancel</button>
         <button type="submit">Delete sheet</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="force-open-sheet" class="sheet-dialog" aria-labelledby="force-open-title" aria-describedby="force-open-effect">
+    <form>
+      <h1 id="force-open-title">Force open sheet?</h1>
+      <dl class="force-open-details">
+        <div><dt>Lock owner</dt><dd id="force-open-owner"></dd></div>
+        <div><dt>Last heartbeat</dt><dd id="force-open-heartbeat"></dd></div>
+        <div><dt>Session status</dt><dd id="force-open-status"></dd></div>
+      </dl>
+      <p id="force-open-effect" class="force-open-effect"></p>
+      <p id="force-open-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-force-open" autofocus>Cancel</button>
+        <button type="submit" id="confirm-force-open">Force Open</button>
       </div>
     </form>
   </dialog>
