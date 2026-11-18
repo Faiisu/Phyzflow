@@ -1,5 +1,86 @@
 const primaryBoard = document.querySelector("#dashboard");
 
+export const SHARED_DASHBOARD_THEME_CSS = `:root {
+  color-scheme: dark;
+  --bg: #141d2b;
+  --surface: #171e2b;
+  --panel: #202b3d;
+  --dock: #25272d;
+  --line: #3b4b63;
+  --ink: #ecf0fa;
+  --muted: #aebbd0;
+  --accent: #86c7ff;
+  --series-1: #86c7ff;
+  --series-2: #ffbf78;
+  --series-3: #aee4cf;
+  --series-4: #d6a0fa;
+  --state-idle: #aebbd0;
+  --state-live: #86c7ff;
+  --state-running: #ffd788;
+  --state-succeeded: #aee4cf;
+  --state-failed: #ffc0bd;
+  --state-stopped: #aebbd0;
+  --font-sans: "Instrument Sans", "Inter", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --radius-1: 6px;
+  --radius-2: 10px;
+  color: var(--ink);
+  background: var(--bg);
+  font: 14px/1.4 var(--font-sans);
+  font-synthesis: none;
+}
+:where(*) { box-sizing: border-box; }
+:where(html, body) { margin: 0; max-width: 100%; overflow-x: hidden; }
+:where(main) { padding: clamp(0.75rem, 3vw, 1rem) clamp(0.75rem, 3vw, 1.1rem) 0.85rem; min-width: 0; }
+:where(h1) { margin: 0; font-size: 1.25rem; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+:where(h2, h3, h4) { margin: 0; font-weight: 600; line-height: 1.3; }
+:where(p) { margin: 0.2rem 0 0.45rem; color: var(--muted); overflow-wrap: anywhere; }
+:where(header) { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2) var(--space-4); min-width: 0; }
+:where(dl) { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-4); margin: 0; min-width: 0; }
+:where(dl > div) { min-width: 0; }
+:where(dt) { color: var(--muted); font-size: 0.8rem; }
+:where(dd) { margin: 0; font: 600 1.18rem/1.55 var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+:where(output) { display: inline-block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+:where(dd, output, .metric-value, code) { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+:where(code) { padding: 0.1rem 0.35rem; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); font-size: 0.85em; }
+:where(canvas) { display: block; width: 100%; max-width: 100%; height: clamp(10rem, 52vh, 17rem); margin-top: var(--space-2); border-radius: var(--radius-1); }
+.reading { display: grid; gap: var(--space-1); min-width: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-1); background: var(--panel); }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr)); gap: var(--space-2); margin-top: var(--space-3); min-width: 0; }
+.metric-card { display: grid; gap: var(--space-1); min-width: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-1); background: var(--surface); }
+.metric-label { color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+.metric-value { font-size: 1.05rem; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-2); font-size: 0.78rem; color: var(--muted); }
+.chart-legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.chart-legend-swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+[data-empty="true"], .muted { color: var(--muted); }
+:where(button, input, select, textarea) { font: inherit; color: var(--ink); }
+:where(button) { cursor: pointer; padding: 0.38rem 0.72rem; border: 1px solid var(--line); border-radius: var(--radius-1); background: var(--panel); transition: border-color 0.15s ease, background 0.15s ease; }
+:where(button:not(:disabled):hover) { border-color: var(--accent); background: #27354b; }
+:where(button:disabled) { opacity: 0.5; cursor: default; }
+:where(input, select, textarea) { min-width: 0; max-width: 100%; padding: 0.36rem 0.52rem; border: 1px solid var(--line); border-radius: var(--radius-1); background: var(--surface); }
+:where(button, input, select, textarea, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.state-badge { display: inline-flex; align-items: center; gap: 0.36rem; padding: 0.18rem 0.54rem; border-radius: 999px; border: 1px solid rgba(174, 187, 208, 0.25); background: rgba(174, 187, 208, 0.12); color: var(--state-idle); font: 600 0.72rem/1.3 var(--mono); white-space: nowrap; }
+.state-badge::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.state-banner { padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-1); background: var(--surface); font-size: 0.84rem; }
+:is(.state-badge, .state-banner)[data-state="idle"], :is(.state-badge, .state-banner)[data-state="empty"], :is(.state-badge, .state-banner)[data-state="stopped"] { color: var(--state-idle); border-color: rgba(174, 187, 208, 0.25); background: rgba(174, 187, 208, 0.12); }
+:is(.state-badge, .state-banner)[data-state="live"] { color: var(--state-live); border-color: rgba(134, 199, 255, 0.35); background: rgba(134, 199, 255, 0.13); }
+:is(.state-badge, .state-banner)[data-state="running"] { color: var(--state-running); border-color: rgba(255, 215, 136, 0.32); background: rgba(255, 215, 136, 0.14); }
+:is(.state-badge, .state-banner)[data-state="succeeded"] { color: var(--state-succeeded); border-color: rgba(174, 228, 207, 0.3); background: rgba(174, 228, 207, 0.13); }
+:is(.state-badge, .state-banner)[data-state="failed"], :is(.state-badge, .state-banner)[data-state="error"] { color: var(--state-failed); border-color: rgba(255, 192, 189, 0.34); background: rgba(255, 192, 189, 0.14); }
+@media (max-width: 420px) {
+  :where(main) { padding: var(--space-2); }
+  :where(header) { flex-direction: column; align-items: stretch; gap: var(--space-2); }
+  :where(h1) { font-size: 1.08rem; }
+  :where(dl) { gap: var(--space-2) var(--space-3); }
+  :where(dd) { font-size: 1rem; }
+  :where(.metric-grid) { grid-template-columns: minmax(0, 1fr); }
+  :where(canvas) { height: clamp(8.5rem, 46vh, 14rem); }
+}`;
+
 const runFields = ["id", "status", "started_at", "finished_at", "duration_ms", "source_version"];
 const nodeFields = ["id", "status", "started_at", "finished_at", "duration_ms", "blocked_by", "metrics", "error_type"];
 
@@ -45,6 +126,7 @@ function childBridge() {
 }
 
 function frameDocument(assets) {
+  const themeCss = JSON.stringify(SHARED_DASHBOARD_THEME_CSS).replaceAll("<", "\\u003c");
   const css = JSON.stringify(assets["style.css"] ?? "").replaceAll("<", "\\u003c");
   const scripts = JSON.stringify(
     [assets["setting.js"], assets["dashboard.js"]].filter(Boolean),
@@ -55,6 +137,10 @@ function frameDocument(assets) {
     <script>
     (${childBridge})();
     (() => {
+      const themeStyle = document.createElement("style");
+      themeStyle.dataset.phyzflowTheme = "true";
+      themeStyle.textContent = ${themeCss};
+      document.head.append(themeStyle);
       const style = document.createElement("style");
       style.textContent = ${css};
       document.head.append(style);
@@ -311,6 +397,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     reload.addEventListener("click", () => {
       panel.loadDashboard();
       panel.loadSettings(panel.loadVersion);
+      refreshVisualizeList();
     });
 
     return panel;
@@ -502,6 +589,21 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   }
   visualizeToggle?.addEventListener("click", () => {
     if (visualizeDrawer && !visualizeDrawer.hidden) refreshVisualizeList();
+  });
+  document.querySelector("#visualize-refresh")?.addEventListener("click", () => {
+    refreshVisualizeList();
+  });
+  let wasLocked = Boolean(project.edit_lock?.locked);
+  let lastEditGeneration = Number(project.edit_lock?.generation ?? 0);
+  window.addEventListener("workspace-edit-lock", event => {
+    const editLock = event.detail?.editLock;
+    const locked = Boolean(editLock?.locked);
+    const generation = Number(editLock?.generation ?? lastEditGeneration);
+    if (!locked && (wasLocked || generation > lastEditGeneration) && visualizeDrawer && !visualizeDrawer.hidden) {
+      refreshVisualizeList();
+    }
+    wasLocked = locked;
+    lastEditGeneration = Math.max(lastEditGeneration, generation);
   });
 
   window.addEventListener("message", event => {
