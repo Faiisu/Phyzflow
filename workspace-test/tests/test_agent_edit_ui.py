@@ -1,4 +1,5 @@
 import unittest
+from uuid import uuid4
 
 from playwright.sync_api import expect
 
@@ -12,7 +13,7 @@ class AgentEditUITests(unittest.TestCase):
 
     def save(self, client, path, source):
         revision = client.request('read-' + path, 'demo', 'read_file', {'path': path})['result']['revision']
-        result = client.request('write-' + path, 'demo', 'write_file', {'path': path, 'revision': revision, 'source': source})
+        result = client.request('write-' + uuid4().hex, 'demo', 'write_file', {'path': path, 'revision': revision, 'source': source})
         self.assertTrue(result['ok'], result)
 
     def test_agent_edit_reloads_graph_and_recovers_validation_failure(self):

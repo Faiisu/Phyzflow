@@ -16,7 +16,8 @@ Create an operator-owned JSON configuration outside the project:
     "development": {
       "root": "/absolute/path/to/workspace",
       "python": "/absolute/path/to/workspace/.venv/bin/python",
-      "commands": ["python"]
+      "commands": ["python"],
+      "inference_environment": {"HF_HOME": "/absolute/model-cache"}
     }
   }
 }
@@ -116,6 +117,10 @@ while True:
         break
     time.sleep(0.1)
 ```
+
+Validation and execution receive the same minimal base environment as commands: `PATH` starts with the configured interpreter directory, followed by the operating-system default executable path; `PYTHONNOUSERSITE=1` and `PYTHONUNBUFFERED=1` are set. Ambient agent credentials, `PYTHONPATH`, and other Python environment overrides are excluded. The configured executable path is preserved, including a virtual environment's Python symlink; install the SDK and project dependencies normally into that environment rather than relying on the agent's import path.
+
+Operators can explicitly supply string values in the project's `inference_environment` configuration for model/cache locations or required inference credentials. These values are available to flow imports during validation and to execution nodes, so grant them only to trusted development projects. Names must be identifiers; `PATH`, names beginning with `PYTHON`, `LD_`, or `DYLD_` (case-insensitive), and values containing NUL are rejected to preserve the selected interpreter and loader configuration. The default is empty. Clients cannot override this configuration through requests, and generic development commands never receive these additional values. Configuration is read at startup; restart the agent to change it.
 
 Completed flow results include `run_id`, `source_version`, JSON-compatible `output`, and safe per-step history diagnostics, including failed and skipped nodes. Source versions describe the source loaded for execution, including uncommitted edits. A failed validation/import returns `error.stage`, exception type, message, and traceback with source locations. These authenticated development results persist in the private agent state; they may contain sensitive text. Results are bounded to 128 KiB; non-JSON or larger results return a result-stage diagnostic. Flow worker stdout/stderr is not exposed as command output.
 

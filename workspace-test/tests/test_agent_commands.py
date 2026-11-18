@@ -157,7 +157,10 @@ class AgentCommandTests(unittest.TestCase):
                     started = client.request('job-' + str(index), 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'print("retained")']})
                     self.assertTrue(started['ok'], started)
                     first = first or started['result']['job_id']
-                    self.assertEqual(wait_job(client, started['result']['job_id'])['exit_code'], 0)
+                    job = wait_job(client, started['result']['job_id'])
+                    diagnostic = client.request('retention-failure', 'demo', 'read_job_output',
+                                                {'job_id': job['job_id'], 'stream': 'stderr'}) if job['exit_code'] else None
+                    self.assertEqual(job['exit_code'], 0, {'job': job, 'stderr': diagnostic})
                 rejected = client.request('full', 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'pass']})
                 self.assertFalse(rejected['ok'])
                 self.assertIn('retention limit (32)', rejected['error']['message'])

@@ -85,7 +85,15 @@ class WorkspaceAgent:
             commands = project.get('commands', [])
             if not isinstance(commands, list) or any(not isinstance(command, str) or (command != 'python' and not Path(command).is_absolute()) for command in commands):
                 raise ValueError('commands must list python or absolute executable paths.')
-            self.projects[name] = {'root': root, 'python': str(python), 'commands': commands}
+            inference_environment = project.get('inference_environment', {})
+            if (not isinstance(inference_environment, dict) or
+                    any(not isinstance(key, str) or not key.isidentifier() or
+                        key.upper() == 'PATH' or key.upper().startswith(('PYTHON', 'LD_', 'DYLD_')) or
+                        not isinstance(value, str) or '\0' in value
+                        for key, value in inference_environment.items())):
+                raise ValueError('inference_environment must map variable names to strings without overriding PATH, Python, or loader settings.')
+            self.projects[name] = {'root': root, 'python': str(python), 'commands': commands,
+                                   'inference_environment': dict(inference_environment)}
             if state and state.directory.resolve().is_relative_to(root):
                 raise ValueError('Agent state directory must be outside configured projects.')
 

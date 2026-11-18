@@ -10,12 +10,13 @@ from workspace_sdk.agent import AgentClient, create_agent_server
 
 
 @contextmanager
-def running_agent(root, python=None, extra_projects=None, commands=None):
+def running_agent(root, python=None, extra_projects=None, commands=None, inference_environment=None):
     token = root.parent / ('token-' + root.name)
     token.write_text('test-only-agent-jobs-token')
     token.chmod(0o600)
     config = {'token_file': str(token), 'projects': {'demo': {'root': str(root), 'python': python or sys.executable}}}
     config['projects']['demo']['commands'] = commands or []
+    config['projects']['demo']['inference_environment'] = inference_environment or {}
     config['projects'].update(extra_projects or {})
     with create_agent_server(config) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
@@ -62,6 +63,40 @@ class AgentJobTests(unittest.TestCase):
                 self.assertEqual(job['result']['output'], 'selected')
                 self.assertEqual(len(job['result']['source_version']), 64)
                 self.assertEqual(len(job['result']['run_id']), 32)
+
+    def test_validation_and_run_use_only_operator_permitted_inference_environment(self):
+        import os
+        from unittest.mock import patch
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve() / 'project'
+            root.mkdir()
+            ambient = root.parent / 'ambient'
+            ambient.mkdir()
+            (ambient / 'ambient_probe.py').write_text('secret = "ambient import"\n')
+            (root / 'flow.py').write_text(
+                'from workspace_sdk import Flow,Output,Step\n'
+                'import os, sys, importlib.util\n'
+                'assert "AGENT_AMBIENT_SECRET" not in os.environ, "ambient credential inherited"\n'
+                'assert importlib.util.find_spec("ambient_probe") is None, "ambient import path inherited"\n'
+                'assert "PYTHONPATH" not in os.environ and "PYTHONHOME" not in os.environ\n'
+                'def work(): return {"model": os.environ.get("MODEL_LOCATION"), '
+                '"secret": os.environ.get("AGENT_AMBIENT_SECRET"), "python": sys.executable}\n'
+                'flow=Flow((),(Step("Work",work,{}),),Output("Work"))\n')
+            with patch.dict(os.environ, {'AGENT_AMBIENT_SECRET': 'private-sentinel', 'PYTHONPATH': str(ambient), 'PYTHONHOME': '/invalid/ambient/python'}):
+                with running_agent(root, commands=['python'], inference_environment={'MODEL_LOCATION': '/models/approved'}) as client:
+                    for operation in ('validate_flow', 'run_flow'):
+                        started = client.request(operation, 'demo', operation)
+                        self.assertTrue(started['ok'], started)
+                        job = wait_job(client, started['result']['job_id'])
+                        self.assertEqual(job['status'], 'succeeded', job)
+                        if operation == 'run_flow':
+                            self.assertEqual(job['result']['output'], {'model': '/models/approved', 'secret': None, 'python': sys.executable})
+                    rejected = client.request('client-env', 'demo', 'run_flow', {'environment': {'MODEL_LOCATION': 'client override'}})
+                    self.assertFalse(rejected['ok'], rejected)
+                    command = client.request('command-env', 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'import os; print(os.environ.get("MODEL_LOCATION")); print(os.environ.get("AGENT_AMBIENT_SECRET")); print(os.environ.get("PYTHONPATH"))']})
+                    self.assertEqual(wait_job(client, command['result']['job_id'])['status'], 'succeeded')
+                    output = client.request('command-output', 'demo', 'read_job_output', {'job_id': command['result']['job_id']})
+                    self.assertEqual(output['result']['content'], 'None\nNone\nNone\n')
 
     def test_nested_validation_and_failure_diagnostics_are_safe_in_history(self):
         from browser_support import local_ui
@@ -130,6 +165,42 @@ class AgentJobTests(unittest.TestCase):
                 history = page.request.get(url + '/flows/0/revision/1/view/history/' + job['result']['run_id']).json()
                 self.assertEqual(history['source_version'], job['result']['source_version'])
                 expect(view.get_by_role('button', name='Run flow')).to_be_enabled()
+
+    def test_browser_refreshes_history_for_run_completed_between_live_polls(self):
+        from browser_support import local_ui, browser_page
+        from playwright.sync_api import expect
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve() / 'project'
+            root.mkdir()
+            (root / 'flow.py').write_text('from workspace_sdk import Flow,Output,Step\ndef work(): return 42\nflow=Flow((),(Step("Work",work,{}),),Output("Work"))\n')
+            with running_agent(root) as client, local_ui(root, single_flow=True) as (url, _):
+                hide_run = True
+                live_polls = []
+                history_reads = []
+                def live(route):
+                    live_polls.append(True)
+                    if hide_run:
+                        route.fulfill(json={'running': False, 'status': 'idle', 'events': []})
+                    else:
+                        route.continue_()
+                page.route('**/live-run', live)
+                page.on('request', lambda request: history_reads.append(request.url)
+                        if request.url == url + '/history' else None)
+                page.goto(url)
+                expect(page.locator('#history-list')).to_contain_text('No saved runs yet.')
+                started = client.request('fast-run', 'demo', 'run_flow')['result']
+                job = wait_job(client, started['job_id'])
+                self.assertEqual(job['status'], 'succeeded', job)
+                hide_run = False
+                expect(page.locator('.history-run')).to_have_count(1)
+                self.assertEqual(page.locator('.history-run').get_attribute('data-run-id'), job['result']['run_id'])
+                refreshes = len(history_reads)
+                polls = len(live_polls)
+                deadline = monotonic() + 5
+                while len(live_polls) < polls + 3 and monotonic() < deadline:
+                    page.wait_for_timeout(100)
+                self.assertGreaterEqual(len(live_polls), polls + 3)
+                self.assertEqual(len(history_reads), refreshes)
 
     def test_ui_run_blocks_agent_start_on_same_sheet(self):
         from browser_support import local_ui, browser_page
