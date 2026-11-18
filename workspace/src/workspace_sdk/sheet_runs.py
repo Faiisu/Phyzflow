@@ -6,9 +6,11 @@ from uuid import uuid4
 
 
 class SheetRun:
-    def __init__(self, inputs: dict | None) -> None:
+    def __init__(self, inputs: dict | None, *, retry_count: int = 0) -> None:
         self.run_id = uuid4().hex
         self.inputs = inputs
+        self.retry_count = retry_count
+        self.crash_exhausted = False
         self.status = "running"
         self.start_error: str | None = None
         self._condition = Condition()
@@ -43,7 +45,7 @@ class SheetRun:
                 cursor += 1
             yield line
 
-    def collect(self, url: str, token: str) -> tuple[str, str | None]:
+    def collect(self, url: str, token: str) -> tuple[str | None, str | None]:
         connection = HTTPConnection(url.removeprefix("http://"), timeout=2)
         headers = {
             "Content-Type": "application/json",
@@ -51,6 +53,7 @@ class SheetRun:
             "X-Phyzflow-Run-Id": self.run_id,
         }
         terminal = None
+        reported = None
         try:
             connection.connect()
             socket = connection.sock
@@ -63,13 +66,13 @@ class SheetRun:
                     message = json.loads(line)
                     self.publish(line)
                     if "result" in message:
-                        terminal = message["result"]["status"]
+                        reported = message["result"]["status"]
                     elif "error" in message:
-                        terminal = "failed"
+                        reported = "failed"
+                    elif "step_id" not in message and message.get("status") in ("succeeded", "failed"):
+                        terminal = message["status"]
         except (OSError, ValueError, HTTPException):
             pass
         finally:
             connection.close()
-        if terminal is not None:
-            return terminal, None
-        return "failed", "The flow process ended without reporting a result."
+        return reported or terminal, None

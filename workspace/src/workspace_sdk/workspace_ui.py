@@ -37,6 +37,7 @@ from .web import FLOW_VIEW_SUBPATH_PATTERN, STATIC, UIRequestHandler, is_flow_vi
 
 VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
+MAX_CRASH_RETRIES = 3
 
 
 def serve_flow(root: Path, zoom: ZoomSettings, publish: Callable[[dict], None], *, run_token: str | None = None) -> None:
@@ -65,6 +66,13 @@ class OpenFlow:
     url: str = ""
     run_token: str | None = None
     lifeline: int | None = None
+
+    def exited(self) -> bool:
+        try:
+            self.process.wait(timeout=2)
+        except TimeoutExpired:
+            return False
+        return True
 
     def stop(self) -> None:
         if self.run_token is None or os.name != "posix":
@@ -101,6 +109,7 @@ class FlowSheet:
     def __init__(
         self, title: str, root: Path, zoom: ZoomSettings, *,
         main: bool = False, interpreter: Path | None = None,
+        workspace_closing: Callable[[], bool] = lambda: False,
     ):
         self.title = title
         self.root = root
@@ -112,6 +121,7 @@ class FlowSheet:
         self.lock = RLock()
         self.main = main
         self.interpreter = interpreter
+        self.workspace_closing = workspace_closing
         self.attempted_source: str | None = None
         self.attempt: SheetRun | None = None
 
@@ -126,8 +136,10 @@ class FlowSheet:
         self, *, reload: bool = False, automatic_source: str | None = None, attempt: SheetRun | None = None,
     ) -> int:
         with self.lock, ExitStack() as reservation:
-            if self.closing:
+            if self.closing or self.workspace_closing():
                 raise RuntimeError("Workspace is shutting down.")
+            stopped = self.inactive_status == "stopped"
+            replacing = False
             if reload:
                 active = self.attempt
                 if active is not None and active is not attempt and active.status == "running":
@@ -148,11 +160,14 @@ class FlowSheet:
             if self.worker is not None:
                 if self.worker.url and self.worker.process.poll() is None and self.inactive_status != "stopping":
                     return self.revision
+                active = self.attempt
+                if active is not None and active is not attempt and active.status == "running":
+                    raise ReloadConflict("The flow is still running. Wait for its worker to recover or stop the flow.")
                 self.stop_worker(status="opening")
-                if self.interpreter is not None:
-                    self.revision += 1
+                replacing = self.interpreter is not None
 
-            if attempt is None and self.attempt is not None and self.attempt.status != "running":
+            active = self.attempt
+            if attempt is None and active is not None and active.status != "running" and (stopped or not active.crash_exhausted):
                 self.attempt = None
             self.attempted_source = automatic_source or source_stamp(self.root, main=self.main)
             self.inactive_status = "opening"
@@ -161,6 +176,8 @@ class FlowSheet:
             except BaseException:
                 self.inactive_status = "unavailable"
                 raise
+            if replacing:
+                self.revision += 1
             self.inactive_status = "ready"
             return self.revision
 
@@ -169,21 +186,25 @@ class FlowSheet:
         if attempt is not None and attempt.status == "running":
             raise FlowBusy("A run is already in progress on this sheet.")
         with self.lock:
-            if self.closing:
+            if self.closing or self.workspace_closing():
                 raise RuntimeError("Workspace is shutting down.")
             attempt = self.attempt
             if (attempt is not None and attempt.status == "running") or sheet_busy(self.root):
                 raise FlowBusy("A run is already in progress on this sheet.")
             if revision is not None and revision != self.revision:
                 raise ReloadConflict("The flow has been reloaded. Refresh its sheet.")
-            attempt = self.attempt = SheetRun(inputs)
-            Thread(target=self.collect_run, args=(attempt,), daemon=True).start()
-            return attempt
+            return self._start_attempt(inputs)
+
+    def _start_attempt(self, inputs: dict | None, *, retry_count: int = 0) -> SheetRun:
+        attempt = self.attempt = SheetRun(inputs, retry_count=retry_count)
+        Thread(target=self.collect_run, args=(attempt,), daemon=True).start()
+        return attempt
 
     def collect_run(self, attempt: SheetRun) -> None:
+        crashed = False
         try:
             with self.lock:
-                if self.closing or self.attempt is not attempt or attempt.status != "running":
+                if self.closing or self.workspace_closing() or self.attempt is not attempt or attempt.status != "running":
                     return
                 worker = self.worker
                 reload = (
@@ -195,11 +216,23 @@ class FlowSheet:
                 self.open(reload=bool(reload), attempt=attempt)
                 worker = self.worker
             status, error = attempt.collect(worker.url, worker.run_token)
+            if status is None:
+                crashed = worker.exited()
+                status = "failed"
+                error = "The flow connection ended without reporting a result."
         except (OSError, RuntimeError, ValueError) as failure:
             status, error = "failed", str(failure)
         with self.lock:
-            if self.attempt is attempt:
-                attempt.finish(status, error)
+            if self.attempt is not attempt or attempt.status != "running" or self.closing or self.workspace_closing():
+                return
+            if crashed and self.worker is worker:
+                if attempt.retry_count < MAX_CRASH_RETRIES:
+                    self._start_attempt(attempt.inputs, retry_count=attempt.retry_count + 1)
+                    attempt.finish("failed")
+                    return
+                attempt.crash_exhausted = True
+                error = f"The flow process exited after {MAX_CRASH_RETRIES} automatic restart attempts."
+            attempt.finish(status, error)
 
     def start_worker(self) -> None:
         with TemporaryDirectory(prefix="phyzflow-sheet-") as directory:
@@ -343,11 +376,14 @@ def workspace_routes(
     interpreter: Path | None = None,
 ):
     def make_sheet(title: str, path: Path) -> FlowSheet:
-        return FlowSheet(title, path, settings.zoom, main=path == root, interpreter=interpreter)
+        return FlowSheet(
+            title, path, settings.zoom, main=path == root, interpreter=interpreter,
+            workspace_closing=lambda: closing,
+        )
 
+    closing = False
     sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
     sheets_lock = Lock()
-    closing = False
 
     def resolve_sheet(sheet_path: Path) -> FlowSheet:
         target = sheet_path.resolve()
