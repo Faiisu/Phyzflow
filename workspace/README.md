@@ -86,3 +86,7 @@ Declare a `NodeSetting` in Python, include the same object in the node's `Step.s
 On **Save**, call `workspaceDashboard.setSetting(nodeId, name, value, "next")` and await the result. A successful response has status `saved`. Workspace locally persists the value and snapshots saved settings when the next UI or CLI run starts. Invalid requests return `rejected` with a message.
 
 For a setting declared with `live=True`, the dashboard can send mode `"live"` when viewing an active node. The response includes an ID and status `queued`, or a terminal result if the node already responded. Call `apply_node_settings()` in the node at a safe point before reading the setting for subsequent work. Match the response ID to `settingChanges` to display `applied` or `rejected`. An applied change includes the run ID and timestamp and lasts for that run.
+
+## Inspect a project through a local agent
+
+Use the authenticated local development agent to inspect configured projects without a browser. See [Workspace development agent](../docs/workspace-agent.md) for startup, client usage, limits, and the request contract.
