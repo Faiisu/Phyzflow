@@ -156,7 +156,12 @@ class AgentJobs:
                     if run_id:
                         job['result'] = {'run_id': run_id}
                 elif has_result:
-                    job.update(status='succeeded', result={'run_id': run_id, 'output': final_result})
+                    output_value = (
+                        final_result.get('output')
+                        if isinstance(final_result, dict) and 'output' in final_result
+                        else final_result
+                    )
+                    job.update(status='succeeded', result={'run_id': run_id, 'output': output_value})
                 else:
                     job.update(status='failed', error={'stage': 'worker', 'message': 'Flow stream ended without a result.'})
                 self.save(item)

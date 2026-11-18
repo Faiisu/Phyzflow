@@ -118,7 +118,7 @@ class AutoReloadTests(unittest.TestCase):
                 node_editor.fill(node_draft)
                 newest = draft.replace("Original", "Updated")
                 (root / "flow.py").write_text(newest)
-                expect(page.locator("#reload-message")).to_have_text("Source changed. Reload pending.")
+                expect(page.locator("#reload-message")).to_have_text("Source changed.")
                 expect(node_editor).to_have_value(node_draft)
                 expect(frame).to_have_attribute("src", "/flows/0/revision/1/view/")
                 page.once("dialog", lambda prompt: prompt.accept())

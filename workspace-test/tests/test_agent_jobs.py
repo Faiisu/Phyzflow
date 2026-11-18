@@ -297,6 +297,7 @@ class AgentJobTests(unittest.TestCase):
                 self.assertEqual(wait_job(client, second['job_id'])['result']['output'], 22)
 
     def test_unified_ui_controller_runs_and_cancels_in_same_worker(self):
+        import json
         from urllib.request import urlopen
         from workspace_sdk.agent_jobs import AgentJobs
         from workspace_sdk.execution import FlowBusy
@@ -316,7 +317,7 @@ class AgentJobTests(unittest.TestCase):
                 '    return "unified"\n'
                 'flow=Flow((), (Step("Work",work,{}),), Output("Work"))\n'
             )
-            sheet = FlowSheet('Main', root, ZoomSettings(1.0, 0.0, 0.0), main=True)
+            sheet = FlowSheet('Main', root, ZoomSettings(scale=1.0, x=0.0, y=0.0), main=True)
             controller = WorkspaceController(lambda path: sheet)
             jobs = AgentJobs()
             jobs.attach_ui(controller)
