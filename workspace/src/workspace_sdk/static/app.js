@@ -1348,6 +1348,35 @@ form.addEventListener("submit", async event => {
   }
 });
 
+async function reconnectRun() {
+  let cursor = 0;
+  let attached = false;
+  while (!stopPhase) {
+    try {
+      const response = await fetch("live-run");
+      if (!response.ok) throw new Error("Could not reconnect to the running flow.");
+      const snapshot = await response.json();
+      if (!attached && !snapshot.running) return;
+      attached = true;
+      runInProgress = snapshot.running;
+      updateRunControls();
+      for (const [sequence, message] of snapshot.events) {
+        if (sequence <= cursor) continue;
+        dashboards.track(message);
+        showMessage(message);
+        cursor = sequence;
+      }
+      if (!snapshot.running) {
+        refreshHistory();
+        return;
+      }
+    } catch (error) {
+      // A temporary disconnect must not mark the server-owned run as failed.
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+
 try {
   const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
@@ -1372,6 +1401,7 @@ try {
   });
   resetInput.disabled = stopPhase === "stopped";
   projectReady = true;
+  await reconnectRun();
   updateRunControls();
 } catch (error) {
   setPanel("run", true);

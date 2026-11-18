@@ -36,7 +36,7 @@ FLOW_VIEW_SUBPATH_PATTERN = (
     r"(/(?:app\.css|app\.js|canvas-layout\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
     r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
     r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
-    r"node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+    r"live-run|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
 )
 _FLOW_VIEW_SUBPATH_RE = re.compile(FLOW_VIEW_SUBPATH_PATTERN)
 
@@ -151,6 +151,9 @@ def serve(
     run_lock = Lock()
     source_lock = Lock()
     run_status = "ready"
+    live_lock = Lock()
+    live_events = {}
+    live_sequence = 0
 
     class Handler(UIRequestHandler):
         def log_request(self, code="-", size="-"):
@@ -168,6 +171,10 @@ def serve(
             if asset:
                 name, content_type = asset
                 self.send_bytes((STATIC / name).read_bytes(), content_type)
+            elif self.path == "/live-run":
+                with live_lock:
+                    data = {"running": run_status == "running", "events": sorted(live_events.values(), key=lambda item: item[0])}
+                self.send_json(data)
             elif self.path == "/project":
                 data = json.dumps({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
@@ -341,7 +348,9 @@ def serve(
             self.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")
 
         def stream_run(self, inputs):
-            nonlocal run_status
+            nonlocal run_status, live_sequence
+            with live_lock:
+                live_events.clear()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -373,7 +382,33 @@ def serve(
                     except OSError:
                         connected = False
 
+            def remember(event):
+                nonlocal live_sequence
+                # Keep latest values per node/group rather than an unbounded stream.
+                kind = event.get("status")
+                for field in ("output_preview", "live_frame", "live_metrics", "setting_change", "result", "error"):
+                    if field in event:
+                        kind = field
+                        if field == "live_metrics":
+                            kind += ":" + next(iter(event[field]))
+                        elif field == "setting_change":
+                            kind += ":" + event[field]["name"]
+                        break
+                with live_lock:
+                    live_sequence += 1
+                    node = event.get("step_id")
+                    live_events[node, kind] = (live_sequence, event)
+                    if "live_metrics" in event:
+                        groups = [key for key in live_events if key[0] == node and str(key[1]).startswith("live_metrics:")]
+                        for key in groups[:-8]:
+                            del live_events[key]
+                    if node is None and event.get("status") in ("succeeded", "failed"):
+                        for key in list(live_events):
+                            if key[1] == "live_frame":
+                                del live_events[key]
+
             def record_event(event):
+                remember(event)
                 if not event.keys() & {"output_preview", "live_frame", "live_metrics", "setting_change"}:
                     events.append(event)
                 send(event)
@@ -389,12 +424,16 @@ def serve(
                 except OSError:
                     self.log_error("Could not save run history for %s.", result.id)
                     send({"history_error": "This run could not be saved to history."})
-                send({"result": {"status": result.status, "output": result.output}})
+                completed = {"result": {"status": result.status, "output": result.output}}
+                remember(completed)
+                send(completed)
                 run_status = result.status
             except (TypeError, ValueError) as error:
+                remember({"error": str(error)})
                 send({"error": str(error)})
                 run_status = "failed"
             except (OSError, sqlite3.Error):
+                remember({"error": "Could not read node settings."})
                 send({"error": "Could not read node settings."})
                 run_status = "failed"
 

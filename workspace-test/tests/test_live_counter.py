@@ -21,6 +21,56 @@ def wait_for_release():
 
 
 class LiveCounterTests(unittest.TestCase):
+    def test_dashboard_reconnects_after_browser_refresh(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp)
+            copytree(COUNTER, root / "flows" / COUNTER.name, ignore=ignore_patterns(".workspace", "__pycache__"))
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                view = page.frame_locator('iframe[title="Live Counter flow"]')
+                view.locator('[data-vis-node=""][data-vis-panel="default"]').click()
+                view.get_by_role("button", name="Run flow", exact=True).click()
+                dashboard = view.frame_locator("#dashboard-preview iframe")
+                expect(dashboard.locator("#count")).to_have_text("3")
+                page.reload()
+                view.locator('[data-vis-node=""][data-vis-panel="default"]').click()
+                expect(dashboard.locator("#count")).not_to_have_text("—", timeout=5000)
+                expect(view.get_by_role("button", name="Run flow", exact=True)).to_be_disabled()
+                page.get_by_role("button", name="Stop Live Counter").click()
+
+    def test_reconnected_dashboard_receives_completion(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            (root / "flow.py").write_text(
+                "from pathlib import Path\nfrom time import sleep\n"
+                "from workspace_sdk import Flow, Output, Step, publish_output\n"
+                "def work():\n"
+                "    publish_output({'ready': True})\n"
+                "    while not Path('release').exists(): sleep(0.01)\n"
+                "    return 42\n"
+                "flow = Flow((), (Step('Work', work, {}),), Output('Work'))\n"
+            )
+            assets = root / "dashboards" / "workflow"
+            assets.mkdir(parents=True)
+            (assets / "index.html").write_text('<output id="state">idle</output>')
+            (assets / "dashboard.js").write_text(
+                "workspaceDashboard.subscribe(s => { document.querySelector('#state').textContent = s.run?.status ?? 'idle'; });"
+            )
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                view = page.frame_locator('iframe[title="Main flow"]')
+                view.get_by_role("button", name="Run flow", exact=True).click()
+                expect(view.get_by_role("region", name="Live output")).to_be_visible()
+                page.reload()
+                view.locator('[data-vis-node=""][data-vis-panel="default"]').click()
+                dashboard = view.frame_locator("#dashboard-preview iframe")
+                expect(dashboard.locator("#state")).to_have_text("running")
+                (root / "release").touch()
+                expect(dashboard.locator("#state")).to_have_text("succeeded")
+                expect(view.get_by_role("button", name="Run flow", exact=True)).to_be_enabled()
+                expect(view.locator("#result")).to_contain_text("42")
+                expect(view.locator(".history-run")).to_have_count(1)
+
     def test_dashboard_plots_count_and_multiplied_output_over_time(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp)
