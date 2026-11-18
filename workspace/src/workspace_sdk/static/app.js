@@ -710,7 +710,7 @@ function renderExecutionMetrics(metrics) {
 }
 
 function trackInspectorExecution(message) {
-  if (!message.run_id) return;
+  if (!message.run_id || !message.status) return;
   if (!message.step_id) {
     if (message.status === "running") {
       currentRunId = message.run_id;
@@ -1191,17 +1191,9 @@ window.addEventListener("workspace-stop", event => {
   if (phase !== "stopping") deferredRunError = null;
 });
 
-form.addEventListener("submit", async event => {
-  event.preventDefault();
-  if (stopPhase || runInProgress || !projectReady) return;
-  runInProgress = true;
-  streamingOwnRun = true;
-  clearConsole();
-  updateRunControls();
-  setPanel("run", true);
+function resetRunResult() {
   result.replaceChildren();
   liveOutput = null;
-  setStatus("running");
   currentRunId = null;
   currentRunFinished = false;
   currentNodeTiming.clear();
@@ -1214,6 +1206,18 @@ form.addEventListener("submit", async event => {
     duration.hidden = true;
   }
   showInspectorState();
+}
+
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (stopPhase || runInProgress || !projectReady) return;
+  runInProgress = true;
+  streamingOwnRun = true;
+  clearConsole();
+  updateRunControls();
+  setPanel("run", true);
+  resetRunResult();
+  setStatus("running");
   try {
     const payload = JSON.parse(input.value);
     if (payload === null || Array.isArray(payload) || typeof payload !== "object") {
@@ -1269,7 +1273,12 @@ async function reconnectRun() {
       const runId = snapshot.events.find(([, message]) => message.run_id)?.[1].run_id;
       if (runId && runId !== observedRun) {
         observedRun = runId;
-        cursor = runId === currentRunId ? Infinity : 0;
+        if (runId === currentRunId) {
+          cursor = Infinity;
+        } else {
+          cursor = 0;
+          resetRunResult();
+        }
       }
       runInProgress = snapshot.running;
       updateRunControls();

@@ -22,4 +22,4 @@ if __name__ == "__main__":
         pending.write_text(json.dumps(reply), encoding="utf-8")
         pending.replace(ready)
 
-    serve_flow(Path.cwd(), json.loads(sys.argv[2]), publish)
+    serve_flow(Path.cwd(), json.loads(sys.argv[2]), publish, run_token=sys.argv[3] if len(sys.argv) > 3 else None)

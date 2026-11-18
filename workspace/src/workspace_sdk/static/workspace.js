@@ -6,6 +6,7 @@ const notice = document.querySelector("#notice");
 const noticeMessage = document.querySelector("#notice-message");
 const reopen = document.querySelector("#open-flow");
 const newSheet = document.querySelector("#new-sheet");
+const runAll = document.querySelector("#run-all");
 const reloadFlow = document.querySelector("#reload-flow");
 const reloadMessage = document.querySelector("#reload-message");
 const sourceChangeMessage = document.querySelector("#source-change-message");
@@ -61,7 +62,7 @@ function updateStatus(sheet, status) {
   sheet.status = status;
   sheet.indicator.textContent = labels[status] ?? status;
   sheet.indicator.dataset.state = status;
-  sheet.stop.disabled = sheet.pending || status !== "running";
+  sheet.stop.disabled = sheet.pending || !["running", "stopping"].includes(status);
   if (sheet === active) syncFlowSourceLock();
 }
 
@@ -82,9 +83,10 @@ function showNotice() {
     reopen.hidden = true;
     return;
   }
-  notice.hidden = Boolean(active.frame) && !snapshot && active.status !== "unavailable" && !active.error;
+  const error = active.runError ?? active.error;
+  notice.hidden = Boolean(active.frame) && !snapshot && active.status !== "unavailable" && !error;
   if (notice.hidden) return;
-  const message = active.error ?? {
+  const message = error ?? {
     opening: "Opening the flow…",
     stopping: "Stopping the flow…",
     stopped: snapshot ? "Stopped · Run snapshot" : "Flow stopped.",
@@ -214,6 +216,7 @@ async function openFlow(sheet, action = "open", automaticSource = null) {
   sheet.pending = true;
   sheet.version++;
   sheet.error = null;
+  sheet.runError = null;
   sheet.reloadError = null;
   updateStatus(sheet, "opening");
   showNotice();
@@ -299,7 +302,7 @@ function selectSheet(sheet) {
     item.view.classList.toggle("is-active", selected);
     item.view.inert = !selected;
   }
-  if (!sheet.frame && sheet.status !== "stopped" && !sheet.error) {
+  if (!sheet.frame && sheet.status !== "stopped" && !sheet.error && !sheet.runError) {
     openFlow(sheet);
   }
   showNotice();
@@ -339,7 +342,7 @@ function makeSheet(flow, index) {
   views.prepend(view);
   tabs.append(group);
 
-  const sheet = { index, name: flow.name, tab, indicator, stop, group, view, frame: null, frameStopped: false, pending: false, version: 0, revision: flow.revision };
+  const sheet = { index, name: flow.name, tab, indicator, stop, group, view, frame: null, frameStopped: false, pending: false, version: 0, revision: flow.revision, runError: flow.error };
   updateStatus(sheet, flow.status);
   tab.addEventListener("click", () => selectSheet(sheet));
   stop.addEventListener("click", () => stopFlow(sheet));
@@ -359,6 +362,26 @@ tabs.addEventListener("keydown", event => {
   event.preventDefault();
   selectSheet(available[next]);
   available[next].tab.focus();
+});
+
+runAll.addEventListener("click", async () => {
+  runAll.disabled = true;
+  try {
+    const response = await fetch("./run-all", { method: "POST" });
+    if (!response.ok) throw new Error("Could not start the Workspace sheets.");
+    const { errors } = await response.json();
+    if (active && errors[active.index]) {
+      active.error = errors[active.index];
+      showNotice();
+    }
+  } catch (error) {
+    if (active) {
+      active.error = error.message;
+      showNotice();
+    }
+  } finally {
+    runAll.disabled = false;
+  }
 });
 
 async function getWorkspace() {
@@ -459,8 +482,8 @@ async function pollStatus() {
     const { flows } = await getWorkspace();
     syncSheets(flows);
     for (const sheet of sheets.filter(Boolean)) {
-      if (flows[sheet.index] && !sheet.frameStopped && !sheet.pending && sheet.version === versions[sheet.index]) {
-        const { status, revision, changed_source } = flows[sheet.index];
+      if (flows[sheet.index] && (!sheet.frameStopped || !runAll.hidden) && !sheet.pending && sheet.version === versions[sheet.index]) {
+        const { status, revision, changed_source, error } = flows[sheet.index];
         if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0)) && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;
@@ -468,6 +491,7 @@ async function pollStatus() {
           if (sheet.frame || (sheet === active && status === "running")) showFrame(sheet, revision);
         }
         if (status === "stopped") retainStoppedFrame(sheet, false);
+        sheet.runError = error;
         if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
         updateStatus(sheet, status);
         if (sheet.watching) checkSourceChange(sheet, changed_source);
@@ -485,6 +509,7 @@ try {
   name.textContent = workspace.name;
   name.title = workspace.name;
   syncSheets(workspace.flows);
+  runAll.hidden = !workspace.run_all;
   newSheet.disabled = false;
   pollStatus().catch(() => {});
 } catch (error) {
