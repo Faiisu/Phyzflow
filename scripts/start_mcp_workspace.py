@@ -346,6 +346,20 @@ def run_mcp_stack(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
         def handle_sigterm(*_):
             raise KeyboardInterrupt
 
+        restart_requested = Event()
+        ui_controllers = []
+
+        def on_ui_controller(controller):
+            ui_controllers.append(controller)
+            agent.jobs.attach_ui(controller)
+
+        def request_restart():
+            restart_requested.set()
+            if ui_controllers:
+                ui_controllers[0].shutdown()
+
+        agent.attach_lifecycle(repo_dir=repo_dir, on_restart=request_restart)
+
         previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
         try:
             os.chdir(project_dir)
@@ -353,10 +367,17 @@ def run_mcp_stack(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
                 project_dir,
                 discover_flows(project_dir),
                 ui_settings,
-                on_controller=agent.jobs.attach_ui,
+                on_controller=on_ui_controller,
             )
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
+    if restart_requested.is_set():
+        if os.environ.get("PHYZFLOW_RESTART_WRAPPER") == "1":
+            return 75
+        if os.name == "posix":
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+        subprocess.Popen([sys.executable, *sys.argv], cwd=str(repo_dir))
+        return 0
     return 0
 
 

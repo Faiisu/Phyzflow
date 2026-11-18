@@ -21,7 +21,8 @@ from .agent import AgentClient
 
 REMOTE_OPERATIONS = {'inspect_project', 'list_files', 'read_file', 'search_code',
                      'write_file', 'apply_patch', 'validate_flow', 'run_flow',
-                     'run_command', 'get_job', 'read_job_output', 'cancel_job'}
+                     'run_command', 'get_job', 'read_job_output', 'cancel_job',
+                     'update_workspace', 'restart_workspace'}
 POLL_SECONDS = 1
 LEASE_SECONDS = 3
 ROUTE_SECONDS = 3

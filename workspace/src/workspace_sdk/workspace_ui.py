@@ -13,7 +13,7 @@ from multiprocessing.process import BaseProcess
 import os
 from pathlib import Path
 import re
-from threading import Lock
+from threading import Lock, Thread
 import traceback
 from urllib.request import ProxyHandler, build_opener
 
@@ -183,8 +183,13 @@ class FlowSheet:
 class WorkspaceController:
     """In-process bridge so MCP/Agent jobs run and stop through the same FlowSheet worker as the UI."""
 
-    def __init__(self, get_sheet: Callable[[Path], FlowSheet]) -> None:
+    def __init__(self, get_sheet: Callable[[Path], FlowSheet], shutdown_cb: Callable[[], None] | None = None) -> None:
         self._get_sheet = get_sheet
+        self._shutdown = shutdown_cb
+
+    def shutdown(self) -> None:
+        if self._shutdown is not None:
+            Thread(target=self._shutdown, daemon=True).start()
 
     def ensure_sheet_worker(self, sheet_path: Path) -> tuple[FlowSheet, str]:
         sheet = self._get_sheet(sheet_path)
@@ -469,7 +474,7 @@ def serve_workspace(
     try:
         with ThreadingHTTPServer((settings.ipv4, settings.port), Handler) as server:
             if on_controller is not None:
-                on_controller(WorkspaceController(resolve_sheet))
+                on_controller(WorkspaceController(resolve_sheet, server.shutdown))
             print(f"Workspace UI: {ui_address(settings.ipv4, server.server_port)}", flush=True)
             try:
                 server.serve_forever()

@@ -41,6 +41,9 @@ if not exist "%PYTHON%" (
     uv.exe venv --allow-existing --python 3.12 "%PROJECT_DIR%\.venv"
     if errorlevel 1 exit /b 1
 )
+set "PHYZFLOW_RESTART_WRAPPER=1"
+
+:run_loop
 uv.exe pip install --python "%PYTHON%" --reinstall-package workspace-sdk "%REPO_DIR%\workspace[mcp]"
 if errorlevel 1 exit /b 1
 
@@ -51,4 +54,5 @@ if "%DEFAULT_PROJECT%"=="1" if not exist "%PROJECT_DIR%\pyproject.toml" (
 )
 
 "%PYTHON%" "%REPO_DIR%\scripts\start_mcp_workspace.py" --project "%PROJECT_DIR%"%EXTRA_ARGS%
+if %errorlevel%==75 goto run_loop
 exit /b %errorlevel%
