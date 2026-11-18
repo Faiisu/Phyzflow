@@ -220,3 +220,20 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   font: inherit;
 }
 .sign-in input:focus-visible, .sign-in button:focus-visible { outline: 2px solid var(--accent); }
+
+#mcp-access label, #mcp-workspaces legend { color: var(--muted); font-size: .84rem; }
+#mcp-access input[type="text"], #mcp-client-name, #mcp-token-choice {
+  width: 100%;
+  padding: .45rem .55rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #191b20;
+  color: inherit;
+  font: inherit;
+}
+#mcp-secret { font-family: var(--mono); }
+#mcp-workspaces { min-width: 0; padding: .55rem; border: 1px solid var(--line); }
+#mcp-workspace-options { max-height: 12rem; overflow: auto; }
+#mcp-workspace-options label { display: flex; gap: .45rem; align-items: baseline; padding: .25rem; overflow-wrap: anywhere; }
+#mcp-access-status { margin: 0; color: var(--muted); font-size: .84rem; }
+#mcp-access .dialog-actions { flex-wrap: wrap; }
