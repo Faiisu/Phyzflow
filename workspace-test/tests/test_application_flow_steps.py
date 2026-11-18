@@ -7,7 +7,7 @@ import unittest
 from playwright.sync_api import expect
 
 from browser_support import browser_page
-from test_application import application
+from test_application import application, sign_in
 
 
 class ApplicationFlowStepTests(unittest.TestCase):
@@ -15,8 +15,9 @@ class ApplicationFlowStepTests(unittest.TestCase):
         with TemporaryDirectory() as temp, browser_page() as page:
             parent = Path(temp).resolve()
             root = parent / "Diagnostics"
-            with application(parent / "state") as url:
-                page.goto(url)
+            state = parent / "state"
+            with application(state) as url:
+                sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
@@ -76,9 +77,11 @@ def report(count):
                 inspector = flow.get_by_role("region", name="Node inspector")
                 prepare = flow.get_by_role("button", name="Inspect Prepare", exact=True)
                 validate = flow.get_by_role("button", name="Inspect Validate", exact=True)
+                report = flow.get_by_role("button", name="Inspect Report", exact=True)
                 expect(prepare).to_be_visible()
                 inspector.get_by_role("button", name="Validate", exact=True).click()
                 expect(validate).to_have_attribute("aria-pressed", "true")
+                expect(inspector.get_by_role("button", name="Report", exact=True)).to_be_visible()
                 inspector.get_by_role("button", name="Prepare", exact=True).click()
                 expect(prepare).to_have_attribute("aria-pressed", "true")
                 inspector.get_by_role("tab", name="Execution").click()
@@ -109,6 +112,10 @@ def report(count):
                 expect(execution.locator("#execution-duration")).to_have_text(re.compile(r" ms$"))
                 validate_started = started.get_attribute("datetime")
                 self.assertLessEqual(datetime.fromisoformat(prepare_finished), datetime.fromisoformat(validate_started))
+                report.press("Enter")
+                expect(execution.locator("#execution-status")).to_have_text("Succeeded")
+                expect(execution.locator("#execution-duration")).to_have_text(re.compile(r" ms$"))
+                validate.press("Enter")
 
                 flow.get_by_role("textbox", name="Run input JSON").fill('{"fail": true}')
                 flow.get_by_role("button", name="Run flow", exact=True).click()
@@ -122,6 +129,6 @@ def report(count):
                 dialog = flow.get_by_role("dialog", name="Validate files")
                 expect(dialog.get_by_text("Line 3 selected.", exact=True)).to_be_visible()
                 dialog.get_by_role("button", name="Close node files").click()
-                flow.get_by_role("button", name="Inspect Report", exact=True).press("Enter")
+                report.press("Enter")
                 expect(execution.locator("#execution-status")).to_have_text("Skipped")
                 expect(inspector.get_by_text("Blocked by Validate (Failed)", exact=True)).to_be_visible()
