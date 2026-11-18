@@ -34,6 +34,30 @@ class RunStateStore:
                 "PRIMARY KEY (workspace_id, sheet_path))"
             )
 
+    def _record_state(
+        self,
+        workspace_id: str,
+        sheet_path: str,
+        generation: int,
+        run_id: str,
+        status: str,
+        replay_input: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
+                "generation = excluded.generation, "
+                "run_id = excluded.run_id, "
+                "status = excluded.status, "
+                "replay_input = excluded.replay_input, "
+                "error = excluded.error "
+                "WHERE excluded.generation >= sheet_states.generation",
+                (workspace_id, sheet_path, generation, run_id, status, replay_input, error),
+            )
+
     def record_running(
         self,
         workspace_id: str,
@@ -43,34 +67,10 @@ class RunStateStore:
         inputs: dict | None,
     ) -> None:
         encoded = json.dumps(inputs) if inputs is not None else None
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
-                "VALUES (?, ?, ?, ?, 'running', ?, NULL) "
-                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
-                "generation = excluded.generation, "
-                "run_id = excluded.run_id, "
-                "status = excluded.status, "
-                "replay_input = excluded.replay_input, "
-                "error = NULL "
-                "WHERE excluded.generation >= sheet_states.generation",
-                (workspace_id, sheet_path, generation, run_id, encoded),
-            )
+        self._record_state(workspace_id, sheet_path, generation, run_id, "running", replay_input=encoded)
 
     def record_stopped(self, workspace_id: str, sheet_path: str, generation: int, run_id: str) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
-                "VALUES (?, ?, ?, ?, 'stopped', NULL, NULL) "
-                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
-                "generation = excluded.generation, "
-                "run_id = excluded.run_id, "
-                "status = excluded.status, "
-                "replay_input = NULL, "
-                "error = NULL "
-                "WHERE excluded.generation >= sheet_states.generation",
-                (workspace_id, sheet_path, generation, run_id),
-            )
+        self._record_state(workspace_id, sheet_path, generation, run_id, "stopped")
 
     def record_terminal(
         self,
@@ -83,19 +83,7 @@ class RunStateStore:
     ) -> None:
         if status not in ("succeeded", "failed"):
             raise ValueError(f"Unsupported terminal run status: {status!r}")
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
-                "VALUES (?, ?, ?, ?, ?, NULL, ?) "
-                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
-                "generation = excluded.generation, "
-                "run_id = excluded.run_id, "
-                "status = excluded.status, "
-                "replay_input = NULL, "
-                "error = excluded.error "
-                "WHERE excluded.generation >= sheet_states.generation",
-                (workspace_id, sheet_path, generation, run_id, status, error),
-            )
+        self._record_state(workspace_id, sheet_path, generation, run_id, status, error=error)
 
     def workspace_states(self, workspace_id: str) -> dict[str, dict]:
         with self._lock:
