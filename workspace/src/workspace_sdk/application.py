@@ -1,13 +1,17 @@
 """Host the landing page and registered Workspace routes on one origin."""
 
 from contextlib import closing, suppress
+import errno
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
+import os
 from pathlib import Path
 import re
+import shutil
 from shutil import rmtree
 import sqlite3
 import subprocess
+import sys
 from threading import Lock
 from urllib.parse import parse_qs
 from uuid import uuid4
@@ -21,10 +25,13 @@ from .sheets import discover_flows, initialize_workspace
 from .ui_settings import load_ui_settings
 from .web import STATIC, UIRequestHandler, ui_address
 from .workspace_environment import ensure_workspace_environment, workspace_interpreter
-from .workspace_ui import workspace_routes
+from .workspace_ui import (
+    WorkspaceProcessRunningError, verify_workspace_processes_stopped, workspace_routes,
+)
 
 
 WORKSPACE_PATH = re.compile(r"/workspaces/([0-9a-f]{32})(/.*)?")
+WORKSPACE_DELETE_PATH = re.compile(r"/workspaces/([0-9a-f]{32})")
 ASSETS = {
     "/": ("landing.html", "text/html"),
     "/landing.js": ("landing.js", "text/javascript"),
@@ -72,6 +79,10 @@ class WorkspaceRegistry:
         with closing(sqlite3.connect(self.path)) as db:
             row = db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
             return Path(row[0]) if row else None
+
+    def unregister(self, workspace_id: str) -> None:
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
 
     def register(self, root: Path, action: object) -> str:
         if action not in ("create", "add"):
@@ -130,18 +141,51 @@ def add_workspace(root: Path) -> None:
     ensure_workspace_environment(root)
 
 
+def move_workspace_to_trash(root: Path) -> Path:
+    configured = os.environ.get("PHYZFLOW_TRASH_DIR")
+    if configured:
+        trash = Path(configured)
+    elif sys.platform == "darwin":
+        trash = Path.home() / ".Trash"
+    else:
+        trash = Path.home() / ".local/share/Trash/files"
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        target = trash / root.name
+        suffix = 2
+        while target.exists() or target.is_symlink():
+            target = trash / f"{root.name} {suffix}"
+            suffix += 1
+        try:
+            root.rename(target)
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
+            shutil.move(str(root), str(target))
+    except OSError as error:
+        raise OSError(f"Could not move {root.name} to Trash: {error.strerror or error}") from error
+    return target
+
+
 def serve_application(state_dir: Path, port: int) -> None:
     administrator = Administrator(state_dir)
     registry = WorkspaceRegistry(state_dir)
     tokens = McpTokens(administrator.directory)
     mounted = {}
+    deleting: set[str] = set()
     lock = Lock()
     shutting_down = False
+
+    def is_deleting(workspace_id: str) -> bool:
+        with lock:
+            return workspace_id in deleting
 
     def mount_workspace(workspace_id: str, root: Path):
         with lock:
             if shutting_down:
                 raise RuntimeError("The application is shutting down.")
+            if workspace_id in deleting:
+                raise RuntimeError("This Workspace is being deleted.")
             if workspace_id not in mounted:
                 mounted[workspace_id] = workspace_routes(
                     root, discover_flows(root), load_ui_settings(root, port),
@@ -149,7 +193,10 @@ def serve_application(state_dir: Path, port: int) -> None:
                 )
             return mounted[workspace_id]
 
-    access = WorkspaceAccess(tokens, registry, lambda workspace_id, root: mount_workspace(workspace_id, root)[2])
+    access = WorkspaceAccess(
+        tokens, registry, lambda workspace_id, root: mount_workspace(workspace_id, root)[2],
+        is_deleting=is_deleting,
+    )
 
     class Handler(UIRequestHandler):
         def end_headers(self) -> None:
@@ -202,6 +249,9 @@ def serve_application(state_dir: Path, port: int) -> None:
 
         def workspace(self, route: re.Match) -> None:
             workspace_id, path = route.groups()
+            if is_deleting(workspace_id):
+                self.send_json({"error": "This Workspace is being deleted."}, HTTPStatus.CONFLICT)
+                return
             try:
                 root = registry.get(workspace_id)
                 if root is None or not root.is_dir():
@@ -354,11 +404,64 @@ def serve_application(state_dir: Path, port: int) -> None:
             else:
                 self.send_json({"id": workspace_id}, HTTPStatus.CREATED)
 
+        def delete_workspace(self, workspace_id: str) -> None:
+            try:
+                with lock:
+                    if shutting_down:
+                        self.send_json({"error": "The application is shutting down."}, HTTPStatus.SERVICE_UNAVAILABLE)
+                        return
+                    if workspace_id in deleting:
+                        self.send_json({"error": "This Workspace is already being deleted."}, HTTPStatus.CONFLICT)
+                        return
+                    root = registry.get(workspace_id)
+                    if root is None:
+                        self.send_json({"error": "This Workspace is unavailable."}, HTTPStatus.NOT_FOUND)
+                        return
+                    deleting.add(workspace_id)
+                    route_entry = mounted.get(workspace_id)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not read the Workspace registry."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            try:
+                try:
+                    if route_entry is not None:
+                        route_entry[1](delete=True)
+                    else:
+                        verify_workspace_processes_stopped(root, wait_seconds=0.2)
+                except WorkspaceProcessRunningError as error:
+                    self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
+                    return
+                try:
+                    move_workspace_to_trash(root)
+                except OSError as error:
+                    with lock:
+                        mounted.pop(workspace_id, None)
+                    self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                    return
+                with lock:
+                    mounted.pop(workspace_id, None)
+                registry.unregister(workspace_id)
+                self.send_json({"status": "deleted"})
+            except sqlite3.Error:
+                self.send_json({"error": "Could not update the Workspace registry."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            finally:
+                with lock:
+                    deleting.discard(workspace_id)
+
         def do_DELETE(self) -> None:
             if self.path == "/mcp":
                 self.mcp_request()
-            else:
-                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not self.valid_post_origin():
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if not self.authenticated():
+                self.send_json({"error": "Sign in to Phyzflow."}, HTTPStatus.UNAUTHORIZED)
+                return
+            if route := WORKSPACE_DELETE_PATH.fullmatch(self.path):
+                self.delete_workspace(route[1])
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
 
     try:
         with mcp_transport(access) as send_mcp, ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
@@ -372,5 +475,6 @@ def serve_application(state_dir: Path, port: int) -> None:
     finally:
         with lock:
             shutting_down = True
-            for _, close, _ in mounted.values():
-                close()
+            mounted_routes = list(mounted.values())
+        for _, close, _ in mounted_routes:
+            close()
