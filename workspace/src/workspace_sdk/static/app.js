@@ -1355,7 +1355,7 @@ form.addEventListener("submit", async event => {
 async function reconnectRun() {
   let cursor = 0;
   let observedRun = null;
-  let wasRunning = false;
+  let completedHistoryRun = null;
   while (!stopPhase) {
     try {
       if (streamingOwnRun) {
@@ -1380,9 +1380,11 @@ async function reconnectRun() {
         showMessage(message);
         cursor = sequence;
       }
-      if (wasRunning && !snapshot.running) refreshHistory();
+      if (!snapshot.running && runId && cursor !== Infinity && runId !== completedHistoryRun) {
+        completedHistoryRun = runId;
+        refreshHistory();
+      }
       if (snapshot.status === "stopped") setStatus("stopped");
-      wasRunning = snapshot.running;
     } catch (error) {
       // A temporary disconnect must not mark the server-owned run as failed.
     }

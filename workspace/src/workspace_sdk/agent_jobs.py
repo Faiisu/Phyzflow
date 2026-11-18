@@ -13,6 +13,12 @@ from uuid import uuid4
 from .execution import ExternalRun, sheet_lock
 
 
+def project_environment(project):
+    """Start every project process without the agent account's ambient secrets."""
+    return {'PATH': str(Path(project['python']).parent) + os.pathsep + os.defpath,
+            'PYTHONNOUSERSITE': '1', 'PYTHONUNBUFFERED': '1'}
+
+
 class AgentJobs:
     def __init__(self, state=None):
         self.lock = Lock()
@@ -78,7 +84,9 @@ class AgentJobs:
         try:
             if operation == 'run_flow':
                 ExternalRun(sheet, job_id)
-            process = self.spawn([project['python'], '-m', 'workspace_sdk.agent_worker'], cwd=sheet,
+            environment = project_environment(project)
+            environment.update(project.get('inference_environment', {}))
+            process = self.spawn([project['python'], '-m', 'workspace_sdk.agent_worker'], cwd=sheet, env=environment,
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                  inherited=descriptor.fileno())
             process.stdin.write((json.dumps({'job_id': job_id, 'operation': operation, 'input': inputs}) + '\n').encode())
@@ -128,8 +136,7 @@ class AgentJobs:
             raise ValueError('Configured project Python environment is inaccessible; restore or reconfigure it.')
         executable = str(python) if program == 'python' else program
         # Do not inherit caller credentials, Python import paths or environment overrides.
-        environment = {'PATH': str(python.parent) + os.pathsep + os.defpath,
-                       'PYTHONNOUSERSITE': '1', 'PYTHONUNBUFFERED': '1'}
+        environment = project_environment(project)
         if not Path(executable).is_file() or not os.access(executable, os.X_OK):
             raise ValueError(f'Cannot start executable {executable}: missing or not executable. Check the configured command and environment.')
         job_id = uuid4().hex

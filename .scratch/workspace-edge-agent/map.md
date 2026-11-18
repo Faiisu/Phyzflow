@@ -14,6 +14,8 @@ The numbered tickets follow the dependency sequence in [the spec](spec.md).
 
 - [Ticket 08](issues/08-build-and-debug-through-mcp.md): Optional MCP 2.3.0 stdio frontend bridges existing authenticated central HTTPS, with 13 typed explicit-target tools and unchanged Edge ownership/retry semantics. Actual interactive AI discovery/edit/nested-error/repair, offline dependency/test jobs, and same run/source inspection in Chromium are preserved in [evidence](evidence/08/README.md). Real MCP-to-TLS-to-Edge authorization, stale revision, bounded output/cancel and disconnected-target checks pass; plain SDK discovery skips only optional MCP tests. No public HTTP MCP service is claimed.
 
+- Review fixes: external terminal runs refresh open-browser history even when the full run falls between live polls; repeated snapshots and UI-owned streams do not duplicate refreshes. Flow validation/execution now share the command minimal environment, with operator-only `inference_environment` values reserved for flow workers. Selected interpreter paths and normal installed-SDK imports are preserved. See [review evidence](review.md).
+
 ## Fog
 
 - Ubuntu 24.04/systemd manager installation/startup/boot behavior awaits a Linux target. Real module lifecycle, disconnect, duplicate, and restart checks pass on macOS; no Linux manager result is claimed.
