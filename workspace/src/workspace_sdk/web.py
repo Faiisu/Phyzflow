@@ -18,6 +18,7 @@ from .node_sources import SourceChanged, edit_source_file, node_files, node_sour
 from .node_settings import LiveSettings, SettingsStore, parse_setting_defaults
 from .project import ordered_steps, relative_source, setting_files, source_location
 from .execution import FlowBusy, clear_external_snapshot, external_snapshot, run_recorded, sheet_busy, sheet_lock
+from .sheet_locks import SheetEditLease, SheetLockedError
 from .ui_settings import ZoomSettings
 
 
@@ -107,6 +108,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
     def send_source_edit(self, edit_fn: Callable[[], dict[str, str]], *, not_found_error: str) -> None:
         try:
             result = edit_fn()
+        except SheetLockedError as error:
+            self.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
         except FileNotFoundError:
             self.send_json({"error": not_found_error}, HTTPStatus.NOT_FOUND)
         except SourceChanged:
@@ -211,9 +214,10 @@ def serve(
                         data["events"] = [(index, event) for index, event in enumerate(saved, start=1)]
                 self.send_json(data)
             elif self.path == "/project":
+                edit_lock = SheetEditLease(root).status(self.headers.get("X-Phyzflow-Edit-Session"))
                 data = json.dumps({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
-                    "zoom": zoom, "edit_running_source": run_token is not None,
+                    "zoom": zoom, "edit_running_source": run_token is not None, "edit_lock": edit_lock,
                 }).encode()
                 self.send_bytes(data, "application/json")
             elif self.path == "/status":
@@ -406,11 +410,11 @@ def serve(
                 with source_lock:
                     path = node_source_path(root, graph[index]["file"], relative)
                     definitions = defaults_files.get(path)
-                    initial = None
-                    if definitions is not None:
-                        if source is not None:
-                            parse_setting_defaults(source, definitions)
-                        initial = json.dumps({
+
+                    def build_initial() -> str | None:
+                        if definitions is None:
+                            return None
+                        return json.dumps({
                             name: declarations[0].default
                             for name, declarations in definitions.items()
                             if all(
@@ -418,7 +422,20 @@ def serve(
                                 and setting.default == declarations[0].default for setting in declarations
                             )
                         }, indent=2) + "\n"
-                    return edit_source_file(path, source, revision, initial=initial)
+
+                    if source is None:
+                        return edit_source_file(path, None, None, initial=build_initial())
+
+                    def apply_node_edit() -> dict[str, str]:
+                        if definitions is not None:
+                            parse_setting_defaults(source, definitions)
+                        return edit_source_file(path, source, revision, initial=build_initial())
+
+                    return SheetEditLease(root).write_locked(
+                        "web",
+                        self.headers.get("X-Phyzflow-Edit-Session"),
+                        apply_node_edit,
+                    )
 
             self.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")
 

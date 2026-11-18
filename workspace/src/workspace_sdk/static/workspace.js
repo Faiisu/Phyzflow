@@ -9,6 +9,7 @@ const newSheet = document.querySelector("#new-sheet");
 const runAll = document.querySelector("#run-all");
 const reloadFlow = document.querySelector("#reload-flow");
 const reloadMessage = document.querySelector("#reload-message");
+const editLockMessage = document.querySelector("#edit-lock-message");
 const sourceChangeMessage = document.querySelector("#source-change-message");
 const editFlowSource = document.querySelector("#edit-flow-source");
 const sourceDialog = document.querySelector("#flow-source");
@@ -33,6 +34,7 @@ const sheets = [];
 let active = null;
 let sheetToDelete = null;
 let sourceDraft = null;
+let pendingSourceSheet = null;
 let editRunningSource = false;
 
 const labels = {
@@ -47,16 +49,139 @@ function element(tag, text, className) {
   return node;
 }
 
+function lockNoticeText(lock) {
+  return lock?.locked && !lock.owned_by_viewer ? `Read-only · Locked for editing by ${lock.owner}` : "";
+}
+
+function notifyFrameEditLock(sheet) {
+  sheet.frame?.contentWindow?.dispatchEvent(new CustomEvent("workspace-edit-lock", {
+    detail: { editLock: sheet.editLock ?? null },
+  }));
+}
+
+function findSheetByWindow(frameWindow) {
+  return sheets.find(sheet => sheet && sheet.frame?.contentWindow === frameWindow) ?? null;
+}
+
+function clearSheetHeartbeat(sheet) {
+  if (sheet.heartbeatTimer !== null) {
+    clearInterval(sheet.heartbeatTimer);
+    sheet.heartbeatTimer = null;
+  }
+}
+
+async function postEditLock(sheet, body, { keepalive = false } = {}) {
+  const response = await fetch(`./flows/${sheet.index}/edit-lock`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive,
+  });
+  const data = await response.json().catch(() => ({}));
+  return { ok: response.ok, status: response.status, data };
+}
+
+async function acquireSheetEdit(sheet, editorKey) {
+  sheet.version++;
+  const payload = sheet.editSessionId
+    ? { action: "acquire", session_id: sheet.editSessionId }
+    : { action: "acquire" };
+  const { ok, data } = await postEditLock(sheet, payload);
+  if (!ok) {
+    if (data.edit_lock) {
+      sheet.editLock = data.edit_lock;
+      notifyFrameEditLock(sheet);
+      showNotice();
+    }
+    return {
+      ok: false,
+      sessionId: null,
+      error: data.error ?? "This sheet is locked for editing.",
+      editLock: data.edit_lock ?? null,
+    };
+  }
+  sheet.editSessionId = data.session_id;
+  sheet.version++;
+  sheet.editLock = data;
+  sheet.activeEditors.add(editorKey);
+  if (sheet.heartbeatTimer === null) {
+    const sessionId = sheet.editSessionId;
+    sheet.heartbeatTimer = setInterval(() => {
+      if (sheet.editSessionId !== sessionId) return;
+      postEditLock(sheet, { action: "heartbeat", session_id: sessionId }).then(({ ok: alive, data: status }) => {
+        if (sheet.editSessionId !== sessionId) return;
+        if (alive) {
+          sheet.editLock = status;
+          notifyFrameEditLock(sheet);
+        } else {
+          clearSheetHeartbeat(sheet);
+          sheet.editSessionId = null;
+          sheet.activeEditors.clear();
+          if (status.edit_lock) sheet.editLock = status.edit_lock;
+          notifyFrameEditLock(sheet);
+          syncFlowSourceLock();
+          showNotice();
+        }
+      }).catch(() => {});
+    }, 15000);
+  }
+  notifyFrameEditLock(sheet);
+  showNotice();
+  return { ok: true, sessionId: sheet.editSessionId, error: "", editLock: data };
+}
+
+async function releaseSheetEdit(sheet, editorKey, { keepalive = false } = {}) {
+  sheet.activeEditors.delete(editorKey);
+  if (sheet.activeEditors.size > 0 || !sheet.editSessionId) return;
+  const sessionId = sheet.editSessionId;
+  sheet.editSessionId = null;
+  clearSheetHeartbeat(sheet);
+  sheet.version++;
+  try {
+    const { ok } = await postEditLock(sheet, { action: "release", session_id: sessionId }, { keepalive });
+    if (ok && sheet.editLock?.owned_by_viewer) {
+      sheet.editLock = { ...sheet.editLock, locked: false, session_id: null, owner: null, owned_by_viewer: false };
+      notifyFrameEditLock(sheet);
+      showNotice();
+    }
+  } catch (error) {
+  }
+}
+
+window.phyzflowAcquireEditLock = async frameWindow => {
+  const sheet = findSheetByWindow(frameWindow);
+  if (!sheet) return { ok: true, sessionId: null, error: "", editLock: null };
+  return acquireSheetEdit(sheet, "node-files");
+};
+
+window.phyzflowReleaseEditLock = frameWindow => {
+  const sheet = findSheetByWindow(frameWindow);
+  if (sheet) void releaseSheetEdit(sheet, "node-files");
+};
+
+window.phyzflowEditSessionId = frameWindow => findSheetByWindow(frameWindow)?.editSessionId ?? null;
+window.phyzflowSheetEditLock = frameWindow => findSheetByWindow(frameWindow)?.editLock ?? null;
+
 function flowSourceLocked() {
+  if (sourceDraft?.readOnlyLock) return true;
+  if (active?.editLock?.locked && !active.editLock.owned_by_viewer) return true;
   return !editRunningSource && sourceDraft?.sheet.status === "running";
 }
 
 function syncFlowSourceLock() {
   if (!sourceDialog.open || !sourceDraft || closeSource.disabled) return;
-  const running = flowSourceLocked();
-  sourceInput.readOnly = running;
-  saveSource.disabled = running || !flowSourceIsDirty();
-  if (running) {
+  const externalLock = sourceDraft.readOnlyLock
+    ? sourceDraft.lockMessage
+    : active?.editLock?.locked && !active.editLock.owned_by_viewer
+      ? `Locked for editing by ${active.editLock.owner}.`
+      : "";
+  const running = !editRunningSource && sourceDraft?.sheet.status === "running";
+  const locked = Boolean(externalLock) || running;
+  sourceInput.readOnly = locked;
+  saveSource.disabled = locked || !flowSourceIsDirty();
+  if (externalLock) {
+    sourceMessage.textContent = `Read-only · ${externalLock}`;
+  } else if (running) {
     sourceMessage.textContent = "Flow is running. Editing is disabled.";
   } else if (sourceMessage.textContent === "Flow is running. Editing is disabled.") {
     sourceMessage.textContent = "";
@@ -78,6 +203,9 @@ function showNotice() {
   const reloadText = active?.reloadError || change;
   reloadMessage.hidden = !reloadText;
   if (reloadMessage.textContent !== reloadText) reloadMessage.textContent = reloadText;
+  const lockText = lockNoticeText(active?.editLock);
+  editLockMessage.hidden = !lockText;
+  if (editLockMessage.textContent !== lockText) editLockMessage.textContent = lockText;
   sourceChangeMessage.hidden = !change;
   const snapshot = Boolean(active?.frameStopped);
   notice.classList.toggle("is-snapshot", snapshot);
@@ -105,11 +233,18 @@ reopen.addEventListener("click", () => openFlow(active));
 reloadFlow.addEventListener("click", () => openFlow(active, "reload"));
 
 async function requestFlowSource(sheet, changes) {
-  const response = await fetch(`./flows/${sheet.index}/source`, changes && {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(changes),
-  });
+  const headers = {};
+  if (sheet.editSessionId) headers["X-Phyzflow-Edit-Session"] = sheet.editSessionId;
+  const options = changes
+    ? {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+      }
+    : Object.keys(headers).length
+      ? { headers }
+      : undefined;
+  const response = await fetch(`./flows/${sheet.index}/source`, options);
   const data = await response.json();
   if (!response.ok) throw new Error(data.error ?? "Could not access flow.py.");
   return data;
@@ -125,19 +260,35 @@ function mayCloseSource() {
 
 editFlowSource.addEventListener("click", async () => {
   const sheet = active;
+  pendingSourceSheet = sheet;
   sourceDraft = null;
   sourceInput.value = "";
   sourceInput.disabled = saveSource.disabled = closeSource.disabled = true;
   sourceMessage.textContent = "Loading source…";
   sourceDialog.showModal();
+  let lock = null;
   try {
+    lock = await acquireSheetEdit(sheet, "flow-source");
+    if (!sourceDialog.open) {
+      if (lock.ok) void releaseSheetEdit(sheet, "flow-source");
+      return;
+    }
     const { source, revision } = await requestFlowSource(sheet);
-    sourceDraft = { sheet, source, revision };
+    if (!sourceDialog.open) {
+      if (lock.ok) void releaseSheetEdit(sheet, "flow-source");
+      return;
+    }
+    sourceDraft = {
+      sheet, source, revision,
+      readOnlyLock: !lock.ok,
+      lockMessage: lock.ok ? "" : lock.error,
+    };
     sourceInput.value = source;
     sourceInput.disabled = false;
-    sourceMessage.textContent = "";
-    sourceInput.focus();
+    sourceMessage.textContent = lock.ok ? "" : `Read-only · ${lock.error}`;
+    if (lock.ok) sourceInput.focus();
   } catch (error) {
+    if (lock?.ok) void releaseSheetEdit(sheet, "flow-source");
     sourceMessage.textContent = error.message;
   } finally {
     closeSource.disabled = false;
@@ -159,7 +310,7 @@ sourceForm.addEventListener("submit", async event => {
   sourceMessage.textContent = "Saving…";
   try {
     const saved = await requestFlowSource(sheet, { source, revision });
-    sourceDraft = { sheet, source, revision: saved.revision };
+    sourceDraft = { ...sourceDraft, sheet, source, revision: saved.revision };
     sourceMessage.textContent = editRunningSource
       ? "Saved. The next run will use this source."
       : "Saved. Python changes reload automatically.";
@@ -174,8 +325,21 @@ sourceForm.addEventListener("submit", async event => {
 closeSource.addEventListener("click", () => {
   if (mayCloseSource()) sourceDialog.close();
 });
+sourceDialog.addEventListener("close", () => {
+  const sheet = sourceDraft?.sheet ?? pendingSourceSheet;
+  pendingSourceSheet = null;
+  if (sheet) void releaseSheetEdit(sheet, "flow-source");
+});
 sourceDialog.addEventListener("cancel", event => {
   if (!mayCloseSource()) event.preventDefault();
+});
+window.addEventListener("pagehide", () => {
+  for (const sheet of sheets.filter(Boolean)) {
+    if (sheet.editSessionId) {
+      sheet.activeEditors.clear();
+      void releaseSheetEdit(sheet, "pagehide", { keepalive: true });
+    }
+  }
 });
 window.addEventListener("beforeunload", event => {
   if (flowSourceIsDirty()) {
@@ -208,6 +372,7 @@ function showFrame(sheet, revision) {
     const frame = document.createElement("iframe");
     frame.title = `${sheet.name} flow`;
     frame.src = url;
+    frame.addEventListener("load", () => notifyFrameEditLock(sheet));
     sheet.frame = frame;
     sheet.frameStopped = false;
     sheet.view.replaceChildren(frame);
@@ -350,7 +515,12 @@ function makeSheet(flow, index) {
   views.prepend(view);
   tabs.append(group);
 
-  const sheet = { index, name: flow.name, tab, indicator, stop, group, view, frame: null, frameStopped: false, pending: false, version: 0, revision: flow.revision, runError: flow.error };
+  const sheet = {
+    index, name: flow.name, tab, indicator, stop, group, view,
+    frame: null, frameStopped: false, pending: false, version: 0,
+    revision: flow.revision, runError: flow.error,
+    editLock: flow.edit_lock ?? null, editSessionId: null, activeEditors: new Set(), heartbeatTimer: null,
+  };
   updateStatus(sheet, flow.status);
   tab.addEventListener("click", () => selectSheet(sheet));
   stop.addEventListener("click", () => stopFlow(sheet));
@@ -393,13 +563,22 @@ runAll.addEventListener("click", async () => {
 });
 
 async function getWorkspace() {
-  const response = await fetch("./workspace");
+  const sessionIds = sheets.filter(Boolean).map(sheet => sheet.editSessionId).filter(Boolean);
+  const options = sessionIds.length
+    ? { headers: { "X-Phyzflow-Edit-Session": sessionIds.join(",") } }
+    : undefined;
+  const response = await fetch("./workspace", options);
   if (!response.ok) throw new Error("Could not load the Workspace.");
   return response.json();
 }
 
 function removeSheet(index) {
   const sheet = sheets[index];
+  if (sheet) {
+    clearSheetHeartbeat(sheet);
+    sheet.activeEditors.clear();
+    void releaseSheetEdit(sheet, "remove");
+  }
   sheet?.view.remove();
   sheet?.group.remove();
   if (active === sheet) active = null;
@@ -486,10 +665,24 @@ createForm.addEventListener("submit", async event => {
 
 async function pollStatus() {
   const versions = sheets.map(sheet => sheet?.version);
+  const sentSessions = sheets.map(sheet => sheet?.editSessionId ?? null);
   try {
     const { flows } = await getWorkspace();
     syncSheets(flows);
     for (const sheet of sheets.filter(Boolean)) {
+      if (flows[sheet.index] && sheet.version === versions[sheet.index]) {
+        const nextLock = flows[sheet.index].edit_lock ?? null;
+        if (JSON.stringify(sheet.editLock) !== JSON.stringify(nextLock)) {
+          sheet.editLock = nextLock;
+          if (sheet.editSessionId && sheet.editSessionId === sentSessions[sheet.index] && !nextLock?.owned_by_viewer) {
+            clearSheetHeartbeat(sheet);
+            sheet.editSessionId = null;
+            sheet.activeEditors.clear();
+          }
+          notifyFrameEditLock(sheet);
+          if (sheet === active) syncFlowSourceLock();
+        }
+      }
       if (flows[sheet.index] && (!sheet.frameStopped || !runAll.hidden) && !sheet.pending && sheet.version === versions[sheet.index]) {
         const { status, revision, changed_source, error } = flows[sheet.index];
         if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0)) && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {

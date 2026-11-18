@@ -11,6 +11,23 @@ if __name__ == "__main__":
     package = sys.modules["workspace_sdk"] = module_from_spec(sdk)
     sdk.loader.exec_module(package)
 
+    if len(sys.argv) >= 3 and sys.argv[1] == "--check":
+        from contextlib import redirect_stdout
+        from workspace_sdk.project import ValidationError, load_project
+
+        target = Path(sys.argv[2])
+        pending = target.with_suffix(".tmp")
+        try:
+            with redirect_stdout(sys.stderr), load_project(Path.cwd(), None) as flow:
+                payload = {"valid": True, "steps": [step.id for step in flow.steps]}
+        except ValidationError as error:
+            payload = {"valid": False, "stage": "validation", "error": str(error)}
+        except Exception as error:
+            payload = {"valid": False, "stage": "import", "error": f"{type(error).__name__}: {error}"}
+        pending.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
+        pending.replace(target)
+        raise SystemExit(0)
+
     from workspace_sdk.workspace_ui import serve_flow
 
     ready = Path(sys.argv[1])

@@ -121,6 +121,13 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   color: #ffd788;
   font-size: .75rem;
 }
+.edit-lock-message {
+  align-self: center;
+  min-width: 0;
+  padding: .25rem .4rem;
+  color: #ffd2c8;
+  font-size: .75rem;
+}
 .sheet-dialog {
   width: min(24rem, calc(100% - 2rem));
   padding: 1rem;
