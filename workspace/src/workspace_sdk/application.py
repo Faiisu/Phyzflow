@@ -1,5 +1,6 @@
 """Host the landing page and registered Workspace routes on one origin."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, suppress
 import errno
 from http import HTTPStatus
@@ -9,10 +10,11 @@ from pathlib import Path
 import re
 import shutil
 from shutil import rmtree
+import signal
 import sqlite3
 import subprocess
 import sys
-from threading import Lock
+from threading import Event, Lock, Thread, current_thread, main_thread
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -21,6 +23,7 @@ from .application_mcp import (
     MCP_BODY_LIMIT, MCP_REQUEST_HEADERS, MCP_RESPONSE_HEADERS, TOKEN_PATH,
     McpTokens, WorkspaceAccess, mcp_transport,
 )
+from .sheet_runs import RunStateStore
 from .sheets import discover_flows, initialize_workspace
 from .ui_settings import load_ui_settings
 from .web import STATIC, UIRequestHandler, ui_address
@@ -171,10 +174,13 @@ def serve_application(state_dir: Path, port: int) -> None:
     administrator = Administrator(state_dir)
     registry = WorkspaceRegistry(state_dir)
     tokens = McpTokens(administrator.directory)
+    run_state = RunStateStore(state_dir)
     mounted = {}
     deleting: set[str] = set()
     lock = Lock()
     shutting_down = False
+    shutdown_event = Event()
+    restore_thread: Thread | None = None
 
     def is_deleting(workspace_id: str) -> bool:
         with lock:
@@ -190,8 +196,35 @@ def serve_application(state_dir: Path, port: int) -> None:
                 mounted[workspace_id] = workspace_routes(
                     root, discover_flows(root), load_ui_settings(root, port),
                     interpreter=workspace_interpreter(root),
+                    workspace_id=workspace_id,
+                    run_state=run_state,
+                    app_closing=shutdown_event.is_set,
                 )
             return mounted[workspace_id]
+
+    def restore_workspaces() -> None:
+        if shutdown_event.is_set():
+            return
+        targets: list[tuple[str, Path]] = []
+        for workspace_id in run_state.active_workspace_ids():
+            root = registry.get(workspace_id)
+            if root is not None and root.is_dir():
+                targets.append((workspace_id, root))
+        if not targets:
+            return
+
+        def restore_one(workspace_id: str, root: Path) -> None:
+            if shutdown_event.is_set():
+                return
+            try:
+                mount_workspace(workspace_id, root)
+            except (RuntimeError, OSError, ValueError, sqlite3.Error):
+                pass
+
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            futures = [pool.submit(restore_one, workspace_id, root) for workspace_id, root in targets]
+            for future in futures:
+                future.result()
 
     access = WorkspaceAccess(
         tokens, registry, lambda workspace_id, root: mount_workspace(workspace_id, root)[2],
@@ -441,6 +474,7 @@ def serve_application(state_dir: Path, port: int) -> None:
                 with lock:
                     mounted.pop(workspace_id, None)
                 registry.unregister(workspace_id)
+                run_state.delete_workspace(workspace_id)
                 self.send_json({"status": "deleted"})
             except sqlite3.Error:
                 self.send_json({"error": "Could not update the Workspace registry."}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -468,13 +502,28 @@ def serve_application(state_dir: Path, port: int) -> None:
             print(f"Phyzflow: {ui_address('127.0.0.1', server.server_port)}", flush=True)
             if administrator.initial_password.is_file():
                 print(f"Sign in as admin with the initial password in {administrator.initial_password}.", flush=True)
+            restore_thread = Thread(target=restore_workspaces, daemon=True)
+            restore_thread.start()
+
+            def stop(*_) -> None:
+                Thread(target=server.shutdown, daemon=True).start()
+
+            previous = signal.signal(signal.SIGTERM, stop) if current_thread() is main_thread() else None
             try:
                 server.serve_forever()
             except KeyboardInterrupt:
                 pass
+            finally:
+                if previous is not None:
+                    signal.signal(signal.SIGTERM, previous)
     finally:
+        shutdown_event.set()
         with lock:
             shutting_down = True
+        if restore_thread is not None:
+            restore_thread.join()
+        with lock:
             mounted_routes = list(mounted.values())
         for _, close, _ in mounted_routes:
             close()
+        run_state.close()
