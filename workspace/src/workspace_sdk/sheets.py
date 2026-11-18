@@ -1,5 +1,6 @@
 """Discover and create the Python projects represented by Workspace sheets."""
 
+from collections.abc import Iterator
 from contextlib import ExitStack
 from hashlib import sha256
 from importlib.metadata import version
@@ -51,10 +52,7 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     return flows
 
 
-def source_stamp(root: Path, *, main: bool = False) -> str:
-    """Compute a working-tree stamp across the sheet's Python files and pyproject.toml."""
-    # Track the sheet's Python tree, including new helpers that cannot be imported yet.
-    entries = []
+def sheet_source_files(root: Path, *, main: bool) -> Iterator[Path]:
     for directory, folders, files in os.walk(root):
         path = Path(directory)
         folders[:] = [
@@ -64,14 +62,19 @@ def source_stamp(root: Path, *, main: bool = False) -> str:
             and not (path / name / "pyvenv.cfg").is_file()
         ]
         for name in files:
-            if not name.endswith(".py") and not (path == root and name == "pyproject.toml"):
-                continue
-            source = path / name
-            try:
-                stat = source.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            entries.append((str(source.relative_to(root)), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+            if name.endswith(".py") or (path == root and name == "pyproject.toml"):
+                yield path / name
+
+
+def source_stamp(root: Path, *, main: bool = False) -> str:
+    """Compute a working-tree stamp across the sheet's Python files and pyproject.toml."""
+    entries = []
+    for source in sheet_source_files(root, main=main):
+        try:
+            stat = source.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        entries.append((str(source.relative_to(root)), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
     return sha256(json.dumps(sorted(entries)).encode()).hexdigest()
 
 

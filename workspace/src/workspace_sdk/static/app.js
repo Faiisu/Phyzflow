@@ -61,6 +61,7 @@ let stopPhase = null;
 let runInProgress = false;
 let streamingOwnRun = false;
 let projectReady = false;
+let editRunningSource = false;
 let dashboards;
 let deferredRunError = null;
 let liveOutput = null;
@@ -422,11 +423,16 @@ function sourceIsDirty() {
   return currentSource !== null && nodeSourceInput.value !== currentSource.text;
 }
 
+function nodeSourceLocked() {
+  return stopPhase === "stopped" ||
+    (runInProgress && !(editRunningSource && currentSource?.path.endsWith(".py")));
+}
+
 function updateSourceDirty() {
   const dirty = sourceIsDirty();
   document.documentElement.toggleAttribute("data-unsaved-source", dirty || savingSource);
   saveNodeSource.disabled = (!dirty && currentSource?.revision !== "missing") ||
-    savingSource || Boolean(nodeSourceRequest) || runInProgress || stopPhase === "stopped";
+    savingSource || Boolean(nodeSourceRequest) || nodeSourceLocked();
 }
 
 function canLeaveSource() {
@@ -512,7 +518,7 @@ async function openSource(index, path, line = null) {
   } finally {
     if (nodeSourceRequest === request) {
       nodeSourceRequest = null;
-      nodeSourceInput.readOnly = runInProgress || stopPhase === "stopped";
+      nodeSourceInput.readOnly = nodeSourceLocked();
       updateSourceDirty();
     }
   }
@@ -526,7 +532,7 @@ nodeSourceInput.addEventListener("input", () => {
 });
 nodeSourceForm.addEventListener("submit", async event => {
   event.preventDefault();
-  if (runInProgress || stopPhase === "stopped" || savingSource || nodeSourceRequest || !currentSource ||
+  if (nodeSourceLocked() || savingSource || nodeSourceRequest || !currentSource ||
       (!sourceIsDirty() && currentSource.revision !== "missing")) return;
   const { index, path, revision } = currentSource;
   const source = nodeSourceInput.value;
@@ -537,14 +543,18 @@ nodeSourceForm.addEventListener("submit", async event => {
   try {
     const saved = await requestSource(index, { path, source, revision });
     currentSource = { index, path, text: source, revision: saved.revision };
-    nodeSourceMessage.textContent = window.parent === window
-      ? "Saved. Restart the flow UI to run the edited code."
-      : "Saved. Close the editor and select Reload flow to run the edited code.";
+    if (editRunningSource && path.endsWith(".py")) {
+      nodeSourceMessage.textContent = "Saved. The next run will use this source.";
+    } else {
+      nodeSourceMessage.textContent = window.parent === window
+        ? "Saved. Restart the flow UI to run the edited code."
+        : "Saved. Close the editor and select Reload flow to run the edited code.";
+    }
   } catch (error) {
     nodeSourceMessage.textContent = error.message;
   } finally {
     savingSource = false;
-    nodeSourceInput.readOnly = runInProgress || stopPhase === "stopped";
+    nodeSourceInput.readOnly = nodeSourceLocked();
     updateSourceDirty();
   }
 });
@@ -1165,7 +1175,7 @@ button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ bl
 function updateRunControls() {
   button.disabled = runInput.disabled = !projectReady || runInProgress || Boolean(stopPhase);
   if (currentSource && !savingSource && !nodeSourceRequest) {
-    nodeSourceInput.readOnly = runInProgress || stopPhase === "stopped";
+    nodeSourceInput.readOnly = nodeSourceLocked();
     updateSourceDirty();
   }
 }
@@ -1316,6 +1326,7 @@ try {
   const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
+  editRunningSource = project.edit_running_source;
   dashboards = initDashboards(
     project,
     canvasLayout.revealDashboard,

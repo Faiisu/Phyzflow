@@ -33,6 +33,7 @@ const sheets = [];
 let active = null;
 let sheetToDelete = null;
 let sourceDraft = null;
+let editRunningSource = false;
 
 const labels = {
   ready: "Ready", opening: "Opening…", running: "Running", succeeded: "Succeeded",
@@ -46,9 +47,13 @@ function element(tag, text, className) {
   return node;
 }
 
+function flowSourceLocked() {
+  return !editRunningSource && sourceDraft?.sheet.status === "running";
+}
+
 function syncFlowSourceLock() {
   if (!sourceDialog.open || !sourceDraft || closeSource.disabled) return;
-  const running = active?.status === "running";
+  const running = flowSourceLocked();
   sourceInput.readOnly = running;
   saveSource.disabled = running || !flowSourceIsDirty();
   if (running) {
@@ -131,18 +136,18 @@ editFlowSource.addEventListener("click", async () => {
     sourceInput.value = source;
     sourceInput.disabled = false;
     sourceMessage.textContent = "";
-    syncFlowSourceLock();
     sourceInput.focus();
   } catch (error) {
     sourceMessage.textContent = error.message;
   } finally {
     closeSource.disabled = false;
+    syncFlowSourceLock();
     if (sourceInput.disabled) closeSource.focus();
   }
 });
 
 sourceInput.addEventListener("input", () => {
-  saveSource.disabled = active?.status === "running" || !flowSourceIsDirty();
+  saveSource.disabled = flowSourceLocked() || !flowSourceIsDirty();
 });
 
 sourceForm.addEventListener("submit", async event => {
@@ -155,12 +160,14 @@ sourceForm.addEventListener("submit", async event => {
   try {
     const saved = await requestFlowSource(sheet, { source, revision });
     sourceDraft = { sheet, source, revision: saved.revision };
-    sourceMessage.textContent = "Saved. Python changes reload automatically.";
+    sourceMessage.textContent = editRunningSource
+      ? "Saved. The next run will use this source."
+      : "Saved. Python changes reload automatically.";
   } catch (error) {
     sourceMessage.textContent = error.message;
   } finally {
-    sourceInput.readOnly = closeSource.disabled = false;
-    saveSource.disabled = !flowSourceIsDirty();
+    closeSource.disabled = false;
+    syncFlowSourceLock();
   }
 });
 
@@ -510,6 +517,7 @@ try {
   name.title = workspace.name;
   syncSheets(workspace.flows);
   runAll.hidden = !workspace.run_all;
+  editRunningSource = workspace.edit_running_source;
   newSheet.disabled = false;
   pollStatus().catch(() => {});
 } catch (error) {

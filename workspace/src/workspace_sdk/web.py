@@ -196,7 +196,7 @@ def serve(
             elif self.path == "/project":
                 data = json.dumps({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
-                    "zoom": zoom,
+                    "zoom": zoom, "edit_running_source": run_token is not None,
                 }).encode()
                 self.send_bytes(data, "application/json")
             elif self.path == "/status":
@@ -353,7 +353,8 @@ def serve(
             ):
                 self.send_source({"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST)
                 return
-            if source is not None and (run_status == "running" or sheet_busy(root)):
+            edit_while_running = run_token is not None and Path(relative).suffix == ".py"
+            if source is not None and not edit_while_running and (run_status == "running" or sheet_busy(root)):
                 self.send_source({"error": "Cannot edit node files while the flow is running."}, HTTPStatus.CONFLICT)
                 return
 

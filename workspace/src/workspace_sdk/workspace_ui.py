@@ -29,6 +29,7 @@ from .sheets import (
     create_sheet,
     discover_flows,
     edit_sheet_flow_source,
+    sheet_source_files,
     source_stamp,
 )
 from .ui_settings import UISettings, ZoomSettings
@@ -39,12 +40,16 @@ VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + 
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
 
 
-def serve_flow(root: Path, zoom: ZoomSettings, publish: Callable[[dict], None], *, run_token: str | None = None) -> None:
+def serve_flow(
+    root: Path, zoom: ZoomSettings, publish: Callable[[dict], None], *,
+    run_token: str | None = None, main: bool = False,
+) -> None:
     from .web import serve
 
     try:
         sources: dict[Path, str] = {}
-        with load_project(root, sources) as flow:
+        snapshot_sources = sheet_source_files(root, main=main) if run_token is not None else ()
+        with load_project(root, sources, snapshot_sources=snapshot_sources) as flow:
             serve(
                 flow, root, 0, sources, zoom=zoom, run_token=run_token,
                 on_ready=lambda address: publish({"url": address}),
@@ -211,7 +216,7 @@ class FlowSheet:
             if self.interpreter is not None:
                 argv.insert(1, "-I")
                 token = uuid4().hex
-                argv.append(token)
+                argv.extend((token, str(int(self.main))))
                 options["env"] = {
                     **os.environ,
                     "PATH": f"{self.interpreter.parent}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -451,7 +456,7 @@ def workspace_routes(
                     return
 
             sheet = sheets[index] if index < len(sheets) else None
-            if self.request.command == "POST" and sheet is not None and sheet.status() == "running":
+            if source is not None and interpreter is None and sheet is not None and sheet.status() == "running":
                 self.request.send_json({"error": "Cannot edit flow.py while the flow is running."}, HTTPStatus.CONFLICT)
                 return
 
@@ -584,7 +589,10 @@ def workspace_routes(
                         entry["run_id"] = attempt.run_id if attempt is not None else None
                         entry["error"] = attempt.start_error if attempt is not None else None
                     flows.append(entry)
-                self.request.send_json({"name": root.name, "flows": flows, "run_all": interpreter is not None})
+                self.request.send_json({
+                    "name": root.name, "flows": flows, "run_all": interpreter is not None,
+                    "edit_running_source": interpreter is not None,
+                })
                 return
             view = self.view_route()
             if view is not None and is_flow_view_route("GET", view[2]):

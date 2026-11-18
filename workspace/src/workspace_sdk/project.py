@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from graphlib import CycleError, TopologicalSorter
@@ -180,17 +180,18 @@ def check_source(root: Path, flow_path: Path) -> dict[Path, tuple[CodeType, str]
 class CheckedSourceLoader(SourceFileLoader):
     def __init__(
         self, name: str, path: Path, checked: tuple[CodeType, str] | None,
-        loaded_sources: dict[Path, str] | None,
+        loaded_sources: dict[Path, str] | None, saved_source: bytes | None = None,
     ):
         super().__init__(name, str(path))
         self.source_path = path
         self.checked = checked
         self.loaded_sources = loaded_sources
+        self.saved_source = saved_source
 
     def get_code(self, fullname: str) -> CodeType:
         if self.checked is None:
             try:
-                source = self.get_data(self.path)
+                source = self.saved_source if self.saved_source is not None else self.get_data(self.path)
                 code = self.source_to_code(source, self.path)
             except SyntaxError as error:
                 raise ValidationError(f"Syntax: {self.source_path}:{error.lineno}: {error.msg}") from error
@@ -203,11 +204,24 @@ class CheckedSourceLoader(SourceFileLoader):
 
 
 @contextmanager
-def load_project(root: Path, loaded_sources: dict[Path, str] | None = None) -> Iterator[Flow]:
+def load_project(
+    root: Path, loaded_sources: dict[Path, str] | None = None, *, snapshot_sources: Iterable[Path] = (),
+) -> Iterator[Flow]:
     root = root.resolve()
     path = (root / "flow.py").resolve()
     code = check_source(root, path)
     environment = Path(sys.prefix).resolve()
+    saved_sources = {}
+    for source in snapshot_sources:
+        if source.suffix != ".py":
+            continue
+        origin = source.resolve()
+        if origin in code or not origin.is_relative_to(root) or origin.is_relative_to(environment):
+            continue
+        try:
+            saved_sources[origin] = origin.read_bytes()
+        except FileNotFoundError:
+            continue
 
     class CheckedProjectFinder:
         def find_spec(self, fullname, search_path=None, target=None):
@@ -218,7 +232,7 @@ def load_project(root: Path, loaded_sources: dict[Path, str] | None = None) -> I
                 local_source = origin.is_relative_to(root) and not origin.is_relative_to(environment)
                 if checked is not None or (loaded_sources is not None and local_source):
                     # Compile the source we fingerprint, bypassing cached bytecode.
-                    spec.loader = CheckedSourceLoader(fullname, origin, checked, loaded_sources)
+                    spec.loader = CheckedSourceLoader(fullname, origin, checked, loaded_sources, saved_sources.get(origin))
             return spec
 
     name = "_workspace_flow"
