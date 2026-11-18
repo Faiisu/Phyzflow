@@ -1,6 +1,6 @@
 # Workspace development agent
 
-The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Jobs, results, bounded command output, and mutation identities persist locally across restart. Central routing and MCP are delivered by later tickets.
+The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Jobs, results, bounded command output, and mutation identities persist locally across restart. Authenticated central inspection routing is available below; remote mutation/reconnection and MCP follow in later tickets.
 
 ## Start and connect
 
@@ -202,3 +202,83 @@ The fixed loopback port is 18081; it is not an Internet endpoint. `Type=exec` co
 For startup failure, inspect the journal for `Agent startup failed`, fix config/token ownership, missing interpreter/project, private state permissions, instance-lock conflict, or occupied loopback port; then `sudo systemctl reset-failed workspace-agent.service` and start again. Test invalid config in the foreground with the same account and interpreter to see a nonzero exit and its diagnostic. Do not delete the database to repair an instance-lock conflict. Restrict system journal access and journal retention because development diagnostics can be sensitive.
 
 Verification boundary: real module startup, HTTP disconnect/retry, SIGTERM shutdown, SIGKILL cleanup, and restart recovery are covered by `test_agent_persistence.py` on macOS/Python 3.12.11. The Ubuntu/systemd template has not been executed on a Linux device or container (Docker daemon unavailable on the implementation host); verify install/start/stop/boot behavior on the target before deployment. No host service is registered by the test suite.
+
+## Inspect an Edge through the central router
+
+The central service holds client/device credentials, device grants, and short-lived routing state. Project files, environments, jobs, and mutation records stay with the existing local agent. An independent connector process uses that agent's authenticated loopback API; it never creates another agent or state-directory owner. No inbound public Edge port is needed. This delivery enables `inspect_project`, `list_files`, `read_file`, and `search_code` remotely; remote editing, jobs, automatic reconnection, and MCP follow in tickets 07–08.
+
+Provision a stable device ID and a different random private token for **each** device and client. Reuse the same device ID/config across connector restarts. Tokens must be at least 16 non-whitespace ASCII characters in account-owned `0600` files; use `secrets.token_urlsafe(32)`. Keep configs and the TLS private key private and outside project/source control. Copy each device token securely only to its matching Edge; give client tokens only to authorized callers. Never pass tokens as command arguments or URL components.
+
+On the central host, create `/absolute/private/central.json`:
+
+```json
+{
+  "cert_file": "/absolute/private/fullchain.pem",
+  "key_file": "/absolute/private/privkey.pem",
+  "devices": {
+    "edge-a": {"token_file": "/absolute/private/edge-a-token"},
+    "edge-b": {"token_file": "/absolute/private/edge-b-token"}
+  },
+  "clients": {
+    "developer": {
+      "token_file": "/absolute/private/developer-token",
+      "devices": ["edge-a", "edge-b"]
+    }
+  }
+}
+```
+
+Use a certificate trusted by the clients, whose subject alternative name matches the central hostname. Start central with the installed Workspace interpreter:
+
+```sh
+python -m workspace_sdk.agent_remote central --config /absolute/private/central.json --host 0.0.0.0 --port 18443
+```
+
+The default bind address is loopback; choose the network interface explicitly. The printed binding address is diagnostic: configure clients with the real certificate hostname, for example `https://central.example.com:18443`. TLS is mandatory, supports TLS 1.2 or later, and uses normal CA and hostname validation. For a private CA, distribute its public certificate securely and set `ca_file`. There is no verification bypass. This small standard-library server is intended for a controlled development network; assess hardened ingress, network limits, and service management before public deployment. No public deployment has been verified.
+
+On each Edge, start the existing local agent using its normal private config and fixed loopback port (for example the service above). Create a separate connector config `/absolute/private/connector.json`:
+
+```json
+{
+  "central_url": "https://central.example.com:18443",
+  "device_id": "edge-a",
+  "device_token_file": "/absolute/private/edge-a-token",
+  "local_url": "http://127.0.0.1:18081",
+  "local_token_file": "/absolute/private/agent-token",
+  "ca_file": "/absolute/private/central-ca.pem"
+}
+```
+
+Omit `ca_file` for a publicly trusted certificate. For the second Edge use `edge-b` and its own token, local agent, and project configuration. The loopback token is distinct from central device/client credentials. Start the outbound connector:
+
+```sh
+python -m workspace_sdk.agent_remote connect --config /absolute/private/connector.json
+```
+
+The connector exits nonzero on failed authentication or connection loss; restart it explicitly in this ticket. Ctrl+C or SIGTERM disconnects its session after the current bounded request, without stopping the local agent or local jobs. Stopping central leaves Edge files/jobs/state untouched. A replaced connector receives a fresh opaque session; stale polls and replies cannot consume or answer requests for its replacement.
+
+Connect from the coding client:
+
+```python
+from pathlib import Path
+from workspace_sdk.agent_remote import RemoteClient
+
+client = RemoteClient(
+    "https://central.example.com:18443",
+    Path("/absolute/private/developer-token").read_text().strip(),
+    cafile="/absolute/private/central-ca.pem",  # omit for public trust
+)
+print(client.list_devices())
+print(client.request("inspect-a-1", "edge-a", "development", "inspect_project"))
+print(client.request("read-b-1", "edge-b", "development", "read_file", {"path": "flow.py"}))
+```
+
+Clients see only granted devices, each with `connected` or `unavailable` status. Status has a three-second lease, so a crashed connector becomes unavailable after at most that lease; it is not a guarantee of successful delivery. Client credentials cannot register devices; device credentials cannot call client endpoints or impersonate another device. Central grants authorize devices; the local agent independently authorizes project IDs, paths, and operations. Identical request IDs in concurrent calls are isolated by opaque delivery IDs; the original inner request and ID reach the local agent unchanged.
+
+### Relay contract and bounds
+
+Every endpoint is a JSON POST with a bearer token and no browser `Origin`. Client endpoints are `/devices` (empty object) and `/request` (`device_id` plus the unchanged local `request` object). Device endpoints are `/edge/register` (`device_id`), `/edge/poll` (`device_id`, `session`), `/edge/reply` (those plus `delivery_id`, `response`), and `/edge/disconnect` (`device_id`, `session`). Registration returns `result.session`; polling returns `result.delivery` as null or an object containing `delivery_id` and `request`. Replies must match the original request ID and the current session/device/delivery. Transport authentication failures use HTTP 401; denied grants 403; stale session/reply 409. Agent results retain their normal response shape. Client TLS/network failures raise transport errors; no fallback device is selected.
+
+Central accepts at most 32 pending routes and 64 simultaneous connections. Inner requests retain the local 64 KiB limit; relay envelopes/replies are capped at 1 MiB. Polls wait at most one second; routes wait at most three seconds. Pending routes/replies are discarded after completion or expiry and are never durable. Before delivery, expiry/disconnection returns `unavailable` and removes the queued request so it cannot be executed later. After a poll fetched a request, loss of its reply returns `delivery_unknown`: execution may have happened. This is not confirmation of cancellation. Remote mutations are disabled in both central and connector for this ticket, including requests to otherwise permitted local operations. No payload/token access logs are emitted.
+
+Verification: `test_agent_remote` uses temporary OpenSSL certificates with a localhost SAN, actual verified HTTPS requests, two independent local agent owners and outbound connectors, scoped authentication, local project/path checks, stale sessions, expired/delivered request errors, and real central/connector module processes. It rejects HTTP, untrusted CAs, and mismatched hostnames. This demonstrates the network topology on one macOS host, not physical Edge hardware or deployment across an untrusted public network.
