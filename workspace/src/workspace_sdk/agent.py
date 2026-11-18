@@ -77,7 +77,10 @@ class WorkspaceAgent:
             python = Path(project['python']).expanduser().absolute()
             if not root.is_dir() or not python.is_file() or not os.access(python, os.X_OK):
                 raise ValueError('Project root and executable Python interpreter are required.')
-            self.projects[name] = {'root': root, 'python': str(python)}
+            commands = project.get('commands', [])
+            if not isinstance(commands, list) or any(not isinstance(command, str) or (command != 'python' and not Path(command).is_absolute()) for command in commands):
+                raise ValueError('commands must list python or absolute executable paths.')
+            self.projects[name] = {'root': root, 'python': str(python), 'commands': commands}
 
     def dispatch(self, request):
         request_id = request.get('request_id') if isinstance(request, dict) else None
@@ -105,12 +108,31 @@ class WorkspaceAgent:
     def execute(self, project, operation, arguments):
         root = project['root']
         allowed = {'inspect_project': set(), 'list_files': {'path'}, 'read_file': {'path'}, 'search_code': {'query'},
+                   'run_command': {'program', 'argv', 'cwd'}, 'read_job_output': {'job_id', 'stream', 'cursor', 'limit'},
                    'validate_flow': {'sheet'}, 'run_flow': {'sheet', 'input'}, 'get_job': {'job_id'}, 'cancel_job': {'job_id'},
                    'write_file': {'path', 'revision', 'source'}, 'apply_patch': {'path', 'revision', 'old_text', 'new_text'}}
         if operation not in allowed:
             raise AgentError('unsupported_operation', 'Unsupported operation.')
         if set(arguments) - allowed[operation]:
             raise AgentError('invalid_arguments', 'Unexpected operation arguments.')
+        if operation == 'run_command':
+            program, argv = arguments.get('program'), arguments.get('argv')
+            if not isinstance(program, str) or not isinstance(argv, list) or any(not isinstance(arg, str) or '\x00' in arg for arg in argv):
+                raise AgentError('invalid_arguments', 'Provide program and an argv list of strings.', 'command')
+            if program not in project['commands']:
+                raise AgentError('denied', 'Command is not permitted in this project; ask the operator to configure commands.', 'authorization')
+            cwd = project_path(root, arguments.get('cwd', '.'))
+            if not cwd.is_dir():
+                raise AgentError('unavailable', 'Command cwd must be an accessible project directory.', 'command')
+            try:
+                return self.jobs.start_command(project, program, argv, cwd)
+            except (OSError, ValueError) as error:
+                raise AgentError('unavailable', str(error), 'command') from error
+        if operation == 'read_job_output':
+            try:
+                return self.jobs.output(project, **arguments)
+            except (ValueError, TypeError) as error:
+                raise AgentError('invalid_arguments', str(error), 'command') from error
         if operation in ('get_job', 'cancel_job'):
             if not isinstance(arguments.get('job_id'), str):
                 raise AgentError('invalid_arguments', 'A job_id is required.')

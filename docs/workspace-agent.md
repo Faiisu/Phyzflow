@@ -1,6 +1,6 @@
 # Workspace development agent
 
-The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution without a browser. General development commands, persistent jobs, central routing, and MCP are delivered by later tickets.
+The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution, and development command jobs without a browser. Persistent jobs, central routing, and MCP are delivered by later tickets.
 
 ## Start and connect
 
@@ -14,7 +14,8 @@ Create an operator-owned JSON configuration outside the project:
   "projects": {
     "development": {
       "root": "/absolute/path/to/workspace",
-      "python": "/absolute/path/to/workspace/.venv/bin/python"
+      "python": "/absolute/path/to/workspace/.venv/bin/python",
+      "commands": ["python"]
     }
   }
 }
@@ -67,6 +68,8 @@ POST `/request` with `Content-Type: application/json` and `Authorization: Bearer
 | `apply_patch` | Relative `path`, expected `revision`, `old_text`, `new_text` | New revision, path, created flag, bounded unified diff |
 | `validate_flow` | Optional sheet name `sheet`, default `Main` | `job_id` and initial `queued` status |
 | `run_flow` | Optional sheet name `sheet`, default `Main`; optional `input` object | `job_id` and initial `queued` status |
+| `run_command` | `program`, string list `argv`, optional project-relative `cwd` (default `.`) | `job_id` and initial `queued` status |
+| `read_job_output` | Command `job_id`; optional `stream` (`stdout`/`stderr`), byte `cursor` (default `0`), `limit` (1–16,384 bytes) | UTF-8 `content`, `next_cursor`, `total_bytes`, `truncated`, `complete` |
 | `get_job` | `job_id` belonging to this project | Current status and completed result or diagnostic |
 | `cancel_job` | `job_id` belonging to this project | Current status after requesting cancellation |
 
@@ -113,10 +116,40 @@ while True:
     time.sleep(0.1)
 ```
 
-Completed flow results include `run_id`, `source_version`, JSON-compatible `output`, and safe per-step history diagnostics, including failed and skipped nodes. Source versions describe the source loaded for execution, including uncommitted edits. A failed validation/import returns `error.stage`, exception type, message, and traceback with source locations. These authenticated development results remain in agent memory; they may contain sensitive text. Results are bounded to 128 KiB; non-JSON or larger results return a result-stage diagnostic. Raw worker stdout/stderr is not an output/log contract in this ticket.
+Completed flow results include `run_id`, `source_version`, JSON-compatible `output`, and safe per-step history diagnostics, including failed and skipped nodes. Source versions describe the source loaded for execution, including uncommitted edits. A failed validation/import returns `error.stage`, exception type, message, and traceback with source locations. These authenticated development results remain in agent memory; they may contain sensitive text. Results are bounded to 128 KiB; non-JSON or larger results return a result-stage diagnostic. Flow worker stdout/stderr is not exposed as command output.
 
 Execution uses the UI's Runner, node settings, and history recording. History excludes request values and request-derived exception text by default; explicit per-node sample capture keeps its existing behavior. If history cannot be written, successful output still returns with `history_error` and its source version. An already-open UI discovers agent runs, disables Run while active, and refreshes its shared completed history. External live state contains bounded status/timing/source fields only (at most 256 event entries and 128 KiB), without raw inputs, outputs, previews, or traceback text. Final output is available from `get_job`; the UI inspects the saved metadata and diagnostic locations.
 
 A per-sheet operating-system lock coordinates agent execution, UI execution, and UI reload. A conflicting start or explicit reload returns a conflict; automatic source reload waits for completion. Other sheets remain independent. Cancellation terminates the job's process group, waits up to two seconds, and kills an unresponsive worker before releasing its reservation. Poll until `cancelled` before starting another job. Interrupted runs do not receive a fabricated successful history record.
 
-Job state and raw results currently live only in agent memory and do not survive restart. Request deduplication, durable recovery, output paging, and service lifecycle belong to the persistence tickets. Do not blindly retry a start whose acknowledgement was lost.
+Job state and raw results currently live only in agent memory and do not survive restart. Request deduplication, durable recovery, and service lifecycle belong to the persistence tickets. Do not blindly retry a start whose acknowledgement was lost.
+
+
+## Development commands and output
+
+Command jobs require Linux or macOS. The operator explicitly enables commands per project with `commands`; omission or an empty list denies all commands. The special program `python` invokes that project's configured interpreter, preserving a virtual environment's executable path. Other entries must be absolute executable paths and match the request exactly. Requests use an argument list, never a shell string. `cwd` stays within the configured project; absolute paths, parent escapes, and symbolic links are rejected. Missing executables and environments report a command-stage error before a job starts.
+
+A command receives only `PATH` (the selected interpreter's directory followed by the operating system default executable path), `PYTHONNOUSERSITE=1`, and `PYTHONUNBUFFERED=1`. Ambient credentials, `PYTHONPATH`, and Python environment overrides are not inherited. Requests cannot supply environment variables or choose another interpreter. Commands can run arbitrary code within the agent account's operating-system permissions: authorizing Python or another executable does not sandbox its arguments or child processes. Grant development command access only to trusted clients and projects under an appropriately restricted account.
+
+For example, install a local wheel without contacting an index and then run the project's tests in the same environment:
+
+```python
+install = client.request("install-1", "development", "run_command", {
+    "program": "python",
+    "argv": ["-m", "pip", "install", "--no-index", "sample_dependency-1.0-py3-none-any.whl"],
+    "cwd": ".",
+})
+# Poll get_job as above until completion before running the tests.
+tests = client.request("tests-1", "development", "run_command", {
+    "program": "python", "argv": ["-m", "unittest", "discover", "-v"], "cwd": ".",
+})
+page = client.request("output-1", "development", "read_job_output", {
+    "job_id": tests["result"]["job_id"], "stream": "stderr", "cursor": 0, "limit": 4096,
+})
+```
+
+Command results use the existing `queued`, `running`, `succeeded`, `failed`, and `cancelled` statuses. Completed command jobs include `exit_code`; zero succeeds, nonzero fails, and a negative value reports the terminating POSIX signal. An assertion failure retains its test diagnostic in stderr. Jobs continue when the requesting HTTP client disconnects. Cancel through `cancel_job` and poll until terminal: the agent signals the entire managed process group and escalates to SIGKILL after two seconds even if the group leader already exited. Children must remain in the managed process group; the agent is not a sandbox against programs intentionally escaping the session.
+
+Output access requires the same bearer token and project authorization as job access. Each stream retains its first 128 KiB in memory and drains/discards subsequent bytes; concurrent readers prevent stdout/stderr pipe deadlocks. Each page reads at most 16 KiB of retained bytes. `next_cursor` is a byte offset; use it unchanged to resume, including while a command runs. `total_bytes` counts all drained bytes and `truncated` indicates discarded bytes. `complete` becomes true at the retained stream's end after the job finishes; an empty live page requires polling again. Content decodes UTF-8 with replacement, so a page boundary inside a multibyte character can show replacement characters. There is no implicit raw output in flow history or the Web UI.
+
+The agent retains at most 32 command jobs (running plus completed), each with at most 256 KiB of output across both streams. It rejects additional commands with an actionable retention-limit error, bounding command output memory to 8 MiB plus job/request bookkeeping and fixed pipe/read buffers. Restart clears these jobs and output. There is no automatic eviction, disk retention, restart recovery, or durable request deduplication yet. Do not retry a start after losing its acknowledgement. Raw development output can contain sensitive data; restrict the token, operating-system account, and agent lifetime accordingly.

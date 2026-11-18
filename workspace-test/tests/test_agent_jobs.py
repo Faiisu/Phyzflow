@@ -10,11 +10,12 @@ from workspace_sdk.agent import AgentClient, create_agent_server
 
 
 @contextmanager
-def running_agent(root, python=None, extra_projects=None):
+def running_agent(root, python=None, extra_projects=None, commands=None):
     token = root.parent / ('token-' + root.name)
     token.write_text('test-only-agent-jobs-token')
     token.chmod(0o600)
     config = {'token_file': str(token), 'projects': {'demo': {'root': str(root), 'python': python or sys.executable}}}
+    config['projects']['demo']['commands'] = commands or []
     config['projects'].update(extra_projects or {})
     with create_agent_server(config) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
