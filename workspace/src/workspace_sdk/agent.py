@@ -1,6 +1,7 @@
 """Local, authenticated development access to explicitly configured projects."""
 
 import argparse
+from difflib import unified_diff
 from hashlib import sha256
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +12,7 @@ import stat
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from .node_sources import SourceChanged, edit_source_file
 from .sheets import discover_flows
 
 MAX_READ_BYTES = 64 * 1024
@@ -88,18 +90,23 @@ class WorkspaceAgent:
                 raise AgentError('invalid_request', 'Expected an operation name and arguments object.')
             result = self.execute(self.projects[project_id], operation, arguments)
             return {'request_id': request_id, 'ok': True, 'result': result}
+        except SourceChanged:
+            return {'request_id': request_id, 'ok': False, 'error': {'code': 'conflict', 'stage': 'filesystem', 'message': 'Source changed. Read the latest revision before editing.'}}
         except AgentError as error:
             return {'request_id': request_id, 'ok': False, 'error': {'code': error.code, 'stage': error.stage, 'message': str(error)}}
-        except (OSError, UnicodeError, ValueError, RuntimeError):
+        except (OSError, UnicodeError, ValueError, RuntimeError, SyntaxError):
             return {'request_id': request_id, 'ok': False, 'error': {'code': 'unavailable', 'stage': 'filesystem', 'message': 'Could not access the requested project resource.'}}
 
     def execute(self, project, operation, arguments):
         root = project['root']
-        allowed = {'inspect_project': set(), 'list_files': {'path'}, 'read_file': {'path'}, 'search_code': {'query'}}
+        allowed = {'inspect_project': set(), 'list_files': {'path'}, 'read_file': {'path'}, 'search_code': {'query'},
+                   'write_file': {'path', 'revision', 'source'}, 'apply_patch': {'path', 'revision', 'old_text', 'new_text'}}
         if operation not in allowed:
             raise AgentError('unsupported_operation', 'Unsupported operation.')
         if set(arguments) - allowed[operation]:
             raise AgentError('invalid_arguments', 'Unexpected operation arguments.')
+        if operation in ('write_file', 'apply_patch'):
+            return self.edit_file(project, operation, arguments)
         if operation == 'inspect_project':
             sheets = [{'name': name, 'file': (path / 'flow.py').relative_to(root).as_posix()}
                       for name, path in discover_flows(root)
@@ -159,6 +166,41 @@ class WorkspaceAgent:
                     if read['truncated'] or line_truncated:
                         return {'matches': matches, 'truncated': True}
         return {'matches': matches, 'truncated': False}
+
+    def edit_file(self, project, operation, arguments):
+        root = project['root']
+        path = project_path(root, arguments.get('path'))
+        relative = path.relative_to(root)
+        if any(part.startswith('.') or part == '__pycache__' for part in relative.parts) or path.suffix not in {'.py', '.json', '.toml', '.html', '.css', '.js', '.md', '.txt'}:
+            raise AgentError('denied', 'Only project source and dashboard files can be edited.', 'filesystem')
+        revision = arguments.get('revision')
+        if not isinstance(revision, str) or not revision:
+            raise AgentError('invalid_arguments', 'An expected revision is required.')
+        exists = path.exists()
+        if not exists and revision != 'missing':
+            raise SourceChanged
+        before = edit_source_file(path, None, None, initial='' if not exists else None)
+        if before['revision'] != revision:
+            raise SourceChanged
+        if operation == 'write_file':
+            source = arguments.get('source')
+            if not isinstance(source, str):
+                raise AgentError('invalid_arguments', 'source must be text.')
+        else:
+            old, new = arguments.get('old_text'), arguments.get('new_text')
+            if not exists or not isinstance(old, str) or not old or not isinstance(new, str):
+                raise AgentError('invalid_arguments', 'A patch requires an existing file and nonempty old_text plus new_text.')
+            if before['source'].count(old) != 1:
+                raise AgentError('invalid_patch', 'old_text must match exactly one location.', 'filesystem')
+            source = before['source'].replace(old, new, 1)
+        if len(source.encode('utf-8')) > 128 * 1024:
+            raise AgentError('invalid_arguments', 'Source must fit in 128 KiB.')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        updated = edit_source_file(path, source, revision, initial='' if not exists else None)
+        diff = ''.join(unified_diff(before['source'].splitlines(keepends=True), source.splitlines(keepends=True),
+                                    fromfile=relative.as_posix(), tofile=relative.as_posix()))
+        return {**updated, 'path': relative.as_posix(), 'created': not exists,
+                'diff': diff[:16384], 'diff_truncated': len(diff) > 16384}
 
 
 def create_agent_server(config: dict, port=0):
