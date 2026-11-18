@@ -1,0 +1,20 @@
+test_discovery_edit_jobs_and_authorization_through_actual_mcp (test_agent_mcp.MCPAgentTests.test_discovery_edit_jobs_and_authorization_through_actual_mcp) ... Tool 'read_file' rejected arguments: ['path', 'project_id', 'request_id']
+ok
+test_central_and_connector_module_launchers_use_private_configuration (test_agent_remote.RemoteAgentTests.test_central_and_connector_module_launchers_use_private_configuration) ... ok
+test_central_restart_reconnects_to_original_live_job_and_output (test_agent_remote.RemoteAgentTests.test_central_restart_reconnects_to_original_live_job_and_output) ... ok
+test_client_and_device_authentication_and_local_project_permissions (test_agent_remote.RemoteAgentTests.test_client_and_device_authentication_and_local_project_permissions) ... ok
+test_disconnected_cancel_is_not_queued_and_explicit_retry_cancels_original (test_agent_remote.RemoteAgentTests.test_disconnected_cancel_is_not_queued_and_explicit_retry_cancels_original) ... ok
+test_expired_queued_mutations_are_removed_and_delivered_timeout_is_uncertain (test_agent_remote.RemoteAgentTests.test_expired_queued_mutations_are_removed_and_delivered_timeout_is_uncertain) ... ok
+test_lost_command_ack_retry_starts_once_and_ids_are_device_project_scoped (test_agent_remote.RemoteAgentTests.test_lost_command_ack_retry_starts_once_and_ids_are_device_project_scoped) ... ok
+test_remote_edit_validate_run_and_failures_use_edge_jobs (test_agent_remote.RemoteAgentTests.test_remote_edit_validate_run_and_failures_use_edge_jobs) ... ok
+test_replaced_connector_exits_without_reclaiming_new_session (test_agent_remote.RemoteAgentTests.test_replaced_connector_exits_without_reclaiming_new_session) ... ok
+test_replaced_session_cannot_poll_or_reply_for_new_device_connection (test_agent_remote.RemoteAgentTests.test_replaced_session_cannot_poll_or_reply_for_new_device_connection) ... ok
+test_slow_local_ack_keeps_device_live_and_retry_preserves_effect_identity (test_agent_remote.RemoteAgentTests.test_slow_local_ack_keeps_device_live_and_retry_preserves_effect_identity) ... ok
+test_tls_requires_trusted_certificate_and_matching_hostname (test_agent_remote.RemoteAgentTests.test_tls_requires_trusted_certificate_and_matching_hostname) ... ok
+test_two_outbound_agents_route_distinct_project_contents (test_agent_remote.RemoteAgentTests.test_two_outbound_agents_route_distinct_project_contents) ... ok
+test_unavailable_and_disconnected_devices_return_explicit_errors (test_agent_remote.RemoteAgentTests.test_unavailable_and_disconnected_devices_return_explicit_errors) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 41.255s
+
+OK

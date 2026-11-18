@@ -12,6 +12,8 @@ The numbered tickets follow the dependency sequence in [the spec](spec.md).
 
 - [Ticket 07](issues/07-remote-edit-run-and-reconnect.md): All existing development operations now route through TLS to the sole Edge owner. Automatic reconnect resumes known sessions or re-registers after central restart; replaced connectors exit. Session heartbeats retain the lease during slow acknowledgements, while expired routes return uncertainty. Same-ID retries use the Edge ledger; central never replays work or owns job state. Real edit/run, delayed acknowledgements, original-job restart/output/cancel, and device/project isolation evidence is recorded in the ticket.
 
+- [Ticket 08](issues/08-build-and-debug-through-mcp.md): Optional MCP 2.3.0 stdio frontend bridges existing authenticated central HTTPS, with 13 typed explicit-target tools and unchanged Edge ownership/retry semantics. Actual interactive AI discovery/edit/nested-error/repair, offline dependency/test jobs, and same run/source inspection in Chromium are preserved in [evidence](evidence/08/README.md). Real MCP-to-TLS-to-Edge authorization, stale revision, bounded output/cancel and disconnected-target checks pass; plain SDK discovery skips only optional MCP tests. No public HTTP MCP service is claimed.
+
 ## Fog
 
 - Ubuntu 24.04/systemd manager installation/startup/boot behavior awaits a Linux target. Real module lifecycle, disconnect, duplicate, and restart checks pass on macOS; no Linux manager result is claimed.
