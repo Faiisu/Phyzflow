@@ -500,6 +500,3 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     )
                     self.assertTrue(rejected_after_restart.is_error)
                     self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
-
-
-

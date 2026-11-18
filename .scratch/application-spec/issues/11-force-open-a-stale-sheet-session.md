@@ -14,7 +14,7 @@
 
 ## Verification
 
-Browser and MCP acceptance passed on macOS with CPython 3.12.11 and Google Chrome. All 38 tests in `test_application*.py` passed in 175.757s against the installed `workspace app` entry point, including all 4 tests in `workspace-test/tests/test_application_force_open.py` and all 5 tests in `workspace-test/tests/test_application_edit_locks.py`.
+Browser and MCP acceptance passed on macOS with CPython 3.12.11 and Google Chrome. All 43 tests in `test_application*.py` passed in 192.112s against the installed `workspace app` entry point, including all 4 tests in `workspace-test/tests/test_application_force_open.py` and all 5 tests in `workspace-test/tests/test_application_edit_locks.py`.
 
 - Idle MCP sessions sending `heartbeat_sheet` every 15 seconds retain their sheet lock across >60 seconds without becoming stale; stopping heartbeats for 45 seconds or aborting an in-flight `validate_flow` call (`mark_disconnected`) marks the session `Possibly stale` (and `Disconnected` on unclean disconnect) in the Workspace bar, `Edit flow.py`, and node files views.
 - Clicking **Force Open** opens the confirmation dialog showing the lock owner, formatted UTC last heartbeat timestamp, session status (`Possibly stale` / `Active` / `Possibly stale (Disconnected)`), and the effect on unsaved edits; cancelling leaves the lock and read-only enforcement untouched.
