@@ -6,6 +6,7 @@
   <title>Phyzflow | Workspaces</title>
   <link rel="stylesheet" href="/workspace.css">
   <script type="module" src="/landing.js"></script>
+  <script type="module" src="/mcp-access.js"></script>
 </head>
 <body class="landing">
   <main class="workspace-list">
@@ -14,6 +15,7 @@
       <div class="workspace-list-actions">
         <button type="button" id="new-workspace">Create Workspace</button>
         <button type="button" id="add-workspace">Add Workspace</button>
+        <button type="button" id="open-mcp-access">MCP access</button>
       </div>
     </header>
     <p id="workspace-list-message" role="status">Loading Workspaces…</p>
@@ -30,6 +32,33 @@
       <div class="dialog-actions">
         <button type="button" id="cancel-workspace">Cancel</button>
         <button type="submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="mcp-access" class="sheet-dialog" aria-labelledby="mcp-access-title">
+    <form autocomplete="off">
+      <h2 id="mcp-access-title">MCP access</h2>
+      <label for="mcp-token-choice">Token</label>
+      <select id="mcp-token-choice" name="identity"></select>
+      <div id="mcp-client-details">
+        <label for="mcp-client-name">Client name</label>
+        <input id="mcp-client-name" name="name" maxlength="80" required>
+      </div>
+      <fieldset id="mcp-workspaces">
+        <legend>Workspace grants</legend>
+        <div id="mcp-workspace-options"></div>
+      </fieldset>
+      <div id="mcp-issued-token" hidden>
+        <label for="mcp-secret">MCP bearer token</label>
+        <input id="mcp-secret" type="text" readonly spellcheck="false" autocapitalize="off">
+        <p class="dialog-hint">Copy this token now. Phyzflow only displays it once.</p>
+      </div>
+      <p id="mcp-access-status" role="status"></p>
+      <p id="mcp-access-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="close-mcp-access">Close</button>
+        <button type="button" id="revoke-mcp-token" hidden>Revoke token</button>
+        <button type="submit" id="save-mcp-token">Issue token</button>
       </div>
     </form>
   </dialog>

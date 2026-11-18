@@ -130,7 +130,7 @@ To check whether Workspace found a custom sheet such as **Whisper Medium ASR**, 
 Run the verification suite and demo benchmark in a checkout with the original sample flow, before the node exercise or in a separate checkout. Install Google Chrome and the optional test dependencies. From the repository root:
 
 ```sh
-uv pip install ./workspace './workspace-test[verification]'
+uv pip install './workspace[mcp]' './workspace-test[verification]'
 cd workspace-test
 ../.venv/bin/python -m unittest discover -s tests -v
 ../.venv/bin/python benchmark.py direct

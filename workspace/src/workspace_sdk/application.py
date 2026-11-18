@@ -13,6 +13,10 @@ from urllib.parse import parse_qs
 from uuid import uuid4
 
 from .application_auth import Administrator
+from .application_mcp import (
+    MCP_BODY_LIMIT, MCP_REQUEST_HEADERS, MCP_RESPONSE_HEADERS, TOKEN_PATH,
+    McpTokens, WorkspaceAccess, mcp_transport,
+)
 from .sheets import discover_flows, initialize_workspace
 from .ui_settings import load_ui_settings
 from .web import STATIC, UIRequestHandler, ui_address
@@ -24,6 +28,7 @@ WORKSPACE_PATH = re.compile(r"/workspaces/([0-9a-f]{32})(/.*)?")
 ASSETS = {
     "/": ("landing.html", "text/html"),
     "/landing.js": ("landing.js", "text/javascript"),
+    "/mcp-access.js": ("mcp-access.js", "text/javascript"),
     "/workspace.css": ("workspace.css", "text/css"),
 }
 
@@ -128,17 +133,34 @@ def add_workspace(root: Path) -> None:
 def serve_application(state_dir: Path, port: int) -> None:
     administrator = Administrator(state_dir)
     registry = WorkspaceRegistry(state_dir)
+    tokens = McpTokens(administrator.directory)
     mounted = {}
     lock = Lock()
     shutting_down = False
+
+    def mount_workspace(workspace_id: str, root: Path):
+        with lock:
+            if shutting_down:
+                raise RuntimeError("The application is shutting down.")
+            if workspace_id not in mounted:
+                mounted[workspace_id] = workspace_routes(
+                    root, discover_flows(root), load_ui_settings(root, port),
+                    interpreter=workspace_interpreter(root),
+                )
+            return mounted[workspace_id]
+
+    access = WorkspaceAccess(tokens, registry, lambda workspace_id, root: mount_workspace(workspace_id, root)[2])
 
     class Handler(UIRequestHandler):
         def end_headers(self) -> None:
             self.send_header("X-Frame-Options", "SAMEORIGIN")
             super().end_headers()
 
+        def request_origin(self) -> str:
+            return f"http://{self.headers['Host']}"
+
         def valid_post_origin(self) -> bool:
-            return self.local_request() and self.headers.get_all("Origin") == [f"http://{self.headers['Host']}"]
+            return self.local_request() and self.headers.get_all("Origin") == [self.request_origin()]
 
         def redirect(self, path: str, *, cookie: str | None = None) -> None:
             self.send_response(HTTPStatus.SEE_OTHER)
@@ -181,20 +203,14 @@ def serve_application(state_dir: Path, port: int) -> None:
         def workspace(self, route: re.Match) -> None:
             workspace_id, path = route.groups()
             try:
-                with lock:
-                    if shutting_down:
-                        self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
-                        return
-                    root = registry.get(workspace_id)
-                    if root is None or not root.is_dir():
-                        self.send_json({"error": "This Workspace folder is unavailable."}, HTTPStatus.NOT_FOUND)
-                        return
-                    if workspace_id not in mounted:
-                        mounted[workspace_id] = workspace_routes(
-                            root, discover_flows(root), load_ui_settings(root, port),
-                            interpreter=workspace_interpreter(root),
-                        )
-                    dispatch, _, _ = mounted[workspace_id]
+                root = registry.get(workspace_id)
+                if root is None or not root.is_dir():
+                    self.send_json({"error": "This Workspace folder is unavailable."}, HTTPStatus.NOT_FOUND)
+                    return
+                dispatch, _, _ = mount_workspace(workspace_id, root)
+            except RuntimeError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
             except (OSError, ValueError, sqlite3.Error) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
@@ -205,7 +221,75 @@ def serve_application(state_dir: Path, port: int) -> None:
                 return
             dispatch(self, path)
 
+        def mcp_request(self) -> None:
+            if (
+                not self.local_request() or len(self.headers.get_all("Host", [])) != 1
+                or self.headers.get_all("Origin") not in (None, [self.request_origin()])
+            ):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            identity = tokens.authenticate(self.headers.get_all("Authorization", []))
+            if identity is None:
+                self.send_json({"error": "A valid MCP bearer token is required."}, HTTPStatus.UNAUTHORIZED)
+                return
+            lengths = self.headers.get_all("Content-Length", [])
+            try:
+                size = int(lengths[0]) if lengths else 0
+                if len(lengths) > 1 or "Transfer-Encoding" in self.headers or size < 0:
+                    raise ValueError
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            if size > MCP_BODY_LIMIT:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            headers = [(name, value) for name, value in self.headers.items() if name.lower() in MCP_REQUEST_HEADERS]
+            result = send_mcp(identity, self.command, headers, self.rfile.read(size))
+            self.send_response(result.status_code)
+            for name, value in result.headers.items():
+                if name in MCP_RESPONSE_HEADERS:
+                    self.send_header(name, value)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(result.content)))
+            self.end_headers()
+            self.wfile.write(result.content)
+
+        def token_list(self) -> None:
+            try:
+                self.send_json({"tokens": tokens.entries(), "workspaces": registry.entries()})
+            except sqlite3.Error:
+                self.send_json({"error": "Could not read MCP access settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def change_token(self, identity: str | None) -> None:
+            try:
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("Send a JSON object with the MCP access settings.")
+                body = self.read_json_dict(64 * 1024)
+                if identity is not None and body.get("action") == "revoke":
+                    tokens.revoke(identity)
+                    self.send_json({})
+                    return
+                selected = body.get("workspace_ids")
+                registered = {entry["id"] for entry in registry.entries()}
+                if not isinstance(selected, list) or any(type(item) is not str or item not in registered for item in selected):
+                    raise ValueError("Select registered Workspaces.")
+                selected = list(dict.fromkeys(selected))
+                if identity is None:
+                    self.send_json(tokens.issue(body.get("name"), selected), HTTPStatus.CREATED)
+                else:
+                    tokens.reassign(identity, selected)
+                    self.send_json({})
+            except ValueError as error:
+                self.send_json({"error": str(error) or "Send valid MCP access settings."}, HTTPStatus.BAD_REQUEST)
+            except KeyError:
+                self.send_json({"error": "This MCP token is unavailable."}, HTTPStatus.NOT_FOUND)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not update MCP access settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
         def do_GET(self) -> None:
+            if self.path == "/mcp":
+                self.mcp_request()
+                return
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
@@ -227,6 +311,8 @@ def serve_application(state_dir: Path, port: int) -> None:
                     self.send_json({"error": "Could not read the Workspace registry."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 else:
                     self.send_json({"workspaces": entries})
+            elif self.path == "/mcp-tokens":
+                self.token_list()
             elif self.path in ASSETS:
                 asset, content_type = ASSETS[self.path]
                 self.send_bytes((STATIC / asset).read_bytes(), f"{content_type}; charset=utf-8")
@@ -234,6 +320,9 @@ def serve_application(state_dir: Path, port: int) -> None:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:
+            if self.path == "/mcp":
+                self.mcp_request()
+                return
             if not self.valid_post_origin():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
@@ -245,6 +334,9 @@ def serve_application(state_dir: Path, port: int) -> None:
                 return
             if route := WORKSPACE_PATH.fullmatch(self.path):
                 self.workspace(route)
+                return
+            if route := TOKEN_PATH.fullmatch(self.path):
+                self.change_token(route[1])
                 return
             if self.path != "/workspaces":
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -262,8 +354,14 @@ def serve_application(state_dir: Path, port: int) -> None:
             else:
                 self.send_json({"id": workspace_id}, HTTPStatus.CREATED)
 
+        def do_DELETE(self) -> None:
+            if self.path == "/mcp":
+                self.mcp_request()
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+
     try:
-        with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
+        with mcp_transport(access) as send_mcp, ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
             print(f"Phyzflow: {ui_address('127.0.0.1', server.server_port)}", flush=True)
             if administrator.initial_password.is_file():
                 print(f"Sign in as admin with the initial password in {administrator.initial_password}.", flush=True)
