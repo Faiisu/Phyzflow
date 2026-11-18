@@ -663,4 +663,3 @@ class ApplicationEditLocksTests(unittest.TestCase):
                     self.assertEqual(output(stopped)["status"], "stopped")
                     wait_for(lambda: process_exited(second_pid))
                     expect(page.get_by_role("tab", name="Main")).to_contain_text("Stopped")
-
