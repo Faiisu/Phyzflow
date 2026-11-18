@@ -625,6 +625,7 @@ const executionStarted = document.querySelector("#execution-started");
 const executionFinished = document.querySelector("#execution-finished");
 const executionDuration = document.querySelector("#execution-duration");
 const executionMetrics = document.querySelector("#execution-metrics");
+const executionMetricsHeading = document.querySelector("#execution-metrics-heading");
 const executionMetricGroups = document.querySelector("#execution-metric-groups");
 const currentNodeTiming = new Map();
 const completedRunStates = ["succeeded", "failed"];
@@ -670,7 +671,7 @@ function renderInspectorExecution() {
   const timing = currentNodeTiming.get(activeNode);
   executionTiming.hidden = !timing;
   executionNote.hidden = Boolean(timing);
-  renderExecutionMetrics(currentRunFinished ? timing?.metrics : null);
+  renderExecutionMetrics(timing);
 
   if (!timing) {
     executionNote.textContent = currentRunId
@@ -689,7 +690,10 @@ function renderInspectorExecution() {
   executionDuration.textContent = skipped ? "Not measured" : formatDuration(timing.duration_ms) || (running ? "Running" : "Unavailable");
 }
 
-function renderExecutionMetrics(metrics) {
+function renderExecutionMetrics(timing) {
+  const live = timing?.status === "running";
+  const metrics = live ? timing.liveMetrics : currentRunFinished ? timing?.metrics : null;
+  executionMetricsHeading.textContent = live ? "Live progress and metrics" : "Operational metrics";
   const groups = Object.entries(metrics ?? {}).map(([name, values], index) => {
     const group = element("div", "", "execution-metric-group");
     const title = element("h4", name);
@@ -720,10 +724,20 @@ function trackInspectorExecution(message) {
     return;
   }
 
+  if (message.live_metrics) {
+    const timing = currentNodeTiming.get(message.step_id);
+    if (message.run_id !== currentRunId || timing?.status !== "running") return;
+    const groups = { ...timing.liveMetrics, ...message.live_metrics };
+    timing.liveMetrics = Object.fromEntries(Object.entries(groups).slice(-8));
+    if (activeNode === message.step_id) renderExecutionMetrics(timing);
+    return;
+  }
+
   const timing = currentNodeTiming.get(message.step_id) ?? {};
   timing.status = message.status;
   if (message.status === "running") {
     timing.started_at = message.time;
+    delete timing.liveMetrics;
   } else if (message.status !== "skipped") {
     timing.finished_at = message.time;
     timing.duration_ms = message.duration_ms;
@@ -1051,7 +1065,7 @@ function showMessage(message) {
     if (follow) pane.scrollTop = pane.scrollHeight;
     return;
   }
-  if (message.live_frame || message.live_metrics || message.setting_change) return;
+  if (message.live_frame || message.setting_change) return;
   if (message.output_preview !== undefined) {
     if (!liveOutput) {
       liveOutput = element("section");
@@ -1064,6 +1078,7 @@ function showMessage(message) {
     return;
   }
   trackInspectorExecution(message);
+  if (message.live_metrics) return;
   if (message.history_error) {
     result.append(element("p", message.history_error, "error"));
     return;
