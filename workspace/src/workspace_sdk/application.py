@@ -9,8 +9,10 @@ from shutil import rmtree
 import sqlite3
 import subprocess
 from threading import Lock
+from urllib.parse import parse_qs
 from uuid import uuid4
 
+from .application_auth import Administrator
 from .sheets import discover_flows, initialize_workspace
 from .ui_settings import load_ui_settings
 from .web import STATIC, UIRequestHandler, ui_address
@@ -124,12 +126,58 @@ def add_workspace(root: Path) -> None:
 
 
 def serve_application(state_dir: Path, port: int) -> None:
+    administrator = Administrator(state_dir)
     registry = WorkspaceRegistry(state_dir)
     mounted = {}
     lock = Lock()
     shutting_down = False
 
     class Handler(UIRequestHandler):
+        def end_headers(self) -> None:
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            super().end_headers()
+
+        def valid_post_origin(self) -> bool:
+            return self.local_request() and self.headers.get_all("Origin") == [f"http://{self.headers['Host']}"]
+
+        def redirect(self, path: str, *, cookie: str | None = None) -> None:
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", path)
+            self.send_header("Cache-Control", "no-store")
+            if cookie is not None:
+                self.send_header("Set-Cookie", cookie)
+            self.end_headers()
+
+        def sign_in_page(self, *, invalid: bool = False) -> None:
+            page = (STATIC / "sign-in.html").read_bytes()
+            if invalid:
+                page = page.replace(b'role="alert" hidden', b'role="alert"')
+            self.send_response(HTTPStatus.UNAUTHORIZED if invalid else HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'")
+            self.end_headers()
+            self.wfile.write(page)
+
+        def sign_in(self) -> None:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get_content_type() != "application/x-www-form-urlencoded" or not 0 < size <= 8192:
+                    raise ValueError
+                fields = parse_qs(self.rfile.read(size).decode(), strict_parsing=True, max_num_fields=2)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            cookie = administrator.sign_in(fields.get("username", [""])[0], fields.get("password", [""])[0])
+            if cookie is None:
+                self.sign_in_page(invalid=True)
+            else:
+                self.redirect("/", cookie=cookie)
+
+        def authenticated(self) -> bool:
+            return administrator.authenticated(self.headers.get("Cookie", ""))
+
         def workspace(self, route: re.Match) -> None:
             workspace_id, path = route.groups()
             try:
@@ -161,6 +209,15 @@ def serve_application(state_dir: Path, port: int) -> None:
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if self.path == "/login":
+                self.sign_in_page()
+                return
+            if self.path != "/workspace.css" and not self.authenticated():
+                if "text/html" in self.headers.get("Accept", ""):
+                    self.redirect("/login")
+                else:
+                    self.send_json({"error": "Sign in to Phyzflow."}, HTTPStatus.UNAUTHORIZED)
+                return
             if route := WORKSPACE_PATH.fullmatch(self.path):
                 self.workspace(route)
             elif self.path == "/workspaces":
@@ -179,6 +236,12 @@ def serve_application(state_dir: Path, port: int) -> None:
         def do_POST(self) -> None:
             if not self.valid_post_origin():
                 self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if self.path == "/login":
+                self.sign_in()
+                return
+            if not self.authenticated():
+                self.send_json({"error": "Sign in to Phyzflow."}, HTTPStatus.UNAUTHORIZED)
                 return
             if route := WORKSPACE_PATH.fullmatch(self.path):
                 self.workspace(route)
@@ -202,6 +265,8 @@ def serve_application(state_dir: Path, port: int) -> None:
     try:
         with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
             print(f"Phyzflow: {ui_address('127.0.0.1', server.server_port)}", flush=True)
+            if administrator.initial_password.is_file():
+                print(f"Sign in as admin with the initial password in {administrator.initial_password}.", flush=True)
             try:
                 server.serve_forever()
             except KeyboardInterrupt:

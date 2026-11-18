@@ -13,6 +13,14 @@ See the [development plan](../docs/development-plan.md) for the implementation o
 
 Build a release on macOS from the repository root with `sh workspace/release/macos/build.sh`. The ZIP is written to `workspace/dist/` by default. The build uses the local Mac architecture and ad-hoc signing for local use.
 
+## Sign in to the local Phyzflow application
+
+Run `workspace app` from an environment with the SDK installed. Open the loopback address printed by the application. Use `--state-dir` to choose a separate state directory for another installation.
+
+On first startup Phyzflow generates a password for the built-in `admin` account. Read the password on the host from `~/.phyzflow/admin/initial-password` or from `admin/initial-password` under your selected state directory. The application account owns the directory and can read the file. Save the password securely and remove the delivery file once you have signed in. Phyzflow keeps the password verifier in the state directory and uses the same credential on subsequent starts. The browser session lasts up to 12 hours and ends when the application restarts.
+
+Keep application state separate from Workspace folders.
+
 ## Work on a selected project from the CLI
 
 Use the `workspace` executable installed in the project's Python environment. Run these commands from any directory:

@@ -8,7 +8,7 @@ from zipfile import ZipFile
 from playwright.sync_api import expect
 
 from browser_support import browser_page
-from test_application import application
+from test_application import application, sign_in
 
 
 def add_workspace(page, root):
@@ -50,7 +50,7 @@ class AddWorkspaceTests(unittest.TestCase):
             original = source.read_bytes()
 
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 add_workspace(page, root)
                 workspace = page.get_by_role("link", name=root.name)
                 expect(workspace).to_be_visible(timeout=20_000)
@@ -85,7 +85,7 @@ class AddWorkspaceTests(unittest.TestCase):
             original_config = config.read_bytes()
 
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 add_workspace(page, root)
                 page.get_by_role("link", name=root.name).click()
                 for name in ("Main", "Second"):
@@ -109,7 +109,7 @@ class AddWorkspaceTests(unittest.TestCase):
             ], check=True)
 
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 for root, environment_file, problem in (
                     (broken, marker, "is broken"),
                     (incompatible, incompatible / ".venv" / "pyvenv.cfg", "uses Python 3.11"),
@@ -143,7 +143,7 @@ class AddWorkspaceTests(unittest.TestCase):
             alias.symlink_to(root, target_is_directory=True)
 
             with application(state) as url:
-                page.goto(url)
+                sign_in(page, url, state)
                 add_workspace(page, root)
                 expect(page.get_by_role("link", name=root.name)).to_be_visible()
                 for candidate, problem in (
