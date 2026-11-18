@@ -21,8 +21,9 @@ from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
 from .execution import FlowBusy, sheet_busy, sheet_lock
+from .history import RunHistory
 from .project import ValidationError, load_project
-from .sheet_runs import SheetRun
+from .sheet_runs import RunStateStore, SheetRun
 from .sheets import (
     archive_sheet_directory,
     can_delete_sheet,
@@ -115,6 +116,9 @@ class FlowSheet:
         self, title: str, root: Path, zoom: ZoomSettings, *,
         main: bool = False, interpreter: Path | None = None,
         workspace_closing: Callable[[], bool] = lambda: False,
+        workspace_id: str | None = None,
+        sheet_key: str | None = None,
+        run_state: RunStateStore | None = None,
     ):
         self.title = title
         self.root = root
@@ -127,6 +131,10 @@ class FlowSheet:
         self.main = main
         self.interpreter = interpreter
         self.workspace_closing = workspace_closing
+        self.workspace_id = workspace_id
+        self.sheet_key = sheet_key
+        self.run_state = run_state
+        self.run_generation = 0
         self.attempted_source: str | None = None
         self.attempt: SheetRun | None = None
 
@@ -172,7 +180,7 @@ class FlowSheet:
                 replacing = self.interpreter is not None
 
             active = self.attempt
-            if attempt is None and active is not None and active.status != "running" and (stopped or not active.crash_exhausted):
+            if attempt is None and active is not None and active.status != "running" and (stopped or reload):
                 self.attempt = None
             self.attempted_source = automatic_source or source_stamp(self.root, main=self.main)
             self.inactive_status = "opening"
@@ -201,7 +209,13 @@ class FlowSheet:
             return self._start_attempt(inputs)
 
     def _start_attempt(self, inputs: dict | None, *, retry_count: int = 0) -> SheetRun:
-        attempt = self.attempt = SheetRun(inputs, retry_count=retry_count)
+        self.run_generation += 1
+        attempt = SheetRun(inputs, retry_count=retry_count, generation=self.run_generation)
+        if self.run_state is not None and self.workspace_id is not None and self.sheet_key is not None:
+            self.run_state.record_running(
+                self.workspace_id, self.sheet_key, attempt.generation, attempt.run_id, inputs,
+            )
+        self.attempt = attempt
         Thread(target=self.collect_run, args=(attempt,), daemon=True).start()
         return attempt
 
@@ -238,6 +252,10 @@ class FlowSheet:
                 attempt.crash_exhausted = True
                 error = f"The flow process exited after {MAX_CRASH_RETRIES} automatic restart attempts."
             attempt.finish(status, error)
+            if self.run_state is not None and self.workspace_id is not None and self.sheet_key is not None:
+                self.run_state.record_terminal(
+                    self.workspace_id, self.sheet_key, attempt.generation, attempt.run_id, status, error,
+                )
 
     def start_worker(self) -> None:
         with TemporaryDirectory(prefix="phyzflow-sheet-") as directory:
@@ -292,6 +310,15 @@ class FlowSheet:
         with self.lock:
             if shutdown:
                 self.closing = True
+            else:
+                self.run_generation += 1
+                if self.run_state is not None and self.workspace_id is not None and self.sheet_key is not None:
+                    self.run_state.record_stopped(
+                        self.workspace_id,
+                        self.sheet_key,
+                        self.run_generation,
+                        self.attempt.run_id if self.attempt else "",
+                    )
             self.stop_run()
 
     def stop_run(self) -> None:
@@ -315,12 +342,19 @@ class FlowSheet:
             self.stop_run()
             self.root.rename(destination)
             self.closing = True
+            if self.run_state is not None and self.workspace_id is not None and self.sheet_key is not None:
+                self.run_state.delete_sheet(self.workspace_id, self.sheet_key)
 
     def status(self) -> str:
         attempt = self.attempt
         if self.inactive_status == "stopping":
             return "stopping"
-        if attempt is not None and (attempt.status == "running" or self.inactive_status != "stopped"):
+        if attempt is not None and (
+            attempt.status == "running"
+            or self.inactive_status not in ("stopped", "unavailable")
+            or attempt.crash_exhausted
+            or attempt.start_error is not None
+        ):
             return attempt.status
         return self.worker_status()
 
@@ -379,16 +413,98 @@ def workspace_routes(
     settings: UISettings,
     *,
     interpreter: Path | None = None,
+    workspace_id: str | None = None,
+    run_state: RunStateStore | None = None,
+    app_closing: Callable[[], bool] = lambda: False,
 ):
     def make_sheet(title: str, path: Path) -> FlowSheet:
+        sheet_key = "." if path == root else path.relative_to(root).as_posix()
         return FlowSheet(
             title, path, settings.zoom, main=path == root, interpreter=interpreter,
-            workspace_closing=lambda: closing,
+            workspace_closing=lambda: closing or app_closing(),
+            workspace_id=workspace_id, sheet_key=sheet_key, run_state=run_state,
         )
 
     closing = False
     sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
     sheets_lock = Lock()
+
+    def restore_states() -> None:
+        if run_state is None or workspace_id is None:
+            return
+        states = run_state.workspace_states(workspace_id)
+        if not states:
+            return
+        to_start: list[tuple[FlowSheet, dict | None, int]] = []
+        for sheet in list(sheets):
+            if sheet is None or sheet.sheet_key is None or sheet.sheet_key not in states:
+                continue
+            saved = states[sheet.sheet_key]
+            sheet.run_generation = max(sheet.run_generation, saved["generation"])
+            status = saved["status"]
+            error = saved["error"]
+            if status == "running":
+                try:
+                    record = RunHistory(sheet.root).read(saved["run_id"])
+                except (OSError, ValueError):
+                    record = None
+                if record is not None and record.get("status") in ("succeeded", "failed"):
+                    status = record["status"]
+                    error = None
+                    run_state.record_terminal(
+                        workspace_id, sheet.sheet_key, saved["generation"], saved["run_id"], status,
+                    )
+            if status == "running":
+                to_start.append((sheet, saved["replay_input"], saved["generation"]))
+            elif status == "stopped":
+                sheet.inactive_status = "stopped"
+            elif status in ("succeeded", "failed"):
+                sheet.attempt = SheetRun(
+                    None,
+                    generation=saved["generation"],
+                    run_id=saved["run_id"],
+                    status=status,
+                    start_error=error,
+                )
+                sheet.inactive_status = "ready"
+
+        def start_restored(sheet: FlowSheet, replay_input: dict | None, generation: int) -> None:
+            deadline = monotonic() + 5
+            while not closing and not app_closing() and sheet_busy(sheet.root) and monotonic() < deadline:
+                sleep(.05)
+            if closing or app_closing():
+                return
+            try:
+                sheet.start_run(replay_input)
+            except (FlowBusy, OSError, RuntimeError, ValueError) as failure:
+                with sheet.lock:
+                    if sheet.attempt is None and not (closing or app_closing()):
+                        sheet.run_generation = max(sheet.run_generation, generation) + 1
+                        sheet.attempt = SheetRun(
+                            None,
+                            generation=sheet.run_generation,
+                            status="failed",
+                            start_error=str(failure),
+                        )
+                        run_state.record_terminal(
+                            workspace_id,
+                            sheet.sheet_key,
+                            sheet.attempt.generation,
+                            sheet.attempt.run_id,
+                            "failed",
+                            str(failure),
+                        )
+
+        if to_start:
+            with ThreadPoolExecutor(max_workers=len(to_start)) as pool:
+                futures = [
+                    pool.submit(start_restored, sheet, replay_input, generation)
+                    for sheet, replay_input, generation in to_start
+                ]
+                for future in futures:
+                    future.result()
+
+    restore_states()
 
     def resolve_sheet(sheet_path: Path) -> FlowSheet:
         target = sheet_path.resolve()
@@ -687,7 +803,7 @@ def workspace_routes(
             try:
                 revision = sheet.open(reload=command[2].startswith("reload"), automatic_source=command[3])
                 prefix = f"/revision/{revision}" if revision else ""
-                self.request.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision})
+                self.request.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision, "status": sheet.status()})
             except ReloadConflict as error:
                 self.request.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
             except ReloadDeferred:

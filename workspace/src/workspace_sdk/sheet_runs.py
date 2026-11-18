@@ -1,18 +1,159 @@
 from collections import deque
 from http.client import HTTPConnection, HTTPException
 import json
-from threading import Condition
+import os
+from pathlib import Path
+import sqlite3
+from threading import Condition, Lock
 from uuid import uuid4
 
 
+class RunStateStore:
+    def __init__(self, state_dir: Path) -> None:
+        state_dir.mkdir(mode=0o700 if os.name == "posix" else 0o777, parents=True, exist_ok=True)
+        self.path = state_dir / "run_state.sqlite3"
+        if os.name == "posix":
+            if self.path.is_symlink():
+                raise ValueError("Run state database must not be a symbolic link.")
+            fd = os.open(self.path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            os.close(fd)
+            os.chmod(self.path, 0o600)
+        self._lock = Lock()
+        self._db = sqlite3.connect(self.path, check_same_thread=False)
+        self._db.execute("PRAGMA synchronous=FULL")
+        with self._lock, self._db:
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS sheet_states ("
+                "workspace_id TEXT NOT NULL, "
+                "sheet_path TEXT NOT NULL, "
+                "generation INTEGER NOT NULL, "
+                "run_id TEXT NOT NULL, "
+                "status TEXT NOT NULL, "
+                "replay_input TEXT, "
+                "error TEXT, "
+                "PRIMARY KEY (workspace_id, sheet_path))"
+            )
+
+    def record_running(
+        self,
+        workspace_id: str,
+        sheet_path: str,
+        generation: int,
+        run_id: str,
+        inputs: dict | None,
+    ) -> None:
+        encoded = json.dumps(inputs) if inputs is not None else None
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
+                "VALUES (?, ?, ?, ?, 'running', ?, NULL) "
+                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
+                "generation = excluded.generation, "
+                "run_id = excluded.run_id, "
+                "status = excluded.status, "
+                "replay_input = excluded.replay_input, "
+                "error = NULL "
+                "WHERE excluded.generation >= sheet_states.generation",
+                (workspace_id, sheet_path, generation, run_id, encoded),
+            )
+
+    def record_stopped(self, workspace_id: str, sheet_path: str, generation: int, run_id: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
+                "VALUES (?, ?, ?, ?, 'stopped', NULL, NULL) "
+                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
+                "generation = excluded.generation, "
+                "run_id = excluded.run_id, "
+                "status = excluded.status, "
+                "replay_input = NULL, "
+                "error = NULL "
+                "WHERE excluded.generation >= sheet_states.generation",
+                (workspace_id, sheet_path, generation, run_id),
+            )
+
+    def record_terminal(
+        self,
+        workspace_id: str,
+        sheet_path: str,
+        generation: int,
+        run_id: str,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        if status not in ("succeeded", "failed"):
+            raise ValueError(f"Unsupported terminal run status: {status!r}")
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sheet_states (workspace_id, sheet_path, generation, run_id, status, replay_input, error) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?) "
+                "ON CONFLICT(workspace_id, sheet_path) DO UPDATE SET "
+                "generation = excluded.generation, "
+                "run_id = excluded.run_id, "
+                "status = excluded.status, "
+                "replay_input = NULL, "
+                "error = excluded.error "
+                "WHERE excluded.generation >= sheet_states.generation",
+                (workspace_id, sheet_path, generation, run_id, status, error),
+            )
+
+    def workspace_states(self, workspace_id: str) -> dict[str, dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT sheet_path, generation, run_id, status, replay_input, error "
+                "FROM sheet_states WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchall()
+        return {
+            sheet_path: {
+                "generation": generation,
+                "run_id": run_id,
+                "status": status,
+                "replay_input": json.loads(replay_input) if replay_input is not None else None,
+                "error": error,
+            }
+            for sheet_path, generation, run_id, status, replay_input, error in rows
+        }
+
+    def active_workspace_ids(self) -> list[str]:
+        with self._lock:
+            rows = self._db.execute("SELECT DISTINCT workspace_id FROM sheet_states").fetchall()
+        return [workspace_id for (workspace_id,) in rows]
+
+    def delete_sheet(self, workspace_id: str, sheet_path: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "DELETE FROM sheet_states WHERE workspace_id = ? AND sheet_path = ?",
+                (workspace_id, sheet_path),
+            )
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM sheet_states WHERE workspace_id = ?", (workspace_id,))
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
+
 class SheetRun:
-    def __init__(self, inputs: dict | None, *, retry_count: int = 0) -> None:
-        self.run_id = uuid4().hex
+    def __init__(
+        self,
+        inputs: dict | None,
+        *,
+        retry_count: int = 0,
+        generation: int = 0,
+        run_id: str | None = None,
+        status: str = "running",
+        start_error: str | None = None,
+    ) -> None:
+        self.run_id = run_id or uuid4().hex
         self.inputs = inputs
         self.retry_count = retry_count
+        self.generation = generation
         self.crash_exhausted = False
-        self.status = "running"
-        self.start_error: str | None = None
+        self.status = status
+        self.start_error: str | None = start_error
         self._condition = Condition()
         self._lines: deque[bytes] = deque(maxlen=256)
         self._count = 0
