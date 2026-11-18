@@ -28,6 +28,7 @@ const button = document.querySelector("#run-flow");
 const runInput = document.querySelector("#run-input");
 const resetInput = document.querySelector("#reset-input");
 const status = document.querySelector("#status");
+const editLockBadge = document.querySelector("#edit-lock-badge");
 const result = document.querySelector("#result");
 const consoleStreams = {
   stdout: document.querySelector("#console-stdout"),
@@ -62,6 +63,8 @@ let runInProgress = false;
 let streamingOwnRun = false;
 let projectReady = false;
 let editRunningSource = false;
+let sheetEditLock = null;
+let nodeFilesEditLock = null;
 let dashboards;
 let deferredRunError = null;
 let liveOutput = null;
@@ -419,12 +422,44 @@ let nodeSourceRequest;
 let currentSource = null;
 let savingSource = false;
 
+function currentEditSessionId() {
+  if (nodeFilesEditLock?.sessionId) return nodeFilesEditLock.sessionId;
+  if (window.parent !== window) return window.parent.phyzflowEditSessionId?.(window) ?? null;
+  return null;
+}
+
+function externalEditLockMessage() {
+  if (nodeFilesEditLock && !nodeFilesEditLock.ok) return nodeFilesEditLock.error;
+  if (sheetEditLock?.locked && !sheetEditLock.owned_by_viewer) {
+    return `Locked for editing by ${sheetEditLock.owner}.`;
+  }
+  return "";
+}
+
+function syncEditLockUI() {
+  const lockedByOther = Boolean(sheetEditLock?.locked && !sheetEditLock.owned_by_viewer);
+  editLockBadge.hidden = !lockedByOther;
+  editLockBadge.title = lockedByOther ? `Locked for editing by ${sheetEditLock.owner}` : "";
+  if (currentSource && !savingSource && !nodeSourceRequest) {
+    nodeSourceInput.readOnly = nodeSourceLocked();
+    updateSourceDirty();
+    const message = externalEditLockMessage();
+    if (message) nodeSourceMessage.textContent = `Read-only · ${message}`;
+  }
+}
+
+window.addEventListener("workspace-edit-lock", event => {
+  sheetEditLock = event.detail.editLock ?? null;
+  syncEditLockUI();
+});
+
 function sourceIsDirty() {
   return currentSource !== null && nodeSourceInput.value !== currentSource.text;
 }
 
 function nodeSourceLocked() {
   return stopPhase === "stopped" ||
+    Boolean(externalEditLockMessage()) ||
     (runInProgress && !(editRunningSource && currentSource?.path.endsWith(".py")));
 }
 
@@ -439,12 +474,18 @@ function canLeaveSource() {
   return !savingSource && (!sourceIsDirty() || window.confirm("Discard unsaved changes to this file?"));
 }
 
+function releaseNodeFilesLock() {
+  nodeFilesEditLock = null;
+  if (window.parent !== window) window.parent.phyzflowReleaseEditLock?.(window);
+}
+
 window.addEventListener("beforeunload", event => {
   if (sourceIsDirty()) {
     event.preventDefault();
     event.returnValue = true;
   }
 });
+window.addEventListener("pagehide", releaseNodeFilesLock);
 document.querySelector("#close-node-files").addEventListener("click", () => {
   if (canLeaveSource()) nodeFilesDialog.close();
 });
@@ -458,13 +499,17 @@ nodeFilesDialog.addEventListener("close", () => {
     nodeSourceRequest = null;
     currentSource = null;
     updateSourceDirty();
+    releaseNodeFilesLock();
   }
 });
 
 async function requestSource(index, data, signal) {
+  const headers = { "Content-Type": "application/json" };
+  const sessionId = currentEditSessionId();
+  if (sessionId) headers["X-Phyzflow-Edit-Session"] = sessionId;
   const response = await fetch(`node-source/${index}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(data),
     signal,
   });
@@ -520,6 +565,8 @@ async function openSource(index, path, line = null) {
       nodeSourceRequest = null;
       nodeSourceInput.readOnly = nodeSourceLocked();
       updateSourceDirty();
+      const lockMsg = externalEditLockMessage();
+      if (lockMsg) nodeSourceMessage.textContent = `Read-only · ${lockMsg}`;
     }
   }
 }
@@ -601,6 +648,14 @@ async function showNodeFiles(id, index, source, line = null, preferSettings = fa
   nodeFilesMessage.textContent = "Loading files…";
   if (!nodeFilesDialog.open) nodeFilesDialog.showModal();
   try {
+    if (window.parent !== window && window.parent.phyzflowAcquireEditLock) {
+      nodeFilesEditLock = await window.parent.phyzflowAcquireEditLock(window);
+      if (request.signal.aborted || !nodeFilesDialog.open) {
+        releaseNodeFilesLock();
+        return;
+      }
+      if (nodeFilesEditLock.editLock) sheetEditLock = nodeFilesEditLock.editLock;
+    }
     const response = await fetch(`node-files/${index}`, { signal: request.signal });
     if (!response.ok) throw new Error();
     const { path, entries, truncated, settings } = await response.json();
@@ -1327,6 +1382,8 @@ try {
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
   editRunningSource = project.edit_running_source;
+  sheetEditLock = (window.parent !== window ? window.parent.phyzflowSheetEditLock?.(window) : null) ?? project.edit_lock ?? null;
+  syncEditLockUI();
   dashboards = initDashboards(
     project,
     canvasLayout.revealDashboard,

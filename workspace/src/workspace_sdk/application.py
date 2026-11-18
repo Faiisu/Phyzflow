@@ -5,7 +5,9 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import re
+import select
 from shutil import rmtree
+import socket
 import sqlite3
 import subprocess
 from threading import Lock
@@ -244,7 +246,21 @@ def serve_application(state_dir: Path, port: int) -> None:
                 self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
                 return
             headers = [(name, value) for name, value in self.headers.items() if name.lower() in MCP_REQUEST_HEADERS]
-            result = send_mcp(identity, self.command, headers, self.rfile.read(size))
+
+            def client_disconnected() -> bool:
+                try:
+                    if not select.select([self.connection], [], [], 0)[0]:
+                        return False
+                    return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+                except OSError:
+                    return True
+
+            result = send_mcp(
+                identity, self.command, headers, self.rfile.read(size),
+                disconnected=client_disconnected,
+            )
+            if result is None:
+                return
             self.send_response(result.status_code)
             for name, value in result.headers.items():
                 if name in MCP_RESPONSE_HEADERS:
