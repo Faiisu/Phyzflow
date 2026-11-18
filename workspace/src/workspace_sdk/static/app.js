@@ -57,6 +57,7 @@ let tracksGenerators = false;
 let activeNode = null;
 let stopPhase = null;
 let runInProgress = false;
+let streamingOwnRun = false;
 let projectReady = false;
 let dashboards;
 let deferredRunError = null;
@@ -1104,7 +1105,8 @@ function showMessage(message) {
     }
     const trace = document.createElement("details");
     trace.open = true;
-    trace.append(element("summary", "Traceback"), element("pre", message.traceback));
+    trace.append(element("summary", "Diagnostics"), element("pre",
+      message.traceback ?? "See saved run history for diagnostic locations."));
     error.append(
       element("h3", `${message.step_id} failed`),
       element("strong", message.error_type),
@@ -1294,6 +1296,7 @@ form.addEventListener("submit", async event => {
   event.preventDefault();
   if (stopPhase || runInProgress || !projectReady) return;
   runInProgress = true;
+  streamingOwnRun = true;
   updateRunControls();
   setPanel("run", true);
   result.replaceChildren();
@@ -1343,6 +1346,7 @@ form.addEventListener("submit", async event => {
     if (stopPhase === "stopping") deferredRunError = error.message;
     else if (!stopPhase) showRunStreamError(error.message);
   } finally {
+    streamingOwnRun = false;
     runInProgress = false;
     updateRunControls();
   }
@@ -1350,26 +1354,35 @@ form.addEventListener("submit", async event => {
 
 async function reconnectRun() {
   let cursor = 0;
-  let attached = false;
+  let observedRun = null;
+  let wasRunning = false;
   while (!stopPhase) {
     try {
+      if (streamingOwnRun) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        continue;
+      }
       const response = await fetch("live-run");
       if (!response.ok) throw new Error("Could not reconnect to the running flow.");
       const snapshot = await response.json();
-      if (!attached && !snapshot.running) return;
-      attached = true;
+      // A POST stream already rendered this run; only attach to a different owner.
+      const runId = snapshot.events.find(([, message]) => message.run_id)?.[1].run_id;
+      if (runId && runId !== observedRun) {
+        observedRun = runId;
+        cursor = runId === currentRunId ? Infinity : 0;
+      }
       runInProgress = snapshot.running;
       updateRunControls();
       for (const [sequence, message] of snapshot.events) {
         if (sequence <= cursor) continue;
+        if (message.step_id && !nodes.has(message.step_id)) continue;
         dashboards.track(message);
         showMessage(message);
         cursor = sequence;
       }
-      if (!snapshot.running) {
-        refreshHistory();
-        return;
-      }
+      if (wasRunning && !snapshot.running) refreshHistory();
+      if (snapshot.status === "stopped") setStatus("stopped");
+      wasRunning = snapshot.running;
     } catch (error) {
       // A temporary disconnect must not mark the server-owned run as failed.
     }
@@ -1401,8 +1414,8 @@ try {
   });
   resetInput.disabled = stopPhase === "stopped";
   projectReady = true;
-  await reconnectRun();
   updateRunControls();
+  reconnectRun();
 } catch (error) {
   setPanel("run", true);
   result.replaceChildren();

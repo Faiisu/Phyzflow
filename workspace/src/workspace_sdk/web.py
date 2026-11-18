@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import sqlite3
 from threading import Lock
-from time import perf_counter
 from typing import Any
 
 from .dashboard import ASSET_ROUTE, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels
@@ -16,7 +15,7 @@ from .history import RunHistory
 from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
 from .node_settings import LiveSettings, SettingsStore, parse_setting_defaults
 from .project import ordered_steps, relative_source, setting_files, source_location
-from .runner import run
+from .execution import FlowBusy, clear_external_snapshot, external_snapshot, run_recorded, sheet_busy, sheet_lock
 from .ui_settings import ZoomSettings
 
 
@@ -174,7 +173,7 @@ def serve(
             elif self.path == "/live-run":
                 with live_lock:
                     data = {"running": run_status == "running", "events": sorted(live_events.values(), key=lambda item: item[0])}
-                self.send_json(data)
+                self.send_json((external_snapshot(root) if run_status != "running" else None) or data)
             elif self.path == "/project":
                 data = json.dumps({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
@@ -182,7 +181,7 @@ def serve(
                 }).encode()
                 self.send_bytes(data, "application/json")
             elif self.path == "/status":
-                self.send_bytes(json.dumps({"status": run_status}).encode(), "application/json")
+                self.send_bytes(json.dumps({"status": "running" if sheet_busy(root) else run_status}).encode(), "application/json")
             elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):
                 scope = match[1]
                 try:
@@ -282,8 +281,12 @@ def serve(
                 return
 
             try:
-                run_status = "running"
-                self.stream_run(inputs)
+                with sheet_lock(root):
+                    clear_external_snapshot(root)
+                    run_status = "running"
+                    self.stream_run(inputs)
+            except FlowBusy as error:
+                self.send_error(HTTPStatus.CONFLICT, str(error))
             finally:
                 if run_status == "running":
                     run_status = "failed"
@@ -360,8 +363,6 @@ def serve(
             except OSError:
                 connected = False
 
-            events: list[dict[str, Any]] = []
-
             def send(message):
                 nonlocal connected
                 if connected:
@@ -409,21 +410,13 @@ def serve(
 
             def record_event(event):
                 remember(event)
-                if not event.keys() & {"output_preview", "live_frame", "live_metrics", "setting_change"}:
-                    events.append(event)
                 send(event)
 
             try:
-                started = perf_counter()
-                result = run(
-                    flow, inputs, record_event, include_metadata=True, live_metrics=True, live_frames=True,
-                    settings=settings.snapshot(steps), live_settings=live_settings,
+                result = run_recorded(
+                    flow, root, loaded_sources, record_event, inputs=inputs, live_metrics=True, live_frames=True,
+                    live_settings=live_settings,
                 )
-                try:
-                    history.save(events, loaded_sources, (perf_counter() - started) * 1000)
-                except OSError:
-                    self.log_error("Could not save run history for %s.", result.id)
-                    send({"history_error": "This run could not be saved to history."})
                 completed = {"result": {"status": result.status, "output": result.output}}
                 remember(completed)
                 send(completed)
