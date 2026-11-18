@@ -162,6 +162,19 @@ class SheetRun:
                 self.publish(json.dumps({"run_id": self.run_id, "error": error}).encode() + b"\n")
             self._condition.notify_all()
 
+    def snapshot_events(self) -> list[dict]:
+        with self._condition:
+            lines = list(self._lines)
+        events = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(item, dict):
+                events.append(item)
+        return events
+
     def messages(self):
         cursor = 0
         while True:

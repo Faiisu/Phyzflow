@@ -5,6 +5,8 @@ from contextlib import closing, suppress
 import errno
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
+from importlib.metadata import PackageNotFoundError, distribution
+import json
 import os
 from pathlib import Path
 import re
@@ -17,7 +19,7 @@ import sqlite3
 import subprocess
 import sys
 from threading import Event, Lock, Thread, current_thread, main_thread
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 
 from .application_auth import Administrator
@@ -29,7 +31,9 @@ from .sheet_runs import RunStateStore
 from .sheets import discover_flows, initialize_workspace
 from .ui_settings import load_ui_settings
 from .web import STATIC, UIRequestHandler, ui_address
-from .workspace_environment import ensure_workspace_environment, workspace_interpreter
+from .workspace_environment import (
+    ensure_workspace_environment, folders_overlap, same_folder, workspace_interpreter,
+)
 from .workspace_ui import (
     WorkspaceProcessRunningError, verify_workspace_processes_stopped, workspace_routes,
 )
@@ -45,30 +49,39 @@ ASSETS = {
 }
 
 
-def same_folder(left: Path, right: Path) -> bool:
-    if left == right:
-        return True
-    try:
-        return left.samefile(right)
-    except (FileNotFoundError, NotADirectoryError):
-        return False
+def _is_phyzflow_checkout(folder: Path) -> bool:
+    return (folder / "docs/application-spec.md").is_file() and (folder / "workspace/src/workspace_sdk").is_dir()
 
 
-def folders_overlap(left: Path, right: Path) -> bool:
-    return (
-        any(same_folder(left, parent) for parent in (right, *right.parents))
-        or any(same_folder(right, parent) for parent in left.parents)
-    )
+def _find_phyzflow_checkout() -> Path | None:
+    sdk = Path(__file__).resolve().parent
+    if len(sdk.parents) >= 3:
+        candidate = sdk.parents[2]
+        if sdk == candidate / "workspace/src/workspace_sdk" and _is_phyzflow_checkout(candidate):
+            return candidate
+    with suppress(PackageNotFoundError, OSError, ValueError):
+        raw = distribution("workspace-sdk").read_text("direct_url.json")
+        if raw:
+            url = json.loads(raw).get("url", "")
+            if isinstance(url, str) and url.startswith("file://"):
+                source_dir = Path(unquote(urlparse(url).path)).resolve()
+                checkout = source_dir.parent
+                if source_dir.name == "workspace" and _is_phyzflow_checkout(checkout):
+                    return checkout
+    cwd = Path.cwd().resolve()
+    for folder in (cwd, *cwd.parents):
+        if _is_phyzflow_checkout(folder):
+            return folder
+    return None
 
 
 class WorkspaceRegistry:
     def __init__(self, state_dir: Path) -> None:
         state_dir.mkdir(parents=True, exist_ok=True)
         self.path = state_dir / "workspaces.sqlite3"
-        self.protected_folders = [(state_dir, "Phyzflow application data")]
-        sdk = Path(__file__).resolve().parent
-        checkout = sdk.parents[2]
-        if sdk == checkout / "workspace/src/workspace_sdk" and (checkout / "docs/application-spec.md").is_file():
+        self.protected_folders = [(state_dir.resolve(), "Phyzflow application data")]
+        checkout = _find_phyzflow_checkout()
+        if checkout is not None:
             self.protected_folders.append((checkout, "the Phyzflow source checkout"))
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE)")

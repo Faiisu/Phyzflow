@@ -619,6 +619,74 @@ def workspace_routes(
                 )
             return list(sheets)
 
+    def create_workspace_sheet(name: object) -> dict:
+        with sheets_lock:
+            if closing:
+                raise RuntimeError("Workspace is shutting down.")
+            directory = create_sheet(root, name).parent
+            index = len(sheets)
+            sheets.append(make_sheet(directory.name, directory))
+        return {
+            "index": index,
+            "name": directory.name,
+            "entrypoint": (directory / "flow.py").relative_to(root).as_posix(),
+        }
+
+    def delete_workspace_sheet(
+        sheet_root: Path,
+        *,
+        principal: str | None = None,
+        session_id: str | None = None,
+    ) -> dict:
+        target = sheet_root.resolve()
+        with sheets_lock:
+            if closing:
+                raise RuntimeError("This sheet is no longer available.")
+            index = next(
+                (
+                    i for i, existing in enumerate(sheets)
+                    if existing is not None and existing.root.resolve() == target
+                ),
+                None,
+            )
+            if index is None:
+                raise FileNotFoundError("This sheet is no longer available.")
+            sheet = sheets[index]
+            if not can_delete_sheet(root, sheet.root):
+                raise ValueError("Only sheets stored directly in this Workspace can be deleted.")
+            if principal is not None:
+                sheet.edit_lease.verify_write(principal, session_id)
+            else:
+                lock_status = sheet.edit_lease.status()
+                if lock_status["locked"]:
+                    raise SheetLockedError(
+                        f"This sheet is locked for editing by {lock_status['owner']}.",
+                        snapshot=lock_status,
+                    )
+            archive_sheet_directory(root, sheet.root, sheet.archive)
+            # Keep existing flow URLs tied to their original sheets.
+            sheets[index] = None
+        return {"status": "deleted"}
+
+    def run_all_sheets(*, by_index: bool = False) -> dict:
+        current = {index: sheet for index, sheet in enumerate(discovered_sheets()) if sheet is not None}
+        started, errors = {}, {}
+        with ThreadPoolExecutor() as pool:
+            pending = {index: pool.submit(sheet.start_run, None) for index, sheet in current.items()}
+            for index, admission in pending.items():
+                key = index if by_index else current[index].title
+                try:
+                    started[key] = admission.result().run_id
+                except FlowBusy:
+                    pass
+                except (OSError, RuntimeError, ValueError) as error:
+                    errors[key] = str(error)
+        return {"started": started, "errors": errors}
+
+    resolve_sheet.create_workspace_sheet = create_workspace_sheet
+    resolve_sheet.delete_workspace_sheet = delete_workspace_sheet
+    resolve_sheet.run_all_sheets = run_all_sheets
+
     class Routes:
         def __init__(self, request: UIRequestHandler, path: str):
             self.request = request
@@ -635,13 +703,10 @@ def workspace_routes(
             value = data.get("name")
 
             try:
-                with sheets_lock:
-                    if closing:
-                        self.request.send_json({"error": "Workspace is shutting down."}, HTTPStatus.SERVICE_UNAVAILABLE)
-                        return
-                    directory = create_sheet(root, value).parent
-                    index = len(sheets)
-                    sheets.append(make_sheet(directory.name, directory))
+                created = create_workspace_sheet(value)
+            except RuntimeError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
             except FileExistsError:
                 self.request.send_json({"error": "That sheet name is already in use. Choose another name."}, HTTPStatus.CONFLICT)
                 return
@@ -651,25 +716,35 @@ def workspace_routes(
             except OSError:
                 self.request.send_json({"error": "Could not write the flow file. Check the workspace folder permissions."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-            self.request.send_json({"index": index}, HTTPStatus.CREATED)
+            self.request.send_json({"index": created["index"]}, HTTPStatus.CREATED)
 
         def delete_sheet(self, index: int) -> None:
+            session_id = self.request.headers.get("X-Phyzflow-Edit-Session")
             with sheets_lock:
                 sheet = sheets[index]
                 if closing or sheet is None:
                     self.request.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
                     return
-                if not can_delete_sheet(root, sheet.root):
-                    self.request.send_json({"error": "Only sheets stored directly in this Workspace can be deleted."}, HTTPStatus.BAD_REQUEST)
-                    return
-                try:
-                    archive_sheet_directory(root, sheet.root, sheet.archive)
-                except OSError:
-                    self.request.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
-                    return
-                # Keep existing flow URLs tied to their original sheets.
-                sheets[index] = None
-            self.request.send_json({"status": "deleted"})
+                sheet_root = sheet.root
+            try:
+                result = delete_workspace_sheet(
+                    sheet_root,
+                    principal="web" if session_id else None,
+                    session_id=session_id,
+                )
+            except (FileNotFoundError, RuntimeError):
+                self.request.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
+                return
+            except SheetLockedError as error:
+                self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
+                return
+            except ValueError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            except OSError:
+                self.request.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self.request.send_json(result)
 
         def view_route(self) -> tuple[FlowSheet, int, str] | None:
             route = VIEW_PATH.fullmatch(self.path)
@@ -800,18 +875,7 @@ def workspace_routes(
                 pass
 
         def run_all(self) -> None:
-            current = {index: sheet for index, sheet in enumerate(discovered_sheets()) if sheet is not None}
-            started, errors = {}, {}
-            with ThreadPoolExecutor() as pool:
-                pending = {index: pool.submit(sheet.start_run, None) for index, sheet in current.items()}
-                for index, admission in pending.items():
-                    try:
-                        started[index] = admission.result().run_id
-                    except FlowBusy:
-                        pass
-                    except (OSError, RuntimeError, ValueError) as error:
-                        errors[index] = str(error)
-            self.request.send_json({"started": started, "errors": errors}, HTTPStatus.ACCEPTED)
+            self.request.send_json(run_all_sheets(by_index=True), HTTPStatus.ACCEPTED)
 
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}

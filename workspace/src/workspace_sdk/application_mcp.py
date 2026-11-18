@@ -5,6 +5,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager, closing, contextmanager, suppress
 from contextvars import ContextVar
 from hashlib import sha256
+from http.client import HTTPConnection, HTTPException
 import json
 import os
 from pathlib import Path
@@ -16,23 +17,32 @@ from subprocess import DEVNULL, PIPE, Popen
 import sys
 from tempfile import TemporaryDirectory
 from threading import Event
+from time import monotonic, sleep
 from typing import Literal
 from uuid import uuid4
 
+from .console import ConsoleLogStore
 from .dashboard import inspect_sheet_dashboards
 from .execution import FlowBusy
+from .history import RunHistory
 from .node_sources import MAX_SOURCE_BYTES, SourceChanged, edit_source_file
 from .sheet_locks import SheetLockedError
 from .sheets import discover_flows
-from .workspace_environment import workspace_interpreter
+from .workspace_environment import (
+    folders_overlap, install_workspace_packages, workspace_interpreter,
+)
 
 
 BEARER = re.compile(r"(?i:Bearer) +([a-zA-Z0-9_-]{43})")
 TOKEN_PATH = re.compile(r"/mcp-tokens(?:/([0-9a-f]{32}))?")
+RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 MCP_BODY_LIMIT = 1024 * 1024
 MCP_REQUEST_HEADERS = {"accept", "content-type", "mcp-protocol-version", "mcp-session-id"}
 MCP_RESPONSE_HEADERS = {"allow", "content-type", "mcp-protocol-version", "mcp-session-id"}
 EDITABLE_EXTENSIONS = {".py", ".json", ".toml", ".html", ".css", ".js", ".md", ".txt"}
+MAX_ENTRIES = 500
+MAX_SCAN_FILES = 2000
+MAX_SEARCH_MATCHES = 100
 request_identity: ContextVar[str] = ContextVar("mcp_identity")
 
 
@@ -104,6 +114,9 @@ class WorkspaceAccess:
         self.registry = registry
         self.mount_sheet_resolver = mount_sheet_resolver
         self.is_deleting = is_deleting
+        self.protected_folders: tuple[Path, ...] = tuple(
+            folder.resolve() for folder, _ in getattr(registry, "protected_folders", ())
+        )
 
     def principal(self) -> str:
         return request_identity.get()
@@ -155,15 +168,27 @@ def available_root(path: Path) -> bool:
     return path.is_dir() and path.resolve() == path
 
 
+def ensure_not_protected(path: Path, protected_folders: tuple[Path, ...]) -> None:
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    resolved = path.resolve(strict=False)
+    for folder in protected_folders:
+        if folders_overlap(path, folder) or folders_overlap(resolved, folder):
+            raise ToolError("Protected application paths are not accessible.")
+
+
 def resolve_workspace_sheet(access: WorkspaceAccess, workspace_id: str, sheet: str):
     from mcp.server.mcpserver.exceptions import ToolError
 
     root = access.workspace(workspace_id)
+    ensure_not_protected(root, access.protected_folders)
     match = next((path for name, path in discover_flows(root) if name == sheet), None)
     if match is None or not available_root(match) or (match / "flow.py").is_symlink():
         raise ToolError(f"Unknown sheet {sheet!r}.")
-    if match != root and not match.resolve().is_relative_to(root):
-        raise ToolError("Sheet path is outside the Workspace.")
+    if match != root:
+        if (root / "flows").is_symlink() or not match.resolve().is_relative_to(root):
+            raise ToolError("Sheet path is outside the Workspace.")
+    ensure_not_protected(match, access.protected_folders)
     try:
         resolver = access.sheet_resolver(workspace_id)
         return root, resolver(match)
@@ -171,17 +196,32 @@ def resolve_workspace_sheet(access: WorkspaceAccess, workspace_id: str, sheet: s
         raise ToolError(str(error) or f"Could not open sheet {sheet!r}.") from None
 
 
-def resolve_sheet_file(workspace_root: Path, flow_sheet, value: object, *, for_write: bool) -> tuple[Path, Path]:
+def resolve_sheet_file(
+    workspace_root: Path,
+    flow_sheet,
+    value: object,
+    *,
+    for_write: bool,
+    allow_root: bool = False,
+    protected_folders: tuple[Path, ...] = (),
+) -> tuple[Path, Path]:
     from mcp.server.mcpserver.exceptions import ToolError
 
     if not isinstance(value, str) or not value or "\x00" in value:
         raise ToolError("Expected a relative project path.")
     relative = Path(value)
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+    if relative.is_absolute() or ".." in relative.parts:
         raise ToolError("Path must stay inside the sheet directory.")
+    sheet_root = flow_sheet.root.resolve()
+    if not relative.parts:
+        if not allow_root or value not in (".", "./"):
+            raise ToolError("Path must stay inside the sheet directory.")
+        if flow_sheet.root.is_symlink():
+            raise ToolError("Symbolic links are not accessible.")
+        ensure_not_protected(sheet_root, protected_folders)
+        return sheet_root, Path(".")
     if any(part.startswith(".") or part == "__pycache__" for part in relative.parts):
         raise ToolError("Hidden and environment files are not accessible.")
-    sheet_root = flow_sheet.root.resolve()
     if flow_sheet.main and relative.parts[0] == "flows" and for_write:
         raise ToolError("Specify the target sheet instead of writing under flows/ from Main.")
     base = workspace_root if (flow_sheet.main and relative.parts[0] == "flows") else sheet_root
@@ -193,9 +233,164 @@ def resolve_sheet_file(workspace_root: Path, flow_sheet, value: object, *, for_w
     resolved = current.resolve(strict=False)
     if not resolved.is_relative_to(base):
         raise ToolError("Path must stay inside the sheet directory.")
+    ensure_not_protected(current, protected_folders)
     if for_write and current.suffix not in EDITABLE_EXTENSIONS:
         raise ToolError("Only project source and dashboard files can be edited.")
     return current, relative
+
+
+def _ensure_worker_url(flow_sheet) -> str:
+    from mcp.server.mcpserver.exceptions import ToolError
+    from .workspace_ui import ReloadConflict
+
+    deadline = monotonic() + 10
+    while True:
+        with flow_sheet.lock:
+            status = flow_sheet.status()
+            worker = flow_sheet.worker
+            if status == "stopping":
+                raise ToolError("The flow is stopping. Try again after it stops.")
+            if status != "running":
+                if worker is None or not worker.url or worker.process.poll() is not None:
+                    try:
+                        flow_sheet.open(reload=False)
+                    except (ReloadConflict, OSError, RuntimeError, ValueError, EOFError) as error:
+                        raise ToolError(str(error) or "Could not open the flow worker.") from None
+                elif flow_sheet.changed_source(status) is not None:
+                    try:
+                        flow_sheet.open(reload=True)
+                    except (ReloadConflict, OSError, RuntimeError, ValueError, EOFError) as error:
+                        raise ToolError(str(error) or "Could not reload the flow worker.") from None
+                worker = flow_sheet.worker
+            if worker is not None and worker.url and worker.process.poll() is None:
+                return worker.url
+            if status != "running" or monotonic() >= deadline:
+                raise ToolError("Could not open the flow worker.")
+        sleep(0.02)
+
+
+def _worker_json(flow_sheet, method: str, path: str, payload: dict | None = None) -> dict:
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    url = _ensure_worker_url(flow_sheet)
+    body = None
+    headers = {}
+    if payload is not None:
+        try:
+            body = json.dumps(payload, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise ToolError(str(error) or "Invalid JSON request payload.") from None
+        headers["Content-Type"] = "application/json"
+
+    connection = HTTPConnection(url.removeprefix("http://"), timeout=5)
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        with connection.getresponse() as response:
+            raw = response.read()
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = None
+            if response.status >= 400:
+                message = data.get("error") if isinstance(data, dict) else None
+                raise ToolError(message or f"Flow worker returned {response.status}.")
+            if not isinstance(data, dict):
+                raise ToolError("Flow worker returned an unexpected response.")
+            return data
+    except (OSError, HTTPException) as error:
+        raise ToolError(f"Could not reach the flow worker: {error}") from None
+    finally:
+        connection.close()
+
+
+def _live_run_events(flow_sheet, run_id: str) -> list[dict]:
+    worker = flow_sheet.worker
+    if worker is None or not worker.url or worker.process.poll() is not None:
+        return []
+    connection = HTTPConnection(worker.url.removeprefix("http://"), timeout=2)
+    try:
+        connection.request("GET", "/live-run")
+        with connection.getresponse() as response:
+            if response.status != 200:
+                return []
+            payload = json.loads(response.read())
+    except (OSError, HTTPException, ValueError):
+        return []
+    finally:
+        connection.close()
+    items = payload.get("events") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    events = []
+    for entry in items:
+        if (
+            isinstance(entry, (list, tuple))
+            and len(entry) == 2
+            and isinstance(entry[1], dict)
+            and entry[1].get("run_id") == run_id
+        ):
+            events.append(entry[1])
+    return events
+
+
+def _summarize_attempt(attempt, flow_sheet) -> dict:
+    events = attempt.snapshot_events()
+    if attempt.status == "running":
+        live_events = _live_run_events(flow_sheet, attempt.run_id)
+        if live_events:
+            events = live_events + [
+                event for event in events if event.get("kind") != "console"
+            ]
+    steps: dict[str, dict] = {}
+    result = None
+    error = attempt.start_error
+    started_at = None
+    finished_at = None
+    for event in events:
+        if event.get("kind") == "console":
+            continue
+        if "result" in event:
+            result = event["result"]
+        if "error" in event and isinstance(event["error"], str):
+            error = event["error"]
+        step_id = event.get("step_id")
+        if not isinstance(step_id, str):
+            status = event.get("status")
+            if status == "running" and started_at is None:
+                started_at = event.get("time")
+            elif status in ("succeeded", "failed", "stopped"):
+                finished_at = event.get("time")
+            continue
+        step = steps.setdefault(step_id, {"id": step_id})
+        if event.get("status") == "running" and "started_at" not in step:
+            step["started_at"] = event.get("time")
+        if event.get("status") in ("succeeded", "failed", "stopped", "skipped"):
+            step["finished_at"] = event.get("time")
+        for key in (
+            "status", "duration_ms", "file", "line", "source_target",
+            "error_type", "diagnostic_error_type", "traceback",
+            "blocked_by", "metrics", "reasons", "output_preview",
+        ):
+            if key in event:
+                step[key] = event[key]
+        if "live_metrics" in event and isinstance(event["live_metrics"], dict):
+            live = step.setdefault("live_metrics", {})
+            live.update(event["live_metrics"])
+        if "setting_change" in event:
+            changes = step.setdefault("setting_changes", [])
+            changes.append(event["setting_change"])
+    return {
+        "run_id": attempt.run_id,
+        "status": attempt.status,
+        "retry_count": attempt.retry_count,
+        "crash_exhausted": attempt.crash_exhausted,
+        "start_error": attempt.start_error,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "steps": list(steps.values()),
+        "result": result,
+        "error": error,
+    }
 
 
 def register_workspace_tools(server, access: WorkspaceAccess) -> None:
@@ -208,12 +403,38 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
     @server.tool(description="Inspect the sheets in a granted Workspace without loading its flows.")
     def inspect_workspace(workspace_id: str) -> dict:
         root = access.workspace(workspace_id)
+        ensure_not_protected(root, access.protected_folders)
         sheets = [
             {"name": name, "entrypoint": (sheet / "flow.py").relative_to(root).as_posix()}
             for name, sheet in discover_flows(root)
             if available_root(sheet) and not (sheet / "flow.py").is_symlink()
         ]
         return {"id": workspace_id, "name": root.name, "sheets": sheets}
+
+    @server.tool(description="Create a new flow sheet in a granted Workspace.")
+    def create_sheet(workspace_id: str, name: str) -> dict:
+        root = access.workspace(workspace_id)
+        ensure_not_protected(root, access.protected_folders)
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            created = resolver.create_workspace_sheet(name)
+        except (FileExistsError, OSError, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or "Could not create sheet.") from None
+        return {"workspace_id": workspace_id, **created}
+
+    @server.tool(description="Delete a secondary flow sheet in a granted Workspace, moving it to .workspace/deleted-flows.")
+    def delete_sheet(workspace_id: str, sheet: str, session_id: str | None = None) -> dict:
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            result = resolver.delete_workspace_sheet(
+                flow_sheet.root,
+                principal=access.principal(),
+                session_id=session_id,
+            )
+        except (SheetLockedError, FileNotFoundError, OSError, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or f"Could not delete sheet {sheet!r}.") from None
+        return {"sheet": sheet, **result}
 
     @server.tool(description="Inspect discovered dashboard panels, asset paths, and the shared theme contract for a sheet.")
     def inspect_dashboards(workspace_id: str, sheet: str = "Main") -> dict:
@@ -273,10 +494,61 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
         except (SheetLockedError, ValueError, OSError) as error:
             raise ToolError(str(error)) from None
 
+    @server.tool(description="List immediate regular files and subdirectories inside a sheet directory.")
+    def list_files(workspace_id: str, path: str = ".", sheet: str = "Main") -> dict:
+        root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        target, relative = resolve_sheet_file(
+            root,
+            flow_sheet,
+            path,
+            for_write=False,
+            allow_root=True,
+            protected_folders=access.protected_folders,
+        )
+        if not target.is_dir() or target.is_symlink():
+            raise ToolError("Expected an accessible directory inside the sheet.")
+        base = root if (flow_sheet.main and relative.parts and relative.parts[0] == "flows") else flow_sheet.root.resolve()
+        entries = []
+        truncated = False
+        try:
+            with os.scandir(target) as children:
+                items = sorted(children, key=lambda child: child.name)
+        except OSError as error:
+            raise ToolError(f"Could not list {relative.as_posix()}: {error.strerror or error}.") from None
+        for child in items:
+            if child.name.startswith(".") or child.name == "__pycache__" or child.is_symlink():
+                continue
+            is_dir = child.is_dir(follow_symlinks=False)
+            is_file = child.is_file(follow_symlinks=False)
+            if not is_dir and not is_file:
+                continue
+            child_path = Path(child.path)
+            if is_dir and (child_path / "pyvenv.cfg").is_file():
+                continue
+            if len(entries) == MAX_ENTRIES:
+                truncated = True
+                break
+            entries.append({
+                "path": child_path.relative_to(base).as_posix(),
+                "kind": "directory" if is_dir else "file",
+            })
+        return {
+            "sheet": sheet,
+            "path": relative.as_posix(),
+            "entries": entries,
+            "truncated": truncated,
+        }
+
     @server.tool(description="Read a regular file inside a sheet directory, even when another editor holds the lock.")
     def read_file(workspace_id: str, path: str, sheet: str = "Main") -> dict:
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
-        target, relative = resolve_sheet_file(root, flow_sheet, path, for_write=False)
+        target, relative = resolve_sheet_file(
+            root,
+            flow_sheet,
+            path,
+            for_write=False,
+            protected_folders=access.protected_folders,
+        )
         if not target.is_file():
             raise ToolError("Only regular files can be read.")
         try:
@@ -297,6 +569,65 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             "truncated": truncated,
         }
 
+    @server.tool(description="Search editable source and dashboard files in a sheet for a literal text query.")
+    def search_code(workspace_id: str, query: str, sheet: str = "Main") -> dict:
+        if not isinstance(query, str) or not 1 <= len(query) <= 512:
+            raise ToolError("query must contain 1 to 512 characters.")
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        sheet_root = flow_sheet.root.resolve()
+        matches: list[dict] = []
+        scanned = 0
+        truncated = False
+        pending = [sheet_root]
+        while pending:
+            directory = pending.pop()
+            try:
+                with os.scandir(directory) as children:
+                    items = sorted(children, key=lambda child: child.name, reverse=True)
+            except OSError:
+                continue
+            for child in items:
+                if scanned >= MAX_SCAN_FILES:
+                    return {"sheet": sheet, "matches": matches, "truncated": True}
+                scanned += 1
+                if child.is_symlink() or child.name.startswith(".") or child.name == "__pycache__":
+                    continue
+                child_path = Path(child.path)
+                if flow_sheet.main and directory == sheet_root and child.name == "flows":
+                    continue
+                if any(
+                    folders_overlap(child_path, folder)
+                    or folders_overlap(child_path.resolve(strict=False), folder)
+                    for folder in access.protected_folders
+                ):
+                    continue
+                if child.is_dir(follow_symlinks=False):
+                    if not (child_path / "pyvenv.cfg").is_file():
+                        pending.append(child_path)
+                    continue
+                if not child.is_file(follow_symlinks=False) or child_path.suffix not in EDITABLE_EXTENSIONS:
+                    continue
+                try:
+                    with child_path.open("rb") as stream:
+                        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                            continue
+                        data = stream.read(MAX_SOURCE_BYTES + 1)
+                except OSError:
+                    continue
+                if len(data) > MAX_SOURCE_BYTES:
+                    truncated = True
+                    data = data[:MAX_SOURCE_BYTES]
+                relative = child_path.relative_to(sheet_root).as_posix()
+                text_content = data.decode("utf-8", errors="replace")
+                for line_no, text in enumerate(text_content.splitlines(), 1):
+                    if query in text:
+                        if len(text) > 1024:
+                            truncated = True
+                        matches.append({"path": relative, "line": line_no, "text": text[:1024]})
+                        if len(matches) >= MAX_SEARCH_MATCHES:
+                            return {"sheet": sheet, "matches": matches, "truncated": True}
+        return {"sheet": sheet, "matches": matches, "truncated": truncated}
+
     def perform_sheet_edit(
         workspace_id: str,
         sheet: str,
@@ -306,7 +637,13 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
         build_source,
     ) -> dict:
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
-        target, relative = resolve_sheet_file(root, flow_sheet, path, for_write=True)
+        target, relative = resolve_sheet_file(
+            root,
+            flow_sheet,
+            path,
+            for_write=True,
+            protected_folders=access.protected_folders,
+        )
         if not isinstance(revision, str) or not revision:
             raise ToolError("An expected revision is required.")
         principal = access.principal()
@@ -350,7 +687,13 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
         if not isinstance(source, str):
             raise ToolError("source must be text.")
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
-        _, relative = resolve_sheet_file(root, flow_sheet, path, for_write=True)
+        _, relative = resolve_sheet_file(
+            root,
+            flow_sheet,
+            path,
+            for_write=True,
+            protected_folders=access.protected_folders,
+        )
         if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
             raise ToolError("Source must fit in 128 KiB.")
         try:
@@ -498,6 +841,45 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
                 "error": detail[:4096] or "Flow validation did not complete.",
             }
 
+    @server.tool(description="Read declared node setting definitions and current saved values for a sheet.")
+    async def read_node_settings(workspace_id: str, sheet: str = "Main") -> dict:
+        from anyio import to_thread
+
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        settings = await to_thread.run_sync(
+            _worker_json, flow_sheet, "GET", "/dashboard-settings/workflow", None,
+        )
+        return {"sheet": sheet, "settings": settings}
+
+    @server.tool(description="Save a node setting for the next run or queue a live setting update on an active run.")
+    async def update_node_setting(
+        workspace_id: str,
+        node_id: str,
+        name: str,
+        value: bool | int | float | str,
+        sheet: str = "Main",
+        mode: Literal["next", "live"] = "next",
+        run_id: str | None = None,
+    ) -> dict:
+        from anyio import to_thread
+
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        target_run_id = run_id
+        if mode == "live" and target_run_id is None:
+            attempt = flow_sheet.attempt
+            target_run_id = attempt.run_id if attempt is not None and attempt.status == "running" else None
+        payload = {
+            "nodeId": node_id,
+            "name": name,
+            "mode": mode,
+            "value": value,
+            "runId": target_run_id,
+        }
+        result = await to_thread.run_sync(
+            _worker_json, flow_sheet, "POST", "/dashboard-settings/workflow", payload,
+        )
+        return {"sheet": sheet, "node_id": node_id, **result}
+
     @server.tool(description="Start a flow run managed by the Workspace lifecycle.")
     def run_flow(workspace_id: str, sheet: str = "Main", input: dict | None = None) -> dict:
         from .workspace_ui import ReloadConflict
@@ -511,6 +893,19 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error)) from None
         return {"run_id": attempt.run_id, "sheet": sheet, "status": attempt.status}
 
+    @server.tool(description="Start every idle sheet in a granted Workspace concurrently without disturbing running sheets.")
+    async def run_all_flows(workspace_id: str) -> dict:
+        from anyio import to_thread
+
+        root = access.workspace(workspace_id)
+        ensure_not_protected(root, access.protected_folders)
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            result = await to_thread.run_sync(resolver.run_all_sheets)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or "Could not run Workspace sheets.") from None
+        return {"workspace_id": workspace_id, **result}
+
     @server.tool(description="Stop an active flow run managed by the Workspace.")
     def stop_flow(workspace_id: str, sheet: str = "Main") -> dict:
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
@@ -519,6 +914,132 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
         except (OSError, RuntimeError) as error:
             raise ToolError(str(error)) from None
         return {"sheet": sheet, "status": flow_sheet.status()}
+
+    @server.tool(description="Inspect active run status, step timing and diagnostics, and run history for a sheet.")
+    def inspect_execution(workspace_id: str, sheet: str = "Main", run_id: str | None = None) -> dict:
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        history = RunHistory(flow_sheet.root)
+        try:
+            recent_runs = history.list_runs()[:20]
+        except (OSError, ValueError) as error:
+            raise ToolError(str(error) or "Could not read run history.") from None
+        attempt = flow_sheet.attempt
+        if run_id is not None:
+            if not isinstance(run_id, str) or RUN_ID_PATTERN.fullmatch(run_id) is None:
+                raise ToolError("Invalid run ID.")
+            try:
+                record = history.read(run_id)
+            except (OSError, ValueError) as error:
+                raise ToolError(str(error) or "Could not read run history.") from None
+            active_run = _summarize_attempt(attempt, flow_sheet) if attempt is not None and attempt.run_id == run_id else None
+            if record is None and active_run is None:
+                raise ToolError(f"Unknown run {run_id!r}.")
+            return {
+                "sheet": sheet,
+                "status": flow_sheet.status(),
+                "run_id": run_id,
+                "active_run": active_run,
+                "history": record,
+                "recent_runs": recent_runs,
+            }
+        target_run_id = attempt.run_id if attempt is not None else (recent_runs[0]["id"] if recent_runs else None)
+        try:
+            record = history.read(target_run_id) if target_run_id is not None else None
+        except (OSError, ValueError) as error:
+            raise ToolError(str(error) or "Could not read run history.") from None
+        active_run = _summarize_attempt(attempt, flow_sheet) if attempt is not None else None
+        return {
+            "sheet": sheet,
+            "status": flow_sheet.status(),
+            "run_id": target_run_id,
+            "active_run": active_run,
+            "history": record,
+            "recent_runs": recent_runs,
+        }
+
+    @server.tool(description="Read saved or live console logs and current log settings for a sheet.")
+    def read_console_logs(workspace_id: str, sheet: str = "Main", run_id: str | None = None) -> dict:
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        store = ConsoleLogStore(flow_sheet.root)
+        try:
+            current_settings = store.settings()
+            attempt = flow_sheet.attempt
+            live_events = []
+            if attempt is not None and (run_id is None or attempt.run_id == run_id):
+                live_events = [
+                    event for event in attempt.snapshot_events()
+                    if event.get("kind") == "console"
+                ]
+            if run_id is not None:
+                saved_events = store.read_run(run_id)
+                resolved = run_id
+                events = saved_events if saved_events else live_events
+                if saved_events and not current_settings["save_logs"] and len(live_events) > len(saved_events):
+                    events = live_events
+            elif attempt is not None:
+                saved_events = store.read_run(attempt.run_id)
+                if saved_events or live_events or attempt.status == "running" or not current_settings["save_logs"]:
+                    resolved = attempt.run_id
+                    events = saved_events if saved_events else live_events
+                    if saved_events and not current_settings["save_logs"] and len(live_events) > len(saved_events):
+                        events = live_events
+                else:
+                    saved_events = store.read_run(None)
+                    resolved = saved_events[0]["run_id"] if saved_events else None
+                    events = saved_events
+            else:
+                saved_events = store.read_run(None)
+                resolved = saved_events[0]["run_id"] if saved_events else None
+                events = saved_events
+        except (ValueError, OSError) as error:
+            raise ToolError(str(error) or "Could not read console logs.") from None
+        stdout = "".join(event["text"] for event in events if event.get("stream") == "stdout")
+        stderr = "".join(event["text"] for event in events if event.get("stream") == "stderr")
+        return {
+            "sheet": sheet,
+            "settings": current_settings,
+            "run_id": resolved,
+            "events": events,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+
+    @server.tool(description="Update per-sheet console log saving and retention settings.")
+    def configure_console_logs(
+        workspace_id: str,
+        sheet: str = "Main",
+        save_logs: bool | None = None,
+        retention_days: int | None = None,
+    ) -> dict:
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        changes: dict[str, bool | int] = {}
+        if save_logs is not None:
+            changes["save_logs"] = save_logs
+        if retention_days is not None:
+            changes["retention_days"] = retention_days
+        try:
+            updated = ConsoleLogStore(flow_sheet.root).update_settings(changes)
+        except (ValueError, OSError) as error:
+            raise ToolError(str(error) or "Could not save console log settings.") from None
+        return {"sheet": sheet, "settings": updated}
+
+    @server.tool(description="Install Python package dependencies into a granted Workspace's shared .venv interpreter.")
+    async def install_dependencies(workspace_id: str, packages: list[str]) -> dict:
+        from anyio import to_thread
+
+        root = access.workspace(workspace_id)
+        ensure_not_protected(root, access.protected_folders)
+        try:
+            result = await to_thread.run_sync(
+                lambda: install_workspace_packages(
+                    root,
+                    packages,
+                    protected_folders=access.protected_folders,
+                )
+            )
+        except (ValueError, RuntimeError, OSError) as error:
+            raise ToolError(str(error) or "Could not install Workspace packages.") from None
+        return {"workspace_id": workspace_id, **result}
 
 
 @contextmanager

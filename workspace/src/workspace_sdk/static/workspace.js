@@ -520,7 +520,11 @@ function mayReplaceView(sheet) {
 }
 
 async function command(sheet, action) {
-  const response = await fetch(`./flows/${sheet.index}/${action}`, { method: "POST" });
+  const options = { method: "POST" };
+  if (action === "delete" && sheet.editSessionId) {
+    options.headers = { "X-Phyzflow-Edit-Session": sheet.editSessionId };
+  }
+  const response = await fetch(`./flows/${sheet.index}/${action}`, options);
   const data = await response.json();
   if (!response.ok) {
     throw Object.assign(new Error(data.error ?? "The action failed."), { status: data.status, deferred: data.deferred });

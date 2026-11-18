@@ -30,6 +30,17 @@ Keep application state separate from Workspace folders.
 
 Select **MCP access** on the landing page, name the client, and select the Workspaces it can access. Copy the generated token when it appears. Configure the MCP client for Streamable HTTP at `/mcp` on the application origin and supply `Authorization: Bearer <token>`. The `list_workspaces` tool lists granted Workspaces, and `inspect_workspace` lists sheets for a Workspace ID. Select an existing token to save new grants or revoke it. Changes apply on the next request, including for clients that are already connected.
 
+Authorized MCP clients have full flow-development parity inside their granted Workspaces across these tool categories:
+
+- **Workspace and sheet management:** `list_workspaces`, `inspect_workspace`, `create_sheet`, and `delete_sheet`.
+- **Sheet editing sessions:** `open_sheet`, `heartbeat_sheet`, `stage_draft`, and `close_sheet`.
+- **Files, source, and dashboards:** `list_files`, `read_file`, `search_code`, `write_file`, `apply_patch`, and `inspect_dashboards`.
+- **Node settings:** `read_node_settings` and `update_node_setting`.
+- **Validation and execution:** `validate_flow`, `run_flow`, `run_all_flows`, and `stop_flow`.
+- **Inspection, logs, and dependencies:** `inspect_execution`, `read_console_logs`, `configure_console_logs`, and `install_dependencies` (targeting the granted Workspace's `.venv` only).
+
+All MCP commands enforce live Workspace grants and keep application state, the Phyzflow source checkout, raw shell execution, and application updates or restarts outside the MCP boundary.
+
 ## Work on a selected project from the CLI
 
 Use the `workspace` executable installed in the project's Python environment. Run these commands from any directory:
