@@ -331,11 +331,40 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             }
 
         try:
-            return flow_sheet.edit_lease.write_locked(principal, session_id, apply_edit)
+            return flow_sheet.edit_lease.write_locked(
+                principal, session_id, apply_edit, path=relative.as_posix(),
+            )
         except SourceChanged:
             raise ToolError("Source changed. Read the latest revision before editing.") from None
         except (SheetLockedError, ValueError, UnicodeError, SyntaxError, OSError) as error:
             raise ToolError(str(error)) from None
+
+    @server.tool(description="Stage an unsaved draft in an active sheet editing session without modifying disk.")
+    def stage_draft(
+        workspace_id: str,
+        path: str,
+        source: str,
+        sheet: str = "Main",
+        session_id: str = "",
+    ) -> dict:
+        if not isinstance(source, str):
+            raise ToolError("source must be text.")
+        root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        _, relative = resolve_sheet_file(root, flow_sheet, path, for_write=True)
+        if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
+            raise ToolError("Source must fit in 128 KiB.")
+        try:
+            lock_status = flow_sheet.edit_lease.stage_draft(
+                access.principal(), session_id, relative.as_posix(), source,
+            )
+        except (SheetLockedError, ValueError, OSError) as error:
+            raise ToolError(str(error)) from None
+        return {
+            "path": relative.as_posix(),
+            "sheet": sheet,
+            "staged": True,
+            "edit_lock": lock_status,
+        }
 
     @server.tool(description="Create (revision='missing') or replace a file in a sheet while holding its edit lock.")
     def write_file(
@@ -374,7 +403,7 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
 
     @server.tool(description="Validate a sheet flow inside the Workspace Python environment.")
     async def validate_flow(workspace_id: str, sheet: str = "Main", session_id: str | None = None) -> dict:
-        from anyio import CancelScope, to_thread
+        from anyio import CancelScope, get_cancelled_exc_class, to_thread
 
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         interpreter = workspace_interpreter(root)
@@ -400,6 +429,8 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             }
             lifeline = None
             process = None
+            registered = False
+            disconnected = False
             try:
                 if os.name == "posix":
                     reader, lifeline = os.pipe()
@@ -433,16 +464,29 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
                 if session_id is not None:
                     try:
                         flow_sheet.edit_lease.register_process(session_id, process, lifeline)
+                        registered = True
                     except (SheetLockedError, ValueError, OSError) as error:
                         raise ToolError(str(error)) from None
                 _, stderr = await to_thread.run_sync(process.communicate, abandon_on_cancel=True)
+            except BaseException as error:
+                if isinstance(error, get_cancelled_exc_class()):
+                    disconnected = True
+                raise
             finally:
                 with CancelScope(shield=True):
                     if process is not None:
-                        flow_sheet.edit_lease.cleanup_process(session_id, process, lifeline)
+                        flow_sheet.edit_lease.cleanup_process(
+                            session_id if registered else None,
+                            process,
+                            lifeline,
+                        )
                     elif lifeline is not None:
                         with suppress(OSError):
                             os.close(lifeline)
+                    if disconnected and session_id is not None:
+                        flow_sheet.edit_lease.mark_disconnected(session_id)
+            if session_id is not None and flow_sheet.edit_lease.is_invalidated(session_id):
+                raise ToolError("This editing session is no longer active.")
             if result_path.is_file():
                 data = json.loads(result_path.read_text(encoding="utf-8"))
                 return {"sheet": sheet, **data}

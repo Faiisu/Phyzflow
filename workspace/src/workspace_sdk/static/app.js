@@ -56,6 +56,7 @@ const nodeCodeEditor = document.querySelector("#node-code-editor");
 const nodeSourceHighlight = document.querySelector("#node-source-highlight");
 const nodeSourceName = document.querySelector("#node-source-name");
 const nodeSourceMessage = document.querySelector("#node-source-message");
+const forceOpenNodeSource = document.querySelector("#force-open-node-source");
 const saveNodeSource = document.querySelector("#save-node-source");
 const nodes = new Map();
 const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", stopped: "Stopped" };
@@ -431,18 +432,30 @@ function currentEditSessionId() {
   return null;
 }
 
+function formatHeartbeat(timestamp) {
+  if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) return "Unavailable";
+  return timestamp.replace(/\.\d+/, "").replace("T", " ").replace(/(?:\+00:00|Z)$/, " UTC");
+}
+
 function externalEditLockMessage() {
-  if (nodeFilesEditLock && !nodeFilesEditLock.ok) return nodeFilesEditLock.error;
   if (sheetEditLock?.locked && !sheetEditLock.owned_by_viewer) {
-    return `Locked for editing by ${sheetEditLock.owner}.`;
+    const state = sheetEditLock.disconnected
+      ? "Possibly stale (Disconnected) · "
+      : sheetEditLock.stale
+        ? "Possibly stale · "
+        : "";
+    return `${state}Locked for editing by ${sheetEditLock.owner} · Last heartbeat ${formatHeartbeat(sheetEditLock.last_heartbeat)}`;
   }
+  if (nodeFilesEditLock && !nodeFilesEditLock.ok) return nodeFilesEditLock.error;
   return "";
 }
 
 function syncEditLockUI() {
   const lockedByOther = Boolean(sheetEditLock?.locked && !sheetEditLock.owned_by_viewer);
   editLockBadge.hidden = !lockedByOther;
-  editLockBadge.title = lockedByOther ? `Locked for editing by ${sheetEditLock.owner}` : "";
+  editLockBadge.textContent = lockedByOther && sheetEditLock?.stale ? "Read-only · Possibly stale" : "Read-only";
+  editLockBadge.title = lockedByOther ? externalEditLockMessage() : "";
+  forceOpenNodeSource.hidden = !(lockedByOther && window.parent !== window && window.parent.phyzflowRequestForceOpen);
   if (currentSource && !savingSource && !nodeSourceRequest) {
     nodeSourceInput.readOnly = nodeSourceLocked();
     updateSourceDirty();
@@ -451,9 +464,27 @@ function syncEditLockUI() {
   }
 }
 
-window.addEventListener("workspace-edit-lock", event => {
+forceOpenNodeSource.addEventListener("click", () => {
+  if (window.parent !== window) window.parent.phyzflowRequestForceOpen?.(window);
+});
+
+window.addEventListener("workspace-edit-lock", async event => {
   sheetEditLock = event.detail.editLock ?? null;
+  const unlocked = !sheetEditLock?.locked || sheetEditLock.owned_by_viewer;
+  if (unlocked && nodeFilesEditLock && !nodeFilesEditLock.ok) {
+    nodeFilesEditLock = null;
+  }
   syncEditLockUI();
+  if (nodeFilesDialog.open && !sheetEditLock?.locked && !currentEditSessionId() &&
+      window.parent !== window && window.parent.phyzflowAcquireEditLock) {
+    nodeFilesEditLock = await window.parent.phyzflowAcquireEditLock(window);
+    if (nodeFilesEditLock.editLock) sheetEditLock = nodeFilesEditLock.editLock;
+    if (nodeFilesEditLock.ok && currentSource && !savingSource) {
+      await openSource(currentSource.index, currentSource.path);
+    } else {
+      syncEditLockUI();
+    }
+  }
 });
 
 function sourceIsDirty() {

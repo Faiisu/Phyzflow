@@ -10,12 +10,14 @@ const runAll = document.querySelector("#run-all");
 const reloadFlow = document.querySelector("#reload-flow");
 const reloadMessage = document.querySelector("#reload-message");
 const editLockMessage = document.querySelector("#edit-lock-message");
+const forceOpenFlow = document.querySelector("#force-open-flow");
 const sourceChangeMessage = document.querySelector("#source-change-message");
 const editFlowSource = document.querySelector("#edit-flow-source");
 const sourceDialog = document.querySelector("#flow-source");
 const sourceForm = sourceDialog.querySelector("form");
 const sourceInput = sourceForm.querySelector("#flow-source-input");
 const sourceMessage = sourceForm.querySelector("#flow-source-message");
+const forceOpenSource = sourceForm.querySelector("#force-open-source");
 const saveSource = sourceForm.querySelector('button[type="submit"]');
 const closeSource = sourceForm.querySelector("#close-flow-source");
 const createDialog = document.querySelector("#create-sheet");
@@ -30,9 +32,19 @@ const deleteMessage = deleteForm.querySelector("#delete-sheet-message");
 const deleteError = deleteForm.querySelector(".dialog-error");
 const deleteButton = deleteForm.querySelector('button[type="submit"]');
 const cancelDelete = deleteForm.querySelector('button[type="button"]');
+const forceOpenDialog = document.querySelector("#force-open-sheet");
+const forceOpenForm = forceOpenDialog.querySelector("form");
+const forceOpenOwner = forceOpenForm.querySelector("#force-open-owner");
+const forceOpenHeartbeat = forceOpenForm.querySelector("#force-open-heartbeat");
+const forceOpenStatus = forceOpenForm.querySelector("#force-open-status");
+const forceOpenEffect = forceOpenForm.querySelector("#force-open-effect");
+const forceOpenError = forceOpenForm.querySelector("#force-open-error");
+const confirmForceOpen = forceOpenForm.querySelector("#confirm-force-open");
+const cancelForceOpen = forceOpenForm.querySelector("#cancel-force-open");
 const sheets = [];
 let active = null;
 let sheetToDelete = null;
+let sheetToForceOpen = null;
 let sourceDraft = null;
 let pendingSourceSheet = null;
 let editRunningSource = false;
@@ -49,14 +61,35 @@ function element(tag, text, className) {
   return node;
 }
 
+function formatHeartbeat(timestamp) {
+  if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) return "Unavailable";
+  return timestamp.replace(/\.\d+/, "").replace("T", " ").replace(/(?:\+00:00|Z)$/, " UTC");
+}
+
+function lockStateLabel(lock) {
+  if (!lock?.locked) return "";
+  if (lock.disconnected) return "Possibly stale (Disconnected)";
+  return lock.stale ? "Possibly stale" : "Active";
+}
+
+function externalLockSummary(lock) {
+  if (!lock?.locked || lock.owned_by_viewer) return "";
+  const prefix = lock.stale ? `${lockStateLabel(lock)} · ` : "";
+  return `${prefix}Locked for editing by ${lock.owner} · Last heartbeat ${formatHeartbeat(lock.last_heartbeat)}`;
+}
+
 function lockNoticeText(lock) {
-  return lock?.locked && !lock.owned_by_viewer ? `Read-only · Locked for editing by ${lock.owner}` : "";
+  const summary = externalLockSummary(lock);
+  return summary ? `Read-only · ${summary}` : "";
 }
 
 function notifyFrameEditLock(sheet) {
-  sheet.frame?.contentWindow?.dispatchEvent(new CustomEvent("workspace-edit-lock", {
-    detail: { editLock: sheet.editLock ?? null },
-  }));
+  try {
+    sheet.frame?.contentWindow?.dispatchEvent(new CustomEvent("workspace-edit-lock", {
+      detail: { editLock: sheet.editLock ?? null },
+    }));
+  } catch (error) {
+  }
 }
 
 function findSheetByWindow(frameWindow) {
@@ -79,6 +112,29 @@ async function postEditLock(sheet, body, { keepalive = false } = {}) {
   });
   const data = await response.json().catch(() => ({}));
   return { ok: response.ok, status: response.status, data };
+}
+
+function startSheetHeartbeat(sheet) {
+  if (sheet.heartbeatTimer !== null) return;
+  const sessionId = sheet.editSessionId;
+  sheet.heartbeatTimer = setInterval(() => {
+    if (sheet.editSessionId !== sessionId) return;
+    postEditLock(sheet, { action: "heartbeat", session_id: sessionId }).then(({ ok: alive, data: status }) => {
+      if (sheet.editSessionId !== sessionId) return;
+      if (alive) {
+        sheet.editLock = status;
+        notifyFrameEditLock(sheet);
+      } else {
+        clearSheetHeartbeat(sheet);
+        sheet.editSessionId = null;
+        sheet.activeEditors.clear();
+        if (status.edit_lock) sheet.editLock = status.edit_lock;
+        notifyFrameEditLock(sheet);
+        syncFlowSourceLock();
+        showNotice();
+      }
+    }).catch(() => {});
+  }, 15000);
 }
 
 async function acquireSheetEdit(sheet, editorKey) {
@@ -104,27 +160,7 @@ async function acquireSheetEdit(sheet, editorKey) {
   sheet.version++;
   sheet.editLock = data;
   sheet.activeEditors.add(editorKey);
-  if (sheet.heartbeatTimer === null) {
-    const sessionId = sheet.editSessionId;
-    sheet.heartbeatTimer = setInterval(() => {
-      if (sheet.editSessionId !== sessionId) return;
-      postEditLock(sheet, { action: "heartbeat", session_id: sessionId }).then(({ ok: alive, data: status }) => {
-        if (sheet.editSessionId !== sessionId) return;
-        if (alive) {
-          sheet.editLock = status;
-          notifyFrameEditLock(sheet);
-        } else {
-          clearSheetHeartbeat(sheet);
-          sheet.editSessionId = null;
-          sheet.activeEditors.clear();
-          if (status.edit_lock) sheet.editLock = status.edit_lock;
-          notifyFrameEditLock(sheet);
-          syncFlowSourceLock();
-          showNotice();
-        }
-      }).catch(() => {});
-    }, 15000);
-  }
+  startSheetHeartbeat(sheet);
   notifyFrameEditLock(sheet);
   showNotice();
   return { ok: true, sessionId: sheet.editSessionId, error: "", editLock: data };
@@ -161,6 +197,38 @@ window.phyzflowReleaseEditLock = frameWindow => {
 
 window.phyzflowEditSessionId = frameWindow => findSheetByWindow(frameWindow)?.editSessionId ?? null;
 window.phyzflowSheetEditLock = frameWindow => findSheetByWindow(frameWindow)?.editLock ?? null;
+window.phyzflowRequestForceOpen = frameWindow => {
+  const sheet = findSheetByWindow(frameWindow);
+  if (sheet) openForceOpenDialog(sheet);
+};
+
+function renderForceOpenDetails(lock) {
+  forceOpenOwner.textContent = lock?.owner ?? "Unavailable";
+  forceOpenHeartbeat.textContent = formatHeartbeat(lock?.last_heartbeat);
+  forceOpenStatus.textContent = lockStateLabel(lock) || "Unavailable";
+  forceOpenEffect.textContent = lock?.has_unsaved_draft
+    ? "This session has unsaved edits. Force opening will end the stuck editing session, discard any unsaved edits from that session, and load the latest saved source from disk."
+    : "Force opening will end the stuck editing session, discard any unsaved edits from that session, and load the latest saved source from disk.";
+}
+
+function syncForceOpenDialog() {
+  if (!forceOpenDialog.open || !sheetToForceOpen || confirmForceOpen.disabled) return;
+  const lock = sheetToForceOpen.editLock;
+  if (!lock?.locked || lock.owned_by_viewer) {
+    forceOpenDialog.close();
+    return;
+  }
+  renderForceOpenDetails(lock);
+}
+
+function openForceOpenDialog(sheet) {
+  const lock = sheet?.editLock;
+  if (!lock?.locked || lock.owned_by_viewer) return;
+  sheetToForceOpen = sheet;
+  forceOpenError.hidden = true;
+  renderForceOpenDetails(lock);
+  forceOpenDialog.showModal();
+}
 
 function flowSourceLocked() {
   if (sourceDraft?.readOnlyLock) return true;
@@ -170,15 +238,16 @@ function flowSourceLocked() {
 
 function syncFlowSourceLock() {
   if (!sourceDialog.open || !sourceDraft || closeSource.disabled) return;
-  const externalLock = sourceDraft.readOnlyLock
-    ? sourceDraft.lockMessage
-    : active?.editLock?.locked && !active.editLock.owned_by_viewer
-      ? `Locked for editing by ${active.editLock.owner}.`
+  const externalLock = active?.editLock?.locked && !active.editLock.owned_by_viewer
+    ? externalLockSummary(active.editLock)
+    : sourceDraft.readOnlyLock
+      ? sourceDraft.lockMessage
       : "";
   const running = !editRunningSource && sourceDraft?.sheet.status === "running";
   const locked = Boolean(externalLock) || running;
   sourceInput.readOnly = locked;
   saveSource.disabled = locked || !flowSourceIsDirty();
+  forceOpenSource.hidden = !Boolean(active?.editLock?.locked && !active.editLock.owned_by_viewer);
   if (externalLock) {
     sourceMessage.textContent = `Read-only · ${externalLock}`;
   } else if (running) {
@@ -206,6 +275,8 @@ function showNotice() {
   const lockText = lockNoticeText(active?.editLock);
   editLockMessage.hidden = !lockText;
   if (editLockMessage.textContent !== lockText) editLockMessage.textContent = lockText;
+  editLockMessage.title = lockText;
+  forceOpenFlow.hidden = !lockText || Boolean(active?.pending);
   sourceChangeMessage.hidden = !change;
   const snapshot = Boolean(active?.frameStopped);
   notice.classList.toggle("is-snapshot", snapshot);
@@ -231,6 +302,93 @@ function showNotice() {
 
 reopen.addEventListener("click", () => openFlow(active));
 reloadFlow.addEventListener("click", () => openFlow(active, "reload"));
+forceOpenFlow.addEventListener("click", () => openForceOpenDialog(active));
+forceOpenSource.addEventListener("click", () => openForceOpenDialog(active));
+cancelForceOpen.addEventListener("click", () => forceOpenDialog.close());
+forceOpenDialog.addEventListener("cancel", event => {
+  if (confirmForceOpen.disabled) event.preventDefault();
+});
+forceOpenDialog.addEventListener("close", () => {
+  if (!confirmForceOpen.disabled) sheetToForceOpen = null;
+});
+forceOpenForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const sheet = sheetToForceOpen;
+  if (!sheet || sheet.pending) return;
+  forceOpenError.hidden = true;
+  confirmForceOpen.disabled = cancelForceOpen.disabled = true;
+  sheet.pending = true;
+  sheet.version++;
+  const editingFlowSource = Boolean(sourceDialog.open && active === sheet);
+  try {
+    const payload = { action: "force_open", acquire: editingFlowSource };
+    if (sheet.editSessionId) payload.session_id = sheet.editSessionId;
+    const { ok, data } = await postEditLock(sheet, payload);
+    if (!ok) {
+      if (data.edit_lock) {
+        sheet.editLock = data.edit_lock;
+        notifyFrameEditLock(sheet);
+        syncFlowSourceLock();
+      }
+      throw new Error(data.error ?? "Could not force open this sheet.");
+    }
+    sheet.version++;
+    sheet.editLock = data.edit_lock ?? null;
+    sheet.sourceChange = null;
+    if (data.edit_lock?.owned_by_viewer && data.edit_lock.session_id) {
+      sheet.editSessionId = data.edit_lock.session_id;
+      sheet.activeEditors.add("flow-source");
+      startSheetHeartbeat(sheet);
+    } else {
+      clearSheetHeartbeat(sheet);
+      sheet.editSessionId = null;
+      sheet.activeEditors.clear();
+    }
+    if (data.revision !== undefined) sheet.revision = data.revision;
+    if (data.reload_error) {
+      sheet.reloadError = data.reload_error;
+      updateStatus(sheet, data.status ?? "unavailable");
+    } else {
+      sheet.error = null;
+      sheet.runError = null;
+      sheet.reloadError = null;
+      if (data.status !== "running" && data.status !== "stopping") {
+        showFrame(sheet, sheet.revision);
+      }
+      updateStatus(sheet, data.status ?? "ready");
+    }
+    sheetToForceOpen = null;
+    forceOpenDialog.close();
+    if (editingFlowSource) {
+      try {
+        const { source, revision } = await requestFlowSource(sheet);
+        sourceDraft = {
+          sheet,
+          source,
+          revision,
+          readOnlyLock: false,
+          lockMessage: "",
+        };
+        sourceInput.value = source;
+        sourceInput.disabled = false;
+        sourceMessage.textContent = "Force opened. Loaded latest saved source.";
+        syncFlowSourceLock();
+        sourceInput.focus();
+      } catch (sourceError) {
+        sourceMessage.textContent = sourceError.message;
+      }
+    }
+    notifyFrameEditLock(sheet);
+  } catch (error) {
+    forceOpenError.textContent = error.message;
+    forceOpenError.hidden = false;
+  } finally {
+    sheet.pending = false;
+    sheet.version++;
+    confirmForceOpen.disabled = cancelForceOpen.disabled = false;
+    showNotice();
+  }
+});
 
 async function requestFlowSource(sheet, changes) {
   const headers = {};
@@ -264,6 +422,7 @@ editFlowSource.addEventListener("click", async () => {
   sourceDraft = null;
   sourceInput.value = "";
   sourceInput.disabled = saveSource.disabled = closeSource.disabled = true;
+  forceOpenSource.hidden = true;
   sourceMessage.textContent = "Loading source…";
   sourceDialog.showModal();
   let lock = null;
@@ -349,7 +508,11 @@ window.addEventListener("beforeunload", event => {
 });
 
 function hasUnsavedSource(sheet) {
-  return sheet.frame?.contentDocument?.documentElement.hasAttribute("data-unsaved-source");
+  try {
+    return Boolean(sheet.frame?.contentDocument?.documentElement.hasAttribute("data-unsaved-source"));
+  } catch (error) {
+    return false;
+  }
 }
 
 function mayReplaceView(sheet) {
@@ -680,7 +843,10 @@ async function pollStatus() {
             sheet.activeEditors.clear();
           }
           notifyFrameEditLock(sheet);
-          if (sheet === active) syncFlowSourceLock();
+          if (sheet === active) {
+            syncFlowSourceLock();
+            syncForceOpenDialog();
+          }
         }
       }
       if (flows[sheet.index] && (!sheet.frameStopped || !runAll.hidden) && !sheet.pending && sheet.version === versions[sheet.index]) {
