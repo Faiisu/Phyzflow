@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from time import monotonic, sleep
 from threading import Lock, Thread
@@ -13,39 +14,96 @@ from .execution import ExternalRun, sheet_lock
 
 
 class AgentJobs:
-    def __init__(self):
+    def __init__(self, state=None):
         self.lock = Lock()
-        self.jobs = {}
+        self.state = state
+        self.jobs = state.load_jobs() if state else {}
+        self.collectors = []
 
-    def start(self, project, operation, sheet, inputs):
+    def save(self, item, request_key=None):
+        if self.state:
+            self.state.save_job(item, request_key)
+
+    def spawn(self, argv, *, inherited=-1, **kwargs):
+        if not self.state:
+            return subprocess.Popen(argv, start_new_session=True,
+                                    pass_fds=() if inherited < 0 else (inherited,), **kwargs)
+        reader, writer = os.pipe()
+        owner = self.state.owner.fileno()
+        try:
+            process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('agent_supervisor.py')),
+                                        str(reader), str(owner), str(inherited), *argv],
+                                       start_new_session=True,
+                                       pass_fds=(reader, owner) + (() if inherited < 0 else (inherited,)), **kwargs)
+        except BaseException:
+            os.close(writer)
+            raise
+        finally:
+            os.close(reader)
+        process.agent_lifeline = writer
+        return process
+
+    def finish_process(self, process):
+        with self.lock:
+            writer = getattr(process, 'agent_lifeline', None)
+            if writer is not None:
+                process.agent_lifeline = None
+                os.close(writer)
+
+    def launch_collector(self, collect):
+        thread = Thread(target=collect, daemon=True)
+        self.collectors.append(thread)
+        thread.start()
+
+    def close(self):
+        with self.lock:
+            active = [(item['project'], identity) for identity, item in self.jobs.items()
+                      if item['job']['status'] in ('queued', 'running')]
+        for root, identity in active:
+            self.get({'root': root}, identity, cancel=True)
+        for thread in self.collectors:
+            thread.join()
+
+    def start(self, project, operation, sheet, inputs, request_key=None):
         if os.name != 'posix':
             raise ValueError('Agent flow jobs require Linux or macOS.')
         reservation = sheet_lock(sheet)
         descriptor = reservation.__enter__()
         job_id = uuid4().hex
         job = {'job_id': job_id, 'status': 'queued', 'operation': operation}
+        item = {'project': project['root'], 'job': job, 'cancelled': False}
+        with self.lock:
+            self.jobs[job_id] = item
+            self.save(item, request_key)
         try:
             if operation == 'run_flow':
                 ExternalRun(sheet, job_id)
-            process = subprocess.Popen([project['python'], '-m', 'workspace_sdk.agent_worker'], cwd=sheet,
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                       start_new_session=True, pass_fds=(descriptor.fileno(),))
+            process = self.spawn([project['python'], '-m', 'workspace_sdk.agent_worker'], cwd=sheet,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 inherited=descriptor.fileno())
             process.stdin.write((json.dumps({'job_id': job_id, 'operation': operation, 'input': inputs}) + '\n').encode())
             process.stdin.close()
         except BaseException:
             if 'process' in locals():
-                os.killpg(process.pid, signal.SIGKILL)
+                if hasattr(process, 'agent_lifeline'):
+                    self.finish_process(process)
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
             reservation.__exit__(None, None, None)
+            with self.lock:
+                job.update(status='failed', error={'stage': 'worker', 'message': 'Could not start project worker.'})
+                self.save(item)
             raise
         with self.lock:
-            self.jobs[job_id] = {'project': project['root'], 'job': job, 'process': process, 'cancelled': False}
+            item['process'] = process
         def collect():
             with self.lock:
                 job['status'] = 'running'
             data = process.stdout.read(128 * 1024 + 1)
             process.stdout.close()
             process.wait()
+            self.finish_process(process)
             try:
                 completed = json.loads(data) if len(data) <= 128 * 1024 else {}
             except ValueError:
@@ -58,10 +116,11 @@ class AgentJobs:
                     job.update(completed)
                 else:
                     job.update(status='failed', error={'stage': 'worker', 'message': 'Project worker exited without a result.'})
-        Thread(target=collect, daemon=True).start()
+                self.save(item)
+        self.launch_collector(collect)
         return {'job_id': job_id, 'status': 'queued'}
 
-    def start_command(self, project, program, argv, cwd):
+    def start_command(self, project, program, argv, cwd, request_key=None):
         if os.name != 'posix':
             raise ValueError('Agent command jobs require Linux or macOS.')
         python = Path(project['python'])
@@ -71,21 +130,27 @@ class AgentJobs:
         # Do not inherit caller credentials, Python import paths or environment overrides.
         environment = {'PATH': str(python.parent) + os.pathsep + os.defpath,
                        'PYTHONNOUSERSITE': '1', 'PYTHONUNBUFFERED': '1'}
+        if not Path(executable).is_file() or not os.access(executable, os.X_OK):
+            raise ValueError(f'Cannot start executable {executable}: missing or not executable. Check the configured command and environment.')
         job_id = uuid4().hex
         job = {'job_id': job_id, 'status': 'queued', 'operation': 'run_command'}
         with self.lock:
             if sum(item['job']['operation'] == 'run_command' for item in self.jobs.values()) >= 32:
-                raise ValueError('Command job retention limit (32) reached; restart the agent to clear retained jobs.')
-            try:
-                process = subprocess.Popen([executable, *argv], cwd=cwd, env=environment,
-                                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                           start_new_session=True)
-            except OSError as error:
-                raise ValueError(f'Cannot start executable {executable}: {error.strerror}. Check the configured command and environment.') from error
-            item = {'project': project['root'], 'job': job, 'process': process, 'cancelled': False,
+                raise ValueError('Command job retention limit (32) reached; archive this agent instance before provisioning a new state directory.')
+            item = {'project': project['root'], 'job': job, 'cancelled': False,
                     'output': {name: {'data': bytearray(), 'total_bytes': 0} for name in ('stdout', 'stderr')}}
             self.jobs[job_id] = item
+            self.save(item, request_key)
+            try:
+                process = self.spawn([executable, *argv], cwd=cwd, env=environment,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except OSError as error:
+                job.update(status='failed', error={'stage': 'command', 'message': 'Could not start executable.'})
+                self.save(item)
+                raise ValueError(f'Cannot start executable {executable}: {error.strerror}. Check the configured command and environment.') from error
+            item['process'] = process
             job['status'] = 'running'
+            self.save(item)
 
         def drain(name, stream):
             with stream:
@@ -94,6 +159,7 @@ class AgentJobs:
                         output = item['output'][name]
                         output['total_bytes'] += len(chunk)
                         output['data'].extend(chunk[:max(0, 128 * 1024 - len(output['data']))])
+                        self.save(item)
 
         def collect():
             readers = [Thread(target=drain, args=(name, stream), daemon=True)
@@ -101,13 +167,15 @@ class AgentJobs:
             for reader in readers:
                 reader.start()
             exit_code = process.wait()
+            self.finish_process(process)
             for reader in readers:
                 reader.join()
             with self.lock:
                 job.update(exit_code=exit_code, status='cancelled' if item['cancelled'] else
                            ('succeeded' if exit_code == 0 else 'failed'))
+                self.save(item)
 
-        Thread(target=collect, daemon=True).start()
+        self.launch_collector(collect)
         return {'job_id': job_id, 'status': 'queued'}
 
     def output(self, project, job_id, stream='stdout', cursor=0, limit=16384):
@@ -133,7 +201,12 @@ class AgentJobs:
             cancelling = cancel and item['job']['status'] in ('queued', 'running')
             if cancelling:
                 item['cancelled'] = True
-        if cancelling:
+        if cancelling and hasattr(item['process'], 'agent_lifeline'):
+            # The supervisor owns a live group leader and escalation; never signal
+            # a guardian PID that another collector may already have reaped.
+            self.finish_process(item['process'])
+            item['process'].wait()
+        elif cancelling:
             try:
                 os.killpg(item['process'].pid, signal.SIGTERM)
                 deadline = monotonic() + 2
