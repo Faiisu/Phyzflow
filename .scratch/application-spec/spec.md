@@ -4,6 +4,8 @@ The [application specification](../../docs/application-spec.md) defines the prod
 
 For each ticket, start with its acceptance scenarios. Check the existing behavior through the stated entry point, implement any missing behavior, and repeat the scenarios. The release ticket verifies the full specification on installed hosts.
 
+The current implementation pass targets macOS. Linux and Windows development and cross-platform release acceptance are deferred.
+
 ## Tickets
 
 1. [Create a Workspace and run its first flow](issues/01-create-and-run-a-workspace.md)
