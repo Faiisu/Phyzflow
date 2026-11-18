@@ -14,6 +14,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .node_sources import SourceChanged, edit_source_file
 from .sheets import discover_flows
+from .agent_jobs import AgentJobs
+from .execution import FlowBusy
 
 MAX_READ_BYTES = 64 * 1024
 MAX_ENTRIES = 500
@@ -68,6 +70,7 @@ class WorkspaceAgent:
     def __init__(self, projects):
         if not isinstance(projects, dict) or not projects:
             raise ValueError('Configure at least one project.')
+        self.jobs = AgentJobs()
         self.projects = {}
         for name, project in projects.items():
             root = Path(project['root']).expanduser().resolve(strict=True)
@@ -90,6 +93,8 @@ class WorkspaceAgent:
                 raise AgentError('invalid_request', 'Expected an operation name and arguments object.')
             result = self.execute(self.projects[project_id], operation, arguments)
             return {'request_id': request_id, 'ok': True, 'result': result}
+        except FlowBusy as error:
+            return {'request_id': request_id, 'ok': False, 'error': {'code': 'conflict', 'stage': 'execution', 'message': str(error)}}
         except SourceChanged:
             return {'request_id': request_id, 'ok': False, 'error': {'code': 'conflict', 'stage': 'filesystem', 'message': 'Source changed. Read the latest revision before editing.'}}
         except AgentError as error:
@@ -100,11 +105,25 @@ class WorkspaceAgent:
     def execute(self, project, operation, arguments):
         root = project['root']
         allowed = {'inspect_project': set(), 'list_files': {'path'}, 'read_file': {'path'}, 'search_code': {'query'},
+                   'validate_flow': {'sheet'}, 'run_flow': {'sheet', 'input'}, 'get_job': {'job_id'}, 'cancel_job': {'job_id'},
                    'write_file': {'path', 'revision', 'source'}, 'apply_patch': {'path', 'revision', 'old_text', 'new_text'}}
         if operation not in allowed:
             raise AgentError('unsupported_operation', 'Unsupported operation.')
         if set(arguments) - allowed[operation]:
             raise AgentError('invalid_arguments', 'Unexpected operation arguments.')
+        if operation in ('get_job', 'cancel_job'):
+            if not isinstance(arguments.get('job_id'), str):
+                raise AgentError('invalid_arguments', 'A job_id is required.')
+            return self.jobs.get(project, arguments['job_id'], operation == 'cancel_job')
+        if operation in ('validate_flow', 'run_flow'):
+            sheet_name = arguments.get('sheet', 'Main')
+            sheet = next((path for name, path in discover_flows(root) if name == sheet_name), None)
+            if sheet is None or project_path(root, sheet.relative_to(root).as_posix()) != sheet:
+                raise AgentError('invalid_arguments', 'Unknown project sheet.')
+            inputs = arguments.get('input', {})
+            if not isinstance(inputs, dict):
+                raise AgentError('invalid_arguments', 'Flow input must be an object.')
+            return self.jobs.start(project, operation, sheet, inputs)
         if operation in ('write_file', 'apply_patch'):
             return self.edit_file(project, operation, arguments)
         if operation == 'inspect_project':

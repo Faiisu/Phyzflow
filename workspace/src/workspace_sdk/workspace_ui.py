@@ -1,6 +1,6 @@
 """Host independent flow sheets using the existing local flow UI."""
 
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
@@ -16,6 +16,7 @@ from threading import Lock
 import traceback
 from urllib.request import ProxyHandler, build_opener
 
+from .execution import FlowBusy, sheet_busy, sheet_lock
 from .project import ValidationError, load_project
 from .sheets import (
     archive_sheet_directory,
@@ -100,11 +101,15 @@ class FlowSheet:
         return stamp if stamp != attempted else None
 
     def open(self, *, reload: bool = False, automatic_source: str | None = None) -> int:
-        with self.lock:
+        with self.lock, ExitStack() as reservation:
             if self.closing:
                 raise RuntimeError("Workspace is shutting down.")
             if reload:
                 status = self.status()
+                try:
+                    reservation.enter_context(sheet_lock(self.root))
+                except FlowBusy as error:
+                    raise ReloadConflict(str(error)) from None
                 if status == "running":
                     raise ReloadConflict("This flow is running. Wait for it to finish or stop it before reloading.")
                 if status == "unavailable" and self.worker is not None and self.worker.process.is_alive():
@@ -160,6 +165,8 @@ class FlowSheet:
             self.closing = True
 
     def status(self) -> str:
+        if sheet_busy(self.root):
+            return "running"
         worker = self.worker
         if worker is None:
             return self.inactive_status

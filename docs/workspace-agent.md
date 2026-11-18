@@ -1,6 +1,6 @@
 # Workspace development agent
 
-The local agent provides authenticated project inspection and revision-checked source editing without a browser. Jobs, central routing, and MCP are delivered by later tickets.
+The local agent provides authenticated project inspection, revision-checked source editing, and flow validation/execution without a browser. General development commands, persistent jobs, central routing, and MCP are delivered by later tickets.
 
 ## Start and connect
 
@@ -65,6 +65,10 @@ POST `/request` with `Content-Type: application/json` and `Authorization: Bearer
 | `search_code` | Literal `query`, 1–512 characters | Matches with path, one-based line, text preview, and `truncated` |
 | `write_file` | Relative `path`, expected `revision`, full `source` | New revision, path, created flag, bounded unified diff |
 | `apply_patch` | Relative `path`, expected `revision`, `old_text`, `new_text` | New revision, path, created flag, bounded unified diff |
+| `validate_flow` | Optional sheet name `sheet`, default `Main` | `job_id` and initial `queued` status |
+| `run_flow` | Optional sheet name `sheet`, default `Main`; optional `input` object | `job_id` and initial `queued` status |
+| `get_job` | `job_id` belonging to this project | Current status and completed result or diagnostic |
+| `cancel_job` | `job_id` belonging to this project | Current status after requesting cancellation |
 
 Read previews consume at most 64 KiB of file bytes. Invalid UTF-8 bytes are replaced for display. Truncated reads have a null revision because a partial digest must not authorize a full-file edit. Directory listings return at most 500 entries. Search scans at most 2,000 directory entries and returns at most 100 matches, limiting each matching line preview to 1,024 characters. Search is literal and case-sensitive, covering Python, JSON, TOML, JavaScript, HTML, CSS, Markdown, and text files. A truncated result is incomplete; narrow the search or inspect a relevant file directly.
 
@@ -89,3 +93,30 @@ result = client.request("rename-node", "development", "apply_patch", {
 ```
 
 Inspection and edits use the same project files as the existing CLI and Web UI. Open idle sheets detect Python edits through the existing automatic reload behavior. Active runs keep executing their loaded source until completion; unsaved browser drafts defer reload. The agent reports concurrent file conflicts rather than overwriting another editor's save. Edits to dashboard assets are visible on Reload dashboard.
+
+
+## Validate and run flows
+
+Flow jobs currently require Linux or macOS. Install Workspace SDK in each configured project interpreter. Each job starts a fresh process in the selected sheet directory with that interpreter, so project imports cannot leak between jobs. Validation uses the same syntax, import, graph, and settings checks as the CLI and UI and does not execute nodes. Both validation and execution return immediately with an agent-owned job identifier; poll `get_job` until `succeeded`, `failed`, or `cancelled` (intermediate states are `queued` and `running`).
+
+```python
+import time
+
+started = client.request("run-1", "development", "run_flow", {
+    "sheet": "Main", "input": {"text": "example"},
+})
+job_id = started["result"]["job_id"]
+while True:
+    job = client.request("poll-1", "development", "get_job", {"job_id": job_id})["result"]
+    if job["status"] not in ("queued", "running"):
+        break
+    time.sleep(0.1)
+```
+
+Completed flow results include `run_id`, `source_version`, JSON-compatible `output`, and safe per-step history diagnostics, including failed and skipped nodes. Source versions describe the source loaded for execution, including uncommitted edits. A failed validation/import returns `error.stage`, exception type, message, and traceback with source locations. These authenticated development results remain in agent memory; they may contain sensitive text. Results are bounded to 128 KiB; non-JSON or larger results return a result-stage diagnostic. Raw worker stdout/stderr is not an output/log contract in this ticket.
+
+Execution uses the UI's Runner, node settings, and history recording. History excludes request values and request-derived exception text by default; explicit per-node sample capture keeps its existing behavior. If history cannot be written, successful output still returns with `history_error` and its source version. An already-open UI discovers agent runs, disables Run while active, and refreshes its shared completed history. External live state contains bounded status/timing/source fields only (at most 256 event entries and 128 KiB), without raw inputs, outputs, previews, or traceback text. Final output is available from `get_job`; the UI inspects the saved metadata and diagnostic locations.
+
+A per-sheet operating-system lock coordinates agent execution, UI execution, and UI reload. A conflicting start or explicit reload returns a conflict; automatic source reload waits for completion. Other sheets remain independent. Cancellation terminates the job's process group, waits up to two seconds, and kills an unresponsive worker before releasing its reservation. Poll until `cancelled` before starting another job. Interrupted runs do not receive a fabricated successful history record.
+
+Job state and raw results currently live only in agent memory and do not survive restart. Request deduplication, durable recovery, output paging, and service lifecycle belong to the persistence tickets. Do not blindly retry a start whose acknowledgement was lost.
