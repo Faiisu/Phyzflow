@@ -21,6 +21,7 @@ Read [the development plan](docs/development-plan.md) before planning, implement
 
 ## Working rules
 
+- Keep new code comment-free. Use clear names and structure, and record design rationale in project documentation when needed.
 - Identify the current milestone, its dependencies, and its acceptance criteria before editing. Keep work scoped to the requested outcome. Use the documented parallel work where its prerequisites are met.
 - Preserve the first-release scope of one project, one Python environment per installation, one request/response flow, and one deployment target. Schedule separate model deployment and GPU worker management after the first target is delivered.
 - Keep `flow.py` as the source of the graph and nodes directly callable in Python. Pass Python objects between nodes in the same process. Give the CLI and UI the Runner's events and summaries.
