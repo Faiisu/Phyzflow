@@ -59,12 +59,17 @@ class ApplicationTests(unittest.TestCase):
                 page.get_by_label("Password").fill("incorrect")
                 page.get_by_role("button", name="Sign in").click()
                 expect(page.get_by_role("alert")).to_contain_text("Incorrect username or password.")
-                self.assertFalse(page.context.cookies(url))
+                self.assertFalse(bool(page.context.cookies(url)))
 
                 page.get_by_label("Username").fill("admin")
-                page.get_by_label("Password").fill((state / "admin" / "initial-password").read_text().strip())
+                password = (state / "admin" / "initial-password").read_text().strip()
+                page.get_by_label("Password").fill(password)
                 page.get_by_role("button", name="Sign in").click()
                 expect(page.get_by_role("heading", name="Workspaces")).to_be_visible()
+                session, = page.context.cookies(url)
+                self.assertTrue(session["httpOnly"])
+                self.assertEqual(session["sameSite"], "Strict")
+                self.assertFalse(password in session["value"])
 
     def test_independent_installations_keep_a_private_administrator_credential_after_restart(self):
         with TemporaryDirectory() as temp, browser_page() as page:
@@ -77,7 +82,7 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(S_IMODE(delivery.parent.stat().st_mode), 0o700)
                     self.assertEqual(S_IMODE(delivery.stat().st_mode), 0o600)
                 first_password = first_delivery.read_text().strip()
-                self.assertNotEqual(first_password, second_delivery.read_text().strip())
+                self.assertTrue(first_password != second_delivery.read_text().strip(), "Each installation needs its own password.")
                 page.goto(second_url)
                 page.get_by_label("Password").fill(first_password)
                 page.get_by_role("button", name="Sign in").click()

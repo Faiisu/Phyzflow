@@ -133,6 +133,10 @@ def serve_application(state_dir: Path, port: int) -> None:
     shutting_down = False
 
     class Handler(UIRequestHandler):
+        def end_headers(self) -> None:
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            super().end_headers()
+
         def valid_post_origin(self) -> bool:
             return self.local_request() and self.headers.get_all("Origin") == [f"http://{self.headers['Host']}"]
 
