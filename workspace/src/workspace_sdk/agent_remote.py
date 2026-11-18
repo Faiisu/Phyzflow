@@ -2,6 +2,7 @@
 
 import argparse
 from hmac import compare_digest
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -18,7 +19,9 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 
 from .agent import AgentClient
 
-READ_OPERATIONS = {'inspect_project', 'list_files', 'read_file', 'search_code'}
+REMOTE_OPERATIONS = {'inspect_project', 'list_files', 'read_file', 'search_code',
+                     'write_file', 'apply_patch', 'validate_flow', 'run_flow',
+                     'run_command', 'get_job', 'read_job_output', 'cancel_job'}
 POLL_SECONDS = 1
 LEASE_SECONDS = 3
 ROUTE_SECONDS = 3
@@ -82,7 +85,7 @@ class RemoteClient:
 
 
 class EdgeConnector:
-    """One outbound session forwarding to the authenticated, sole local owner."""
+    """Reconnect outbound routing to the authenticated, sole local owner."""
     def __init__(self, url, device_id, token, local_client, *, cafile=None):
         parsed = urlsplit(local_client.url)
         if (parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or
@@ -92,34 +95,62 @@ class EdgeConnector:
         self.device_id, self.local = device_id, local_client
 
     def run(self, stop):
-        registered = self.remote.post('/edge/register', {'device_id': self.device_id})
-        if not registered.get('ok'):
-            raise ValueError('Device registration rejected.')
-        session = registered['result']['session']
-        identity = {'device_id': self.device_id, 'session': session}
+        identity = None
+        delay = .25
+        finished = Event()
+
+        def heartbeat():
+            while not finished.wait(.5):
+                current = identity
+                if current is not None:
+                    try:
+                        self.remote.post('/edge/heartbeat', current)
+                    except (OSError, HTTPException, ValueError):
+                        pass
+
+        keeper = Thread(target=heartbeat)
+        keeper.start()
         try:
             while not stop.is_set():
-                polled = self.remote.post('/edge/poll', identity)
-                if not polled.get('ok'):
-                    raise ValueError('Device session rejected.')
-                delivery = polled['result'].get('delivery')
-                if delivery is None:
-                    continue
-                request = delivery['request']
-                # Ticket 06 deliberately exposes inspection only, independently of central.
-                if request['operation'] not in READ_OPERATIONS:
-                    response = failure('unsupported_operation', 'Remote operation is not enabled.', request['request_id'])
-                else:
-                    try:
-                        response = self.local.request(**request)
-                    except (OSError, ValueError):
-                        response = failure('unavailable', 'Local agent is unavailable.', request['request_id'])
-                self.remote.post('/edge/reply', {**identity, 'delivery_id': delivery['delivery_id'], 'response': response})
+                try:
+                    if identity is None:
+                        registered = self.remote.post('/edge/register', {'device_id': self.device_id})
+                        if not registered.get('ok'):
+                            raise ValueError('Device registration rejected.')
+                        identity = {'device_id': self.device_id, 'session': registered['result']['session']}
+                    polled = self.remote.post('/edge/poll', identity)
+                    if not polled.get('ok'):
+                        if polled.get('error', {}).get('code') == 'session_lost':
+                            identity = None
+                            continue
+                        # A replaced connector must not retake routing from its successor.
+                        raise ValueError('Device session rejected.')
+                    delay = .25
+                    delivery = polled['result'].get('delivery')
+                    if delivery is None:
+                        continue
+                    request = delivery['request']
+                    if request['operation'] not in REMOTE_OPERATIONS:
+                        response = failure('unsupported_operation', 'Remote operation is not enabled.', request['request_id'])
+                    else:
+                        try:
+                            response = self.local.request(**request)
+                        except (OSError, HTTPException, ValueError):
+                            response = failure('delivery_unknown', 'Local acknowledgement lost; execution may have occurred.', request['request_id'])
+                    # No automatic request replay: only callers may retry the original identity.
+                    self.remote.post('/edge/reply', {**identity, 'delivery_id': delivery['delivery_id'], 'response': response})
+                except (OSError, HTTPException):
+                    if stop.wait(delay):
+                        break
+                    delay = min(delay * 2, 2)
         finally:
-            try:
-                self.remote.post('/edge/disconnect', identity)
-            except (OSError, ValueError):
-                pass
+            finished.set()
+            keeper.join()
+            if identity is not None:
+                try:
+                    self.remote.post('/edge/disconnect', identity)
+                except (OSError, HTTPException, ValueError):
+                    pass
 
 
 def create_router_server(config, port=0, host='127.0.0.1'):
@@ -152,8 +183,13 @@ def create_router_server(config, port=0, host='127.0.0.1'):
                     device.update(session=secrets.token_urlsafe(32), seen=time.monotonic(), polling=False)
                     return {'ok': True, 'result': {'session': device['session']}}, 200
                 session = body.get('session')
-                if not isinstance(session, str) or not device['session'] or not compare_digest(session, device['session']):
+                if not device['session']:
+                    return failure('session_lost', 'Device session lost; register again.'), 409
+                if not isinstance(session, str) or not compare_digest(session, device['session']):
                     return failure('stale_session', 'Register a new device session.'), 409
+                if path == '/edge/heartbeat':
+                    device['seen'] = time.monotonic()
+                    return {'ok': True, 'result': {}}, 200
                 if path == '/edge/disconnect':
                     device.update(session=None, seen=0)
                     invalidate(device_id)
@@ -212,7 +248,7 @@ def create_router_server(config, port=0, host='127.0.0.1'):
                     not isinstance(request['operation'], str) or len(json.dumps(request).encode()) > 65536):
                 return failure('invalid_request', 'Expected a bounded agent request.'), 400
             request_id = request['request_id']
-            if request['operation'] not in READ_OPERATIONS:
+            if request['operation'] not in REMOTE_OPERATIONS:
                 return failure('unsupported_operation', 'Remote operation is not enabled.', request_id), 400
             device = devices[device_id]
             if not device['session'] or time.monotonic() - device['seen'] >= LEASE_SECONDS:
