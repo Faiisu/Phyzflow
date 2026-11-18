@@ -4,8 +4,8 @@ from contextlib import contextmanager
 import os
 import json
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from time import perf_counter
+from uuid import uuid4
 
 from .history import RunHistory
 from .node_settings import SettingsStore
@@ -110,14 +110,14 @@ class ExternalRun:
             index = next(i for i, (_, event) in enumerate(data['events']) if 'step_id' in event)
             del data['events'][index]
             encoded = json.dumps(data, allow_nan=False).encode()
-        with NamedTemporaryFile(dir=self.root / '.workspace', delete=False) as stream:
-            pending = Path(stream.name)
-            try:
-                stream.write(encoded)
-                stream.close()
-                pending.replace(self.root / '.workspace' / 'agent-run.json')
-            finally:
-                pending.unlink(missing_ok=True)
+        workspace_dir = self.root / '.workspace'
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        pending = workspace_dir / f'.agent-run.{uuid4().hex}.tmp'
+        try:
+            pending.write_bytes(encoded)
+            pending.replace(workspace_dir / 'agent-run.json')
+        finally:
+            pending.unlink(missing_ok=True)
 
 
 def run_recorded(flow, root, loaded_sources, observer, **options):

@@ -221,8 +221,9 @@ def run_mcp_stack(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
         )
 
     runtime_dir = resolve_runtime_dir(repo_dir, project_dir)
-    runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(runtime_dir, 0o700)
+    runtime_dir.mkdir(mode=0o700 if os.name == "posix" else 0o777, parents=True, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(runtime_dir, 0o700)
 
     local_token_file = runtime_dir / "local-token"
     device_token_file = runtime_dir / "device-token"

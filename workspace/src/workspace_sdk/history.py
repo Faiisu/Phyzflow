@@ -1,9 +1,10 @@
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
-from tempfile import NamedTemporaryFile
 from typing import Any
+from uuid import uuid4
 
 from .project import relative_source
 
@@ -12,7 +13,7 @@ class RunHistory:
     def __init__(self, root: Path):
         self.root = root
         self.directory = root / ".workspace" / "runs"
-        self.directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.directory.mkdir(parents=True, mode=0o700 if os.name == "posix" else 0o777, exist_ok=True)
 
     def location(self, event: dict[str, Any]) -> dict[str, Any]:
         return {"file": relative_source(self.root, event["file"]), "line": event["line"]}
@@ -58,14 +59,12 @@ class RunHistory:
             "output": finished.get("output"),
             "steps": list(steps.values()),
         }
-        with NamedTemporaryFile(dir=self.directory, delete=False) as pending:
-            temporary = Path(pending.name)
-            try:
-                pending.write(json.dumps(record, allow_nan=False).encode())
-                pending.close()
-                temporary.replace(self.directory / f"{record['id']}.json")
-            finally:
-                temporary.unlink(missing_ok=True)
+        temporary = self.directory / f".{record['id']}.{uuid4().hex}.tmp"
+        try:
+            temporary.write_bytes(json.dumps(record, allow_nan=False).encode())
+            temporary.replace(self.directory / f"{record['id']}.json")
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def list_runs(self) -> list[dict[str, Any]]:
         runs = []

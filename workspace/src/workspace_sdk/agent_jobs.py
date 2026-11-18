@@ -24,7 +24,7 @@ def project_environment(project):
         'PYTHONNOUSERSITE': '1',
         'PYTHONUNBUFFERED': '1',
     }
-    for key in ('SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP'):
+    for key in ('SYSTEMDRIVE', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'):
         if key in os.environ:
             environment[key] = os.environ[key]
     return environment

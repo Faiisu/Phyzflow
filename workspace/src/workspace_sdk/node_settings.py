@@ -3,6 +3,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 from math import isfinite
+import os
 from pathlib import Path
 import sqlite3
 from threading import Lock
@@ -119,7 +120,7 @@ class SettingsStore:
         db.execute("CREATE TABLE IF NOT EXISTS setting (node TEXT, name TEXT, value TEXT, PRIMARY KEY (node, name))")
 
     def save(self, node: str, name: str, value: SettingValue) -> None:
-        self.path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.path.parent.mkdir(parents=True, mode=0o700 if os.name == "posix" else 0o777, exist_ok=True)
         with sqlite3.connect(self.path) as db:
             self.create_table(db)
             db.execute(

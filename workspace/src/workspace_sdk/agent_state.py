@@ -15,7 +15,7 @@ else:
 class AgentState:
     def __init__(self, directory):
         self.directory = Path(directory).expanduser().absolute()
-        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.directory.mkdir(mode=0o700 if os.name == 'posix' else 0o777, parents=True, exist_ok=True)
         info = self.directory.lstat()
         if self.directory.is_symlink() or (os.name == 'posix' and (info.st_uid != os.getuid() or info.st_mode & 0o077)):
             raise ValueError('Agent state directory must be private (0700) and owned by the current user.')
