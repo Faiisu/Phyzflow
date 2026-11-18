@@ -34,6 +34,9 @@ const consoleStreams = {
   stdout: document.querySelector("#console-stdout"),
   stderr: document.querySelector("#console-stderr"),
 };
+const saveConsoleLogs = document.querySelector("#save-console-logs");
+const consoleRetentionDays = document.querySelector("#console-retention-days");
+const consoleSettingsMessage = document.querySelector("#console-settings-message");
 let consoleRunId = null;
 const outline = document.querySelector("#outline-list");
 const panelSwitcher = document.querySelector("#panel-switcher");
@@ -1144,8 +1147,8 @@ function showMessage(message) {
   }
   trackInspectorExecution(message);
   if (message.live_metrics) return;
-  if (message.history_error) {
-    result.append(element("p", message.history_error, "error"));
+  if (message.history_error || message.console_log_error) {
+    result.append(element("p", message.history_error ?? message.console_log_error, "error"));
     return;
   }
   if (message.error) {
@@ -1260,7 +1263,7 @@ window.addEventListener("workspace-stop", event => {
       }
     }
     result.querySelector(".run-stream-error")?.remove();
-    resetInput.disabled = openNodeFiles.disabled = true;
+    resetInput.disabled = openNodeFiles.disabled = saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
     for (const control of document.querySelectorAll(".open-error-source")) control.disabled = true;
     nodeSourceInput.readOnly = true;
     saveNodeSource.disabled = true;
@@ -1293,6 +1296,7 @@ form.addEventListener("submit", async event => {
   if (stopPhase || runInProgress || !projectReady) return;
   runInProgress = true;
   streamingOwnRun = true;
+  consoleRunId = null;
   clearConsole();
   updateRunControls();
   setPanel("run", true);
@@ -1351,13 +1355,15 @@ async function reconnectRun() {
       const snapshot = await response.json();
       // A POST stream already rendered this run; only attach to a different owner.
       const runId = snapshot.events.find(([, message]) => message.run_id)?.[1].run_id;
+      const consoleOnly = snapshot.events.length > 0 && snapshot.events.every(([, item]) => item.kind === "console");
       if (runId && runId !== observedRun) {
+        const hadObserved = observedRun !== null;
         observedRun = runId;
-        if (runId === currentRunId) {
+        if (runId === currentRunId || (runId === consoleRunId && consoleOnly)) {
           cursor = Infinity;
         } else {
           cursor = 0;
-          resetRunResult();
+          if (hadObserved || !consoleOnly) resetRunResult();
         }
       }
       runInProgress = snapshot.running;
@@ -1377,10 +1383,94 @@ async function reconnectRun() {
   }
 }
 
+let consoleSettingsSequence = 0;
+let savedConsoleSettings = { save_logs: true, retention_days: 7 };
+let retentionSaveTimer = null;
+
+function applyConsoleSettings(settings) {
+  if (!settings) return;
+  savedConsoleSettings = {
+    save_logs: Boolean(settings.save_logs),
+    retention_days: Number(settings.retention_days),
+  };
+  saveConsoleLogs.checked = savedConsoleSettings.save_logs;
+  consoleRetentionDays.value = String(savedConsoleSettings.retention_days);
+}
+
+function showConsoleSettingsStatus(text, isError = false) {
+  consoleSettingsMessage.textContent = text;
+  consoleSettingsMessage.classList.toggle("error", isError);
+  consoleSettingsMessage.hidden = !text;
+}
+
+function validRetentionDays() {
+  const rawRetention = consoleRetentionDays.value.trim();
+  const retentionDays = Number(rawRetention);
+  if (!/^[0-9]+$/.test(rawRetention) || retentionDays < 1 || retentionDays > 3650) {
+    return null;
+  }
+  return retentionDays;
+}
+
+async function saveConsoleLogSettings() {
+  clearTimeout(retentionSaveTimer);
+  retentionSaveTimer = null;
+  if (stopPhase === "stopped") return;
+  const retentionDays = validRetentionDays();
+  if (retentionDays === null) {
+    showConsoleSettingsStatus("Enter a whole number from 1 to 3650 days.", true);
+    return;
+  }
+  const saveLogs = saveConsoleLogs.checked;
+  if (saveLogs === savedConsoleSettings.save_logs && retentionDays === savedConsoleSettings.retention_days) {
+    return;
+  }
+  const requestId = ++consoleSettingsSequence;
+  showConsoleSettingsStatus("Saving…");
+  try {
+    const response = await fetch("console-logs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        save_logs: saveLogs,
+        retention_days: retentionDays,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error ?? "Could not save console log settings.");
+    if (requestId !== consoleSettingsSequence) return;
+    applyConsoleSettings(data.settings);
+    showConsoleSettingsStatus("Saved.");
+  } catch (error) {
+    if (requestId !== consoleSettingsSequence) return;
+    showConsoleSettingsStatus(error.message, true);
+  }
+}
+
+saveConsoleLogs.addEventListener("change", saveConsoleLogSettings);
+consoleRetentionDays.addEventListener("change", saveConsoleLogSettings);
+consoleRetentionDays.addEventListener("input", () => {
+  clearTimeout(retentionSaveTimer);
+  if (validRetentionDays() === null) {
+    showConsoleSettingsStatus("Enter a whole number from 1 to 3650 days.", true);
+    return;
+  }
+  retentionSaveTimer = setTimeout(saveConsoleLogSettings, 150);
+});
+
 try {
-  const response = await fetch("project");
+  const [response, consoleResponse] = await Promise.all([
+    fetch("project"),
+    fetch("console-logs").catch(() => null),
+  ]);
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
+  const consoleData = consoleResponse?.ok ? await consoleResponse.json().catch(() => null) : null;
+  if (consoleData?.settings) applyConsoleSettings(consoleData.settings);
+  if (!consoleRunId && !runInProgress && consoleData?.events?.length) {
+    clearConsole();
+    for (const entry of consoleData.events) showMessage(entry);
+  }
   editRunningSource = project.edit_running_source;
   sheetEditLock = (window.parent !== window ? window.parent.phyzflowSheetEditLock?.(window) : null) ?? project.edit_lock ?? null;
   syncEditLockUI();

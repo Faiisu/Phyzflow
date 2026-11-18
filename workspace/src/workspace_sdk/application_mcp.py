@@ -1,5 +1,6 @@
 """Authenticate and scope the installed application's Streamable HTTP MCP endpoint."""
 
+from collections.abc import Callable
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager, closing, contextmanager, suppress
 from contextvars import ContextVar
@@ -94,10 +95,14 @@ class McpTokens:
 
 
 class WorkspaceAccess:
-    def __init__(self, tokens: McpTokens, registry, mount_sheet_resolver) -> None:
+    def __init__(
+        self, tokens: McpTokens, registry, mount_sheet_resolver,
+        is_deleting: Callable[[str], bool] = lambda _: False,
+    ) -> None:
         self.tokens = tokens
         self.registry = registry
         self.mount_sheet_resolver = mount_sheet_resolver
+        self.is_deleting = is_deleting
 
     def principal(self) -> str:
         return request_identity.get()
@@ -114,12 +119,14 @@ class WorkspaceAccess:
         allowed = self.allowed_ids()
         return [
             {"id": item["id"], "name": item["name"]} for item in self.registry.entries()
-            if item["id"] in allowed and available_root(Path(item["path"]))
+            if item["id"] in allowed and not self.is_deleting(item["id"]) and available_root(Path(item["path"]))
         ]
 
     def workspace(self, workspace_id: str) -> Path:
         from mcp.server.mcpserver.exceptions import ToolError
 
+        if self.is_deleting(workspace_id):
+            raise ToolError("This Workspace is being deleted.")
         if workspace_id in self.allowed_ids():
             root = self.registry.get(workspace_id)
             if root is not None and available_root(root):
@@ -127,7 +134,12 @@ class WorkspaceAccess:
         raise ToolError("Workspace access denied.")
 
     def sheet_resolver(self, workspace_id: str):
-        return self.mount_sheet_resolver(workspace_id, self.workspace(workspace_id))
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        try:
+            return self.mount_sheet_resolver(workspace_id, self.workspace(workspace_id))
+        except RuntimeError as error:
+            raise ToolError(str(error)) from None
 
     def owner_label(self) -> str:
         from mcp.server.mcpserver.exceptions import ToolError
