@@ -1,3 +1,5 @@
+const workspacePath = window.location.pathname;
+document.querySelector("#workspace-home").hidden = workspacePath === "/";
 const views = document.querySelector("#sheets");
 const tabs = document.querySelector("#sheet-tabs");
 const notice = document.querySelector("#notice");
@@ -96,7 +98,7 @@ reopen.addEventListener("click", () => openFlow(active));
 reloadFlow.addEventListener("click", () => openFlow(active, "reload"));
 
 async function requestFlowSource(sheet, changes) {
-  const response = await fetch(`/flows/${sheet.index}/source`, changes && {
+  const response = await fetch(`./flows/${sheet.index}/source`, changes && {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
@@ -182,7 +184,7 @@ function mayReplaceView(sheet) {
 }
 
 async function command(sheet, action) {
-  const response = await fetch(`/flows/${sheet.index}/${action}`, { method: "POST" });
+  const response = await fetch(`./flows/${sheet.index}/${action}`, { method: "POST" });
   const data = await response.json();
   if (!response.ok) {
     throw Object.assign(new Error(data.error ?? "The action failed."), { status: data.status, deferred: data.deferred });
@@ -192,7 +194,7 @@ async function command(sheet, action) {
 
 function showFrame(sheet, revision) {
   const prefix = revision ? `/revision/${revision}` : "";
-  const url = `/flows/${sheet.index}${prefix}/view/`;
+  const url = `${workspacePath}flows/${sheet.index}${prefix}/view/`;
   if (!sheet.frame || sheet.frameStopped || sheet.frame.getAttribute("src") !== url) {
     const frame = document.createElement("iframe");
     frame.title = `${sheet.name} flow`;
@@ -360,7 +362,7 @@ tabs.addEventListener("keydown", event => {
 });
 
 async function getWorkspace() {
-  const response = await fetch("/workspace");
+  const response = await fetch("./workspace");
   if (!response.ok) throw new Error("Could not load the Workspace.");
   return response.json();
 }
@@ -430,7 +432,7 @@ createForm.addEventListener("submit", async event => {
   createError.hidden = true;
   createButton.disabled = cancelSheet.disabled = true;
   try {
-    const response = await fetch("/flows", {
+    const response = await fetch("./flows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: sheetTitle.value }),

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phyzflow | Workspaces</title>
+  <link rel="stylesheet" href="/workspace.css">
+  <script type="module" src="/landing.js"></script>
+</head>
+<body class="landing">
+  <main class="workspace-list">
+    <header class="workspace-list-heading">
+      <h1>Workspaces</h1>
+      <button type="button" id="new-workspace">Create Workspace</button>
+    </header>
+    <p id="workspace-list-message" role="status">Loading Workspaces…</p>
+    <ul id="registered-workspaces" aria-label="Registered Workspaces"></ul>
+  </main>
+  <dialog id="create-workspace" class="sheet-dialog" aria-labelledby="create-workspace-title">
+    <form>
+      <h2 id="create-workspace-title">Create Workspace</h2>
+      <label for="workspace-path">New folder path</label>
+      <input id="workspace-path" name="path" required autofocus>
+      <p class="dialog-hint">Enter an absolute path on the Phyzflow host. The parent folder must already exist.</p>
+      <p id="create-workspace-status" role="status"></p>
+      <p id="create-workspace-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-workspace">Cancel</button>
+        <button type="submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -46,6 +46,9 @@ def main() -> int:
     ui_command.add_argument("--port", type=int, help="Override the port from setting.json (default: 18080).")
     ui_command.add_argument("--prompt", action="store_true", help="Ask for the IPv4 bind address and port before starting.")
     ui_command.add_argument("--single-flow", action="store_true", help="Open the current flow without sheets.")
+    app_parser = commands.add_parser("app", help="Open the Phyzflow application and Workspace list.")
+    app_parser.add_argument("--port", type=int, default=18080, help="HTTP port (default: 18080).")
+    app_parser.add_argument("--state-dir", type=Path, default=Path.home() / ".phyzflow", help="Application data directory.")
     deploy_parser = commands.add_parser("deploy", help="Validate and serve a Linux ARM64 build.")
     deploy_parser.add_argument("--sdk", type=Path, required=True, help="Path to the Workspace SDK source.")
     deploy_parser.add_argument("--context", help="Override deploy.context in setting.json.")
@@ -53,6 +56,17 @@ def main() -> int:
     deploy_parser.add_argument("--port", type=int, help="Host port (default: 8080), or 0 for an available port.")
     deploy_parser.add_argument("--container-port", type=int, help="Port used by the container service (default: 8000).")
     args = parser.parse_args()
+
+    if args.command == "app":
+        from .application import serve_application
+        from .ui_settings import validate_port
+
+        try:
+            serve_application(args.state_dir.expanduser().resolve(), validate_port(args.port))
+        except (OSError, ValueError, sqlite3.Error) as error:
+            print(f"Phyzflow: {error}", file=sys.stderr)
+            return 1
+        return 0
 
     if args.command == "init" and args.directory is not None and args.project is not None:
         parser.error("Use either --project or an init directory.")

@@ -7,12 +7,13 @@ from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
 from http.server import ThreadingHTTPServer
 import json
-import multiprocessing
-from multiprocessing.connection import Connection
-from multiprocessing.process import BaseProcess
 import os
 from pathlib import Path
 import re
+from subprocess import Popen, TimeoutExpired
+from tempfile import TemporaryDirectory
+from time import monotonic, sleep
+import sys
 from threading import Lock, Thread
 import traceback
 from urllib.request import ProxyHandler, build_opener
@@ -35,32 +36,23 @@ VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + 
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
 
 
-def serve_flow(root: Path, zoom: ZoomSettings, ready: Connection) -> None:
+def serve_flow(root: Path, zoom: ZoomSettings, publish: Callable[[dict], None]) -> None:
     from .web import serve
 
-    def report_address(address: str) -> None:
-        ready.send({"url": address})
-        ready.close()
-
     try:
-        os.chdir(root)
         sources: dict[Path, str] = {}
         with load_project(root, sources) as flow:
-            serve(flow, root, 0, sources, zoom=zoom, on_ready=report_address)
+            serve(flow, root, 0, sources, zoom=zoom, on_ready=lambda address: publish({"url": address}))
     except ValidationError as error:
-        if not ready.closed:
-            ready.send({"error": str(error)})
+        publish({"error": str(error)})
     except Exception:
         traceback.print_exc()
-        if not ready.closed:
-            ready.send({"error": "Could not open the flow. Check the Workspace terminal for details."})
-    finally:
-        ready.close()
+        publish({"error": "Could not open the flow. Check the Workspace terminal for details."})
 
 
 @dataclass(frozen=True)
 class OpenFlow:
-    process: BaseProcess
+    process: Popen
     url: str
 
 
@@ -72,17 +64,21 @@ class ReloadDeferred(RuntimeError):
     pass
 
 
-def terminate(process: BaseProcess) -> None:
-    if process.is_alive():
+def terminate(process: Popen) -> None:
+    if process.poll() is None:
         process.terminate()
-        process.join(timeout=2)
-        if process.is_alive():
-            process.kill()
-    process.join()
+    try:
+        process.wait(timeout=2)
+    except TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 class FlowSheet:
-    def __init__(self, title: str, root: Path, zoom: ZoomSettings, *, main: bool = False):
+    def __init__(
+        self, title: str, root: Path, zoom: ZoomSettings, *,
+        main: bool = False, interpreter: Path | None = None,
+    ):
         self.title = title
         self.root = root
         self.zoom = zoom
@@ -92,6 +88,7 @@ class FlowSheet:
         self.closing = False
         self.lock = Lock()
         self.main = main
+        self.interpreter = interpreter
         self.attempted_source: str | None = None
 
     def changed_source(self, status: str) -> str | None:
@@ -113,39 +110,56 @@ class FlowSheet:
                     raise ReloadConflict(str(error)) from None
                 if status == "running":
                     raise ReloadConflict("This flow is running. Wait for it to finish or stop it before reloading.")
-                if status == "unavailable" and self.worker is not None and self.worker.process.is_alive():
+                if status == "unavailable" and self.worker is not None and self.worker.process.poll() is None:
                     raise ReloadConflict("Could not verify the run status. Try reloading again or stop the flow first.")
                 if automatic_source is not None and self.changed_source(status) != automatic_source:
                     raise ReloadDeferred
                 self.stop_worker(status="opening")
                 self.revision += 1
             if self.worker is not None:
-                if self.worker.process.is_alive():
+                if self.worker.process.poll() is None:
                     return self.revision
                 terminate(self.worker.process)
                 self.worker = None
 
             self.attempted_source = automatic_source or source_stamp(self.root, main=self.main)
             self.inactive_status = "opening"
-            context = multiprocessing.get_context("spawn")
-            incoming, outgoing = context.Pipe(duplex=False)
-            process = context.Process(target=serve_flow, args=(self.root, self.zoom, outgoing))
-            with incoming, outgoing:
-                try:
-                    process.start()
-                    outgoing.close()
-                    if not incoming.poll(10):
-                        raise RuntimeError("The flow did not start within ten seconds.")
-                    reply = incoming.recv()
-                    if "error" in reply:
-                        raise RuntimeError(reply["error"])
-                except BaseException:
-                    self.inactive_status = "unavailable"
-                    if process.pid is not None:
-                        terminate(process)
-                    raise
-            self.worker = OpenFlow(process, reply["url"])
+            try:
+                self.worker = self.start_worker()
+            except BaseException:
+                self.inactive_status = "unavailable"
+                raise
             return self.revision
+
+    def start_worker(self) -> OpenFlow:
+        with TemporaryDirectory(prefix="phyzflow-sheet-") as directory:
+            ready = Path(directory) / "ready.json"
+            worker = Path(__file__).with_name("sheet_worker.py")
+            argv = [self.interpreter or sys.executable, "-Pu", worker, ready, json.dumps(self.zoom)]
+            options = {}
+            if self.interpreter is not None:
+                argv.insert(1, "-I")
+                options["env"] = {
+                    **os.environ,
+                    "PATH": f"{self.interpreter.parent}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "VIRTUAL_ENV": str(self.interpreter.parent.parent),
+                }
+            process = Popen(argv, cwd=self.root, **options)
+            try:
+                deadline = monotonic() + 10
+                while not ready.is_file():
+                    if process.poll() is not None and not ready.is_file():
+                        raise RuntimeError("The flow process exited during startup.")
+                    if monotonic() >= deadline:
+                        raise RuntimeError("The flow did not start within ten seconds.")
+                    sleep(.02)
+                reply = json.loads(ready.read_text(encoding="utf-8"))
+                if "error" in reply:
+                    raise RuntimeError(reply["error"])
+                return OpenFlow(process, reply["url"])
+            except BaseException:
+                terminate(process)
+                raise
 
     def stop(self, *, shutdown: bool = False) -> None:
         with self.lock:
@@ -171,7 +185,7 @@ class FlowSheet:
         worker = self.worker
         if worker is None:
             return self.inactive_status
-        if worker.process.is_alive():
+        if worker.process.poll() is None:
             try:
                 with build_opener(ProxyHandler({})).open(f"{worker.url}/status", timeout=.5) as response:
                     return json.load(response)["status"]
@@ -196,12 +210,12 @@ class WorkspaceController:
         status = sheet.status()
         if status == "running":
             raise FlowBusy("Another flow run is active on this sheet. Wait for it to finish before starting another.")
-        if sheet.worker is None or not sheet.worker.process.is_alive():
+        if sheet.worker is None or sheet.worker.process.poll() is not None:
             sheet.open(reload=False)
         elif sheet.changed_source(status) is not None:
             sheet.open(reload=True)
         worker = sheet.worker
-        if worker is None or not worker.process.is_alive():
+        if worker is None or worker.process.poll() is not None:
             raise RuntimeError("Could not open the flow worker.")
         return sheet, worker.url
 
@@ -214,15 +228,15 @@ class WorkspaceController:
                 pass
 
 
-def serve_workspace(
+def workspace_routes(
     root: Path,
     flows: list[tuple[str, Path]],
     settings: UISettings,
     *,
-    on_controller: Callable[[WorkspaceController], None] | None = None,
-) -> None:
+    interpreter: Path | None = None,
+):
     def make_sheet(title: str, path: Path) -> FlowSheet:
-        return FlowSheet(title, path, settings.zoom, main=path == root)
+        return FlowSheet(title, path, settings.zoom, main=path == root, interpreter=interpreter)
 
     sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
     sheets_lock = Lock()
@@ -245,57 +259,57 @@ def serve_workspace(
                     return existing
         raise FileNotFoundError(f"Unknown flow sheet: {sheet_path}")
 
-    class Handler(UIRequestHandler):
-        def log_request(self, code="-", size="-"):
-            if self.path != "/workspace":
-                super().log_request(code, size)
+    class Routes:
+        def __init__(self, request: UIRequestHandler, path: str):
+            self.request = request
+            self.path = path
 
         def create_sheet(self) -> None:
             try:
-                if self.headers.get_content_type() != "application/json":
+                if self.request.headers.get_content_type() != "application/json":
                     raise ValueError
-                data = self.read_json_dict(4096)
+                data = self.request.read_json_dict(4096)
             except (ValueError, UnicodeError):
-                self.send_json({"error": "Send a JSON object with a sheet name."}, HTTPStatus.BAD_REQUEST)
+                self.request.send_json({"error": "Send a JSON object with a sheet name."}, HTTPStatus.BAD_REQUEST)
                 return
             value = data.get("name")
 
             try:
                 with sheets_lock:
                     if closing:
-                        self.send_json({"error": "Workspace is shutting down."}, HTTPStatus.SERVICE_UNAVAILABLE)
+                        self.request.send_json({"error": "Workspace is shutting down."}, HTTPStatus.SERVICE_UNAVAILABLE)
                         return
                     directory = create_sheet(root, value).parent
                     index = len(sheets)
                     sheets.append(make_sheet(directory.name, directory))
             except FileExistsError:
-                self.send_json({"error": "That sheet name is already in use. Choose another name."}, HTTPStatus.CONFLICT)
+                self.request.send_json({"error": "That sheet name is already in use. Choose another name."}, HTTPStatus.CONFLICT)
                 return
             except ValueError as error:
-                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
                 return
             except OSError:
-                self.send_json({"error": "Could not write the flow file. Check the workspace folder permissions."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.request.send_json({"error": "Could not write the flow file. Check the workspace folder permissions."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-            self.send_json({"index": index}, HTTPStatus.CREATED)
+            self.request.send_json({"index": index}, HTTPStatus.CREATED)
 
         def delete_sheet(self, index: int) -> None:
             with sheets_lock:
                 sheet = sheets[index]
                 if closing or sheet is None:
-                    self.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
+                    self.request.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
                     return
                 if not can_delete_sheet(root, sheet.root):
-                    self.send_json({"error": "Only sheets stored directly in this Workspace can be deleted."}, HTTPStatus.BAD_REQUEST)
+                    self.request.send_json({"error": "Only sheets stored directly in this Workspace can be deleted."}, HTTPStatus.BAD_REQUEST)
                     return
                 try:
                     archive_sheet_directory(root, sheet.root, sheet.archive)
                 except OSError:
-                    self.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                    self.request.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
                 # Keep existing flow URLs tied to their original sheets.
                 sheets[index] = None
-            self.send_json({"status": "deleted"})
+            self.request.send_json({"status": "deleted"})
 
         def view_route(self) -> tuple[FlowSheet, int, str] | None:
             route = VIEW_PATH.fullmatch(self.path)
@@ -306,21 +320,21 @@ def serve_workspace(
 
         def flow_source(self, index: int) -> None:
             source = revision = None
-            if self.command == "POST":
+            if self.request.command == "POST":
                 try:
-                    if self.headers.get_content_type() != "application/json":
+                    if self.request.headers.get_content_type() != "application/json":
                         raise ValueError
-                    data = self.read_json_dict()
+                    data = self.request.read_json_dict()
                     source, revision = data.get("source"), data.get("revision")
                     if not isinstance(source, str) or not isinstance(revision, str):
                         raise ValueError
                 except (ValueError, UnicodeError):
-                    self.send_json({"error": "Send the source and revision as a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
+                    self.request.send_json({"error": "Send the source and revision as a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
                     return
 
             sheet = sheets[index] if index < len(sheets) else None
-            if self.command == "POST" and sheet is not None and sheet.status() == "running":
-                self.send_json({"error": "Cannot edit flow.py while the flow is running."}, HTTPStatus.CONFLICT)
+            if self.request.command == "POST" and sheet is not None and sheet.status() == "running":
+                self.request.send_json({"error": "Cannot edit flow.py while the flow is running."}, HTTPStatus.CONFLICT)
                 return
 
             def perform_edit() -> dict[str, str]:
@@ -331,56 +345,56 @@ def serve_workspace(
                         raise FileNotFoundError
                     return edit_sheet_flow_source(sheet.root, source, revision)
 
-            self.send_source_edit(perform_edit, not_found_error="This sheet's flow.py is unavailable.")
+            self.request.send_source_edit(perform_edit, not_found_error="This sheet's flow.py is unavailable.")
 
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}
             body = None
-            if self.command == "POST":
+            if self.request.command == "POST":
                 try:
-                    size = int(self.headers.get("Content-Length", "0"))
+                    size = int(self.request.headers.get("Content-Length", "0"))
                     if not 0 < size <= 1024 * 1024:
                         raise ValueError
                 except ValueError:
-                    self.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
+                    self.request.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
                     return
-                body = self.rfile.read(size)
-                headers["Content-Type"] = self.headers.get("Content-Type", "")
+                body = self.request.rfile.read(size)
+                headers["Content-Type"] = self.request.headers.get("Content-Type", "")
 
             upstream = None
             try:
                 try:
                     # A reload can begin after the worker accepts a run, while its response streams.
-                    with sheet.lock if self.command == "POST" else nullcontext():
+                    with sheet.lock if self.request.command == "POST" else nullcontext():
                         worker = sheet.worker
                         if revision != sheet.revision:
-                            self.send_error(HTTPStatus.CONFLICT, "The flow has been reloaded. Refresh its sheet.")
+                            self.request.send_error(HTTPStatus.CONFLICT, "The flow has been reloaded. Refresh its sheet.")
                             return
-                        if worker is None or not worker.process.is_alive():
-                            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Open the flow first.")
+                        if worker is None or worker.process.poll() is not None:
+                            self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Open the flow first.")
                             return
                         upstream = HTTPConnection(worker.url.removeprefix("http://"), timeout=2)
                         upstream.connect()
                         connection = upstream.sock
-                        upstream.request(self.command, path, body=body, headers=headers)
+                        upstream.request(self.request.command, path, body=body, headers=headers)
                         response = upstream.getresponse()
                         # HTTP/1.0 can detach the socket from HTTPConnection after the headers.
                         if connection is not None:
                             connection.settimeout(None)
                 except (OSError, HTTPException):
-                    self.send_error(HTTPStatus.BAD_GATEWAY, "The flow process is unavailable.")
+                    self.request.send_error(HTTPStatus.BAD_GATEWAY, "The flow process is unavailable.")
                     return
 
                 with response:
                     try:
-                        self.send_response(response.status)
+                        self.request.send_response(response.status)
                         for name in ("Content-Type", "Content-Length", "Cache-Control"):
                             value = response.getheader(name)
                             if value is not None:
-                                self.send_header(name, value)
-                        self.end_headers()
+                                self.request.send_header(name, value)
+                        self.request.end_headers()
                         while chunk := response.read1(65536):
-                            self.wfile.write(chunk)
+                            self.request.wfile.write(chunk)
                     except (OSError, HTTPException):
                         return
             finally:
@@ -388,8 +402,8 @@ def serve_workspace(
                     upstream.close()
 
         def do_GET(self) -> None:
-            if not self.local_request():
-                self.send_error(HTTPStatus.FORBIDDEN)
+            if not self.request.local_request():
+                self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
             if source := FLOW_SOURCE_PATH.fullmatch(self.path):
                 self.flow_source(int(source[1]))
@@ -414,7 +428,7 @@ def serve_workspace(
                         "name": sheet.title, "status": status, "deletable": can_delete_sheet(root, sheet.root),
                         "revision": sheet.revision, "changed_source": sheet.changed_source(status),
                     })
-                self.send_json({"name": root.name, "flows": flows})
+                self.request.send_json({"name": root.name, "flows": flows})
                 return
             view = self.view_route()
             if view is not None and is_flow_view_route("GET", view[2]):
@@ -426,14 +440,14 @@ def serve_workspace(
                 "/workspace.js": ("workspace.js", "text/javascript"),
             }.get(self.path)
             if asset is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
+                self.request.send_error(HTTPStatus.NOT_FOUND)
                 return
             filename, content_type = asset
-            self.send_bytes((STATIC / filename).read_bytes(), f"{content_type}; charset=utf-8")
+            self.request.send_bytes((STATIC / filename).read_bytes(), f"{content_type}; charset=utf-8")
 
         def do_POST(self) -> None:
-            if not self.valid_post_origin():
-                self.send_error(HTTPStatus.FORBIDDEN)
+            if not self.request.valid_post_origin():
+                self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
             if source := FLOW_SOURCE_PATH.fullmatch(self.path):
                 self.flow_source(int(source[1]))
@@ -447,29 +461,62 @@ def serve_workspace(
                 return
             command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload|reload/([0-9a-f]{64}))", self.path)
             if command is None or (index := int(command[1])) >= len(sheets):
-                self.send_error(HTTPStatus.NOT_FOUND)
+                self.request.send_error(HTTPStatus.NOT_FOUND)
                 return
             sheet = sheets[index]
             if command[2] == "delete":
                 self.delete_sheet(index)
                 return
             if sheet is None:
-                self.send_json({"error": "This sheet has been deleted."}, HTTPStatus.NOT_FOUND)
+                self.request.send_json({"error": "This sheet has been deleted."}, HTTPStatus.NOT_FOUND)
                 return
             if command[2] == "stop":
                 sheet.stop()
-                self.send_json({"status": "stopped"})
+                self.request.send_json({"status": "stopped"})
                 return
             try:
                 revision = sheet.open(reload=command[2].startswith("reload"), automatic_source=command[3])
                 prefix = f"/revision/{revision}" if revision else ""
-                self.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision})
+                self.request.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision})
             except ReloadConflict as error:
-                self.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
+                self.request.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
             except ReloadDeferred:
-                self.send_json({"deferred": True}, HTTPStatus.CONFLICT)
+                self.request.send_json({"deferred": True}, HTTPStatus.CONFLICT)
             except (OSError, RuntimeError, EOFError) as error:
-                self.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
+                self.request.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
+
+    def dispatch(request: UIRequestHandler, path: str) -> None:
+        routes = Routes(request, path)
+        if request.command == "GET":
+            routes.do_GET()
+        else:
+            routes.do_POST()
+
+    def close() -> None:
+        nonlocal closing
+        with sheets_lock:
+            closing = True
+        for sheet in sheets:
+            if sheet is not None:
+                sheet.stop(shutdown=True)
+
+    return dispatch, close, resolve_sheet
+
+
+def serve_workspace(
+    root: Path,
+    flows: list[tuple[str, Path]],
+    settings: UISettings,
+    *,
+    on_controller: Callable[[WorkspaceController], None] | None = None,
+) -> None:
+    dispatch, close, resolve_sheet = workspace_routes(root, flows, settings)
+
+    class Handler(UIRequestHandler):
+        def do_GET(self) -> None:
+            dispatch(self, self.path)
+
+        do_POST = do_GET
 
     try:
         with ThreadingHTTPServer((settings.ipv4, settings.port), Handler) as server:
@@ -481,8 +528,4 @@ def serve_workspace(
             except KeyboardInterrupt:
                 pass
     finally:
-        with sheets_lock:
-            closing = True
-        for sheet in sheets:
-            if sheet is not None:
-                sheet.stop(shutdown=True)
+        close()

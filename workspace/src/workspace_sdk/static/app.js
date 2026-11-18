@@ -29,6 +29,11 @@ const runInput = document.querySelector("#run-input");
 const resetInput = document.querySelector("#reset-input");
 const status = document.querySelector("#status");
 const result = document.querySelector("#result");
+const consoleStreams = {
+  stdout: document.querySelector("#console-stdout"),
+  stderr: document.querySelector("#console-stderr"),
+};
+let consoleRunId = null;
 const outline = document.querySelector("#outline-list");
 const panelSwitcher = document.querySelector("#panel-switcher");
 const panelToggles = [...panelSwitcher.querySelectorAll("button[aria-controls]")];
@@ -1028,8 +1033,24 @@ function setStatus(value, label = labels[value]) {
   status.dataset.state = value;
 }
 
+function clearConsole() {
+  for (const pane of Object.values(consoleStreams)) pane.textContent = "";
+}
+
 function showMessage(message) {
   if (stopPhase === "stopped") return;
+  if (message.run_id && message.run_id !== consoleRunId) {
+    consoleRunId = message.run_id;
+    clearConsole();
+  }
+  if (message.kind === "console") {
+    const pane = consoleStreams[message.stream];
+    const follow = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 15;
+    const text = pane.textContent + message.text;
+    pane.textContent = text.slice(-65536);
+    if (follow) pane.scrollTop = pane.scrollHeight;
+    return;
+  }
   if (message.live_frame || message.live_metrics || message.setting_change) return;
   if (message.output_preview !== undefined) {
     if (!liveOutput) {
@@ -1175,6 +1196,7 @@ form.addEventListener("submit", async event => {
   if (stopPhase || runInProgress || !projectReady) return;
   runInProgress = true;
   streamingOwnRun = true;
+  clearConsole();
   updateRunControls();
   setPanel("run", true);
   result.replaceChildren();

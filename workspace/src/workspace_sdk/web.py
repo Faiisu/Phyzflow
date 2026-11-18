@@ -1,3 +1,4 @@
+from collections import deque
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,6 +10,7 @@ import sqlite3
 from threading import Lock
 from typing import Any
 
+from .console import capture_console
 from .dashboard import ASSET_ROUTE, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels
 from .flow import Flow, Output
 from .history import RunHistory
@@ -155,6 +157,7 @@ def serve(
     run_status = "ready"
     live_lock = Lock()
     live_events = {}
+    console_events = deque(maxlen=128)
     live_sequence = 0
 
     class Handler(UIRequestHandler):
@@ -175,7 +178,10 @@ def serve(
                 self.send_bytes((STATIC / name).read_bytes(), content_type)
             elif self.path == "/live-run":
                 with live_lock:
-                    data = {"running": run_status == "running", "events": sorted(live_events.values(), key=lambda item: item[0])}
+                    data = {
+                        "running": run_status == "running",
+                        "events": sorted([*live_events.values(), *console_events], key=lambda item: item[0]),
+                    }
                 self.send_json((external_snapshot(root) if run_status != "running" else None) or data)
             elif self.path == "/project":
                 data = json.dumps({
@@ -360,6 +366,9 @@ def serve(
             nonlocal run_status, live_sequence
             with live_lock:
                 live_events.clear()
+                console_events.clear()
+            console_run_id = None
+            event_lock = Lock()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -403,6 +412,9 @@ def serve(
                         break
                 with live_lock:
                     live_sequence += 1
+                    if event.get("kind") == "console":
+                        console_events.append((live_sequence, event))
+                        return
                     node = event.get("step_id")
                     live_events[node, kind] = (live_sequence, event)
                     if "live_metrics" in event:
@@ -415,25 +427,31 @@ def serve(
                                 del live_events[key]
 
             def record_event(event):
-                remember(event)
-                send(event)
+                nonlocal console_run_id
+                with event_lock:
+                    if console_run_id is None:
+                        console_run_id = event.get("run_id")
+                    remember(event)
+                    send(event)
+
+            def record_console(stream, text):
+                if console_run_id is not None:
+                    record_event({"kind": "console", "run_id": console_run_id, "stream": stream, "text": text})
 
             try:
-                result = run_recorded(
-                    flow, root, loaded_sources, record_event, inputs=inputs, live_metrics=True, live_frames=True,
-                    live_settings=live_settings,
-                )
+                with capture_console(record_console):
+                    result = run_recorded(
+                        flow, root, loaded_sources, record_event, inputs=inputs, live_metrics=True, live_frames=True,
+                        live_settings=live_settings,
+                    )
                 completed = {"result": {"status": result.status, "output": result.output}}
-                remember(completed)
-                send(completed)
+                record_event(completed)
                 run_status = result.status
             except (TypeError, ValueError) as error:
-                remember({"error": str(error)})
-                send({"error": str(error)})
+                record_event({"error": str(error)})
                 run_status = "failed"
             except (OSError, sqlite3.Error):
-                remember({"error": "Could not read node settings."})
-                send({"error": "Could not read node settings."})
+                record_event({"error": "Could not read node settings."})
                 run_status = "failed"
 
     with ThreadingHTTPServer((ipv4, port), Handler) as server:

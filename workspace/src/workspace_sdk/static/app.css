@@ -802,3 +802,16 @@ body.is-visualize-mode .dashboard-panel :is(.dashboard-controls, .dashboard-acti
   .node.has-input::before { top: -5px; }
   .node.has-output::after { bottom: -5px; }
 }
+
+.run-console { display: grid; gap: .55rem; }
+.run-console h3, .console-stream h4 { margin: 0; font-size: .8rem; }
+.console-stream h4 { margin-bottom: .25rem; }
+.console-stream.stderr h4 { color: #ffc0bd; }
+.console-stream pre {
+  min-height: 2rem;
+  max-height: 10rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

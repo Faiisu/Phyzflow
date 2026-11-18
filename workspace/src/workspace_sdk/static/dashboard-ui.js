@@ -533,7 +533,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   });
 
   function track(event) {
-    if (event.result) {
+    if (event.result || event.kind === "console") {
       return;
     }
     if (!event.run_id) {
