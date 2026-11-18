@@ -19,6 +19,7 @@ from threading import Event
 from typing import Literal
 from uuid import uuid4
 
+from .dashboard import inspect_sheet_dashboards
 from .execution import FlowBusy
 from .node_sources import MAX_SOURCE_BYTES, SourceChanged, edit_source_file
 from .sheet_locks import SheetLockedError
@@ -213,6 +214,11 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             if available_root(sheet) and not (sheet / "flow.py").is_symlink()
         ]
         return {"id": workspace_id, "name": root.name, "sheets": sheets}
+
+    @server.tool(description="Inspect discovered dashboard panels, asset paths, and the shared theme contract for a sheet.")
+    def inspect_dashboards(workspace_id: str, sheet: str = "Main") -> dict:
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        return {"sheet": sheet, **inspect_sheet_dashboards(flow_sheet.root)}
 
     @server.tool(description="Open a sheet for exclusive editing or read-only inspection.")
     def open_sheet(workspace_id: str, sheet: str = "Main", mode: Literal["edit", "read"] = "edit") -> dict:
