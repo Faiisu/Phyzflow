@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
-from subprocess import Popen, TimeoutExpired
+from subprocess import Popen, SubprocessError, TimeoutExpired, check_output
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 import sys
@@ -90,7 +90,7 @@ class OpenFlow:
         try:
             self.process.wait(timeout=4)
         except TimeoutExpired:
-            raise OSError("Could not confirm that the sheet process stopped.") from None
+            raise OSError(f"Workspace process {self.process.pid} is still running.") from None
 
 
 class ReloadConflict(RuntimeError):
@@ -98,6 +98,10 @@ class ReloadConflict(RuntimeError):
 
 
 class ReloadDeferred(RuntimeError):
+    pass
+
+
+class WorkspaceProcessRunningError(RuntimeError):
     pass
 
 
@@ -109,6 +113,73 @@ def terminate(process: Popen) -> None:
     except TimeoutExpired:
         process.kill()
         process.wait()
+
+
+def workspace_command_pattern(root: Path) -> re.Pattern[str]:
+    candidates = dict.fromkeys((str(root), str(root.resolve())))
+    joined = "|".join(re.escape(item) for item in candidates)
+    return re.compile(rf"(?:^|[\s'\"=:])(?:{joined})(?=$|[/\s'\":,])")
+
+
+def active_workspace_pids(root: Path, tracked_pids: tuple[int, ...] = ()) -> list[int]:
+    active: list[int] = []
+    seen: set[int] = set()
+    for pid in tracked_pids:
+        if pid > 0 and pid != os.getpid() and pid not in seen:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            seen.add(pid)
+            active.append(pid)
+    if os.name != "posix":
+        return active
+    pattern = workspace_command_pattern(root)
+    try:
+        output = check_output(
+            ["ps", "-axo", "pid=,stat=,command="],
+            text=True,
+            errors="replace",
+            timeout=2,
+        )
+    except (OSError, SubprocessError):
+        return active
+    for line in output.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        stat, command = parts[1], parts[2]
+        if pid == os.getpid() or pid in seen or stat.startswith("Z"):
+            continue
+        if pattern.search(command):
+            seen.add(pid)
+            active.append(pid)
+    return active
+
+
+def verify_workspace_processes_stopped(
+    root: Path,
+    tracked_processes: tuple[Popen, ...] = (),
+    *,
+    wait_seconds: float = 1.0,
+) -> None:
+    deadline = monotonic() + wait_seconds
+    while True:
+        tracked_pids = tuple(process.pid for process in tracked_processes if process.poll() is None)
+        pids = active_workspace_pids(root, tracked_pids)
+        if not pids:
+            return
+        if monotonic() >= deadline:
+            detail = ", ".join(str(pid) for pid in pids)
+            raise WorkspaceProcessRunningError(
+                f"Could not delete {root.name} because a Workspace process is still running (PID {detail}). "
+                "End the process or restart the host through the operating system before retrying Delete."
+            )
+        sleep(.05)
 
 
 class FlowSheet:
@@ -171,7 +242,11 @@ class FlowSheet:
                 self.stop_worker(status="opening")
                 self.revision += 1
             if self.worker is not None:
-                if self.worker.url and self.worker.process.poll() is None and self.inactive_status != "stopping":
+                if (
+                    self.worker.url
+                    and self.worker.process.poll() is None
+                    and self.inactive_status not in ("stopping", "unavailable")
+                ):
                     return self.revision
                 active = self.attempt
                 if active is not None and active is not attempt and active.status == "running":
@@ -333,7 +408,11 @@ class FlowSheet:
     def stop_worker(self, *, status: str = "stopped") -> None:
         if self.worker is not None:
             self.inactive_status = "stopping"
-            self.worker.stop()
+            try:
+                self.worker.stop()
+            except OSError:
+                self.inactive_status = "unavailable"
+                raise
             self.worker = None
         self.inactive_status = status
 
@@ -349,12 +428,12 @@ class FlowSheet:
         attempt = self.attempt
         if self.inactive_status == "stopping":
             return "stopping"
-        if attempt is not None and (
-            attempt.status == "running"
-            or self.inactive_status not in ("stopped", "unavailable")
-            or attempt.crash_exhausted
-            or attempt.start_error is not None
+        if self.inactive_status == "unavailable" and (
+            attempt is None
+            or (attempt.status != "running" and not attempt.crash_exhausted and attempt.start_error is None)
         ):
+            return "unavailable"
+        if attempt is not None and (attempt.status == "running" or self.inactive_status != "stopped"):
             return attempt.status
         return self.worker_status()
 
@@ -616,7 +695,7 @@ def workspace_routes(
                 if sheet is None:
                     raise FileNotFoundError
                 with sheet.lock:
-                    if sheet.closing:
+                    if sheet.closing or sheet.workspace_closing():
                         raise FileNotFoundError
                     return edit_sheet_flow_source(sheet.root, source, revision)
 
@@ -682,6 +761,9 @@ def workspace_routes(
                 try:
                     # A reload can begin after the worker accepts a run, while its response streams.
                     with sheet.lock if self.request.command == "POST" else nullcontext():
+                        if sheet.closing or sheet.workspace_closing():
+                            self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Workspace is shutting down.")
+                            return
                         worker = sheet.worker
                         if revision != sheet.revision:
                             self.request.send_error(HTTPStatus.CONFLICT, "The flow has been reloaded. Refresh its sheet.")
@@ -821,14 +903,43 @@ def workspace_routes(
         else:
             routes.do_POST()
 
-    def close() -> None:
+    def close(*, delete: bool = False) -> None:
         nonlocal closing
         with sheets_lock:
             closing = True
+            current = [sheet for sheet in sheets if sheet is not None]
+        if not delete:
+            with ThreadPoolExecutor() as pool:
+                pending = [pool.submit(sheet.stop, shutdown=True) for sheet in current]
+                for stop in pending:
+                    stop.result()
+            return
+        stop_errors: list[str] = []
         with ThreadPoolExecutor() as pool:
-            pending = [pool.submit(sheet.stop, shutdown=True) for sheet in sheets if sheet is not None]
+            pending = [pool.submit(sheet.stop) for sheet in current]
             for stop in pending:
-                stop.result()
+                try:
+                    stop.result()
+                except OSError as error:
+                    stop_errors.append(str(error))
+        tracked = tuple(
+            sheet.worker.process for sheet in current if sheet.worker is not None
+        )
+        try:
+            verify_workspace_processes_stopped(
+                root,
+                tracked,
+                wait_seconds=0.0 if stop_errors else 0.5,
+            )
+            if stop_errors:
+                raise WorkspaceProcessRunningError(
+                    f"Could not delete {root.name} because a Workspace process is still running. "
+                    "End the process or restart the host through the operating system before retrying Delete."
+                )
+        except WorkspaceProcessRunningError:
+            with sheets_lock:
+                closing = False
+            raise
 
     return dispatch, close, resolve_sheet
 
