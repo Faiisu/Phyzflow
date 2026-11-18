@@ -69,7 +69,7 @@ class AgentEditUITests(unittest.TestCase):
                 view.get_by_role('button', name='Run flow').click()
                 expect(page.get_by_role('tab', name='Main')).to_contain_text('Running')
                 self.save(client, 'helper.py', 'def value(): return "next run"\n')
-                expect(page.locator('#reload-message')).to_have_text('Source changed. Reload pending.')
+                expect(page.locator('#reload-flow')).to_be_disabled()
                 expect(frame).to_have_attribute('src', '/flows/0/view/')
                 (project / 'release').touch()
                 expect(frame).to_have_attribute('src', '/flows/0/revision/1/view/')

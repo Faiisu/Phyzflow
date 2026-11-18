@@ -336,7 +336,9 @@ def create_agent_server(config: dict, port=0):
             state.close()
 
     try:
-        return AgentServer(('127.0.0.1', port), Handler)
+        server = AgentServer(('127.0.0.1', port), Handler)
+        server.jobs = agent.jobs
+        return server
     except BaseException:
         state.close()
         raise

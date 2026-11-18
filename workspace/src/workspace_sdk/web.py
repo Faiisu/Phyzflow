@@ -66,6 +66,9 @@ def ui_address(ipv4: str, port: int) -> str:
 class UIRequestHandler(BaseHTTPRequestHandler):
     """Shared HTTP transport helpers for the per-flow UI server and Workspace proxy."""
 
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
     def send_bytes(self, data: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -326,6 +329,9 @@ def serve(
                 "source" in data and (not isinstance(source, str) or not isinstance(revision, str))
             ):
                 self.send_source({"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST)
+                return
+            if source is not None and (run_status == "running" or sheet_busy(root)):
+                self.send_source({"error": "Cannot edit node files while the flow is running."}, HTTPStatus.CONFLICT)
                 return
 
             def perform_edit() -> dict[str, str]:

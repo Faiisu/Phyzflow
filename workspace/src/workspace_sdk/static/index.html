@@ -26,8 +26,6 @@
               </div>
             </div>
             <div class="dashboard-controls">
-              <label data-dash="run-label" for="dashboard-run">Run</label>
-              <select id="dashboard-run" data-dash="run"><option value="live">Live run</option></select>
               <button type="button" id="reload-dashboard" data-dash="reload" class="text-button">Reload dashboard</button>
             </div>
             <p id="dashboard-message" data-dash="message" class="muted" role="status"></p>
@@ -113,10 +111,6 @@
             <div><h3>Feeds</h3><ul id="inspector-feeds"></ul></div>
           </div>
           <div id="inspector-execution" role="tabpanel" aria-labelledby="inspector-execution-tab" tabindex="0" hidden>
-            <div class="execution-run">
-              <p id="execution-run-label" class="muted"></p>
-              <button type="button" id="execution-current-run" class="text-button" hidden>Show current run</button>
-            </div>
             <p id="execution-note" class="muted"></p>
             <dl id="execution-timing" hidden>
               <div><dt>Status</dt><dd id="execution-status"></dd></div>
@@ -126,7 +120,6 @@
             </dl>
             <section id="execution-metrics" aria-labelledby="execution-metrics-heading" hidden>
               <h3 id="execution-metrics-heading">Operational metrics</h3>
-              <p class="muted">Completed run snapshot</p>
               <div id="execution-metric-groups"></div>
             </section>
           </div>
@@ -155,18 +148,6 @@
           <p class="muted">Run the flow to see its output and node diagnostics.</p>
         </div>
       </section>
-    </section>
-
-    <section id="panel-history" class="overlay" aria-labelledby="history-heading">
-      <div class="dock-heading">
-        <h2 id="history-heading">Run history</h2>
-        <button type="button" class="close-panel" data-close-panel="history" aria-label="Close History">×</button>
-      </div>
-      <div id="history-list" class="dock-content"></div>
-      <div class="dock-content history-actions">
-        <button type="button" id="refresh-history" class="text-button">Refresh history</button>
-      </div>
-      <div id="history-detail" class="dock-content"></div>
     </section>
   </aside>
 
@@ -207,7 +188,6 @@
       <button type="button" aria-controls="panel-visualize" aria-pressed="true">Visualize</button>
       <button type="button" aria-controls="panel-inspector" aria-pressed="true">Inspector</button>
       <button type="button" aria-controls="panel-run" aria-pressed="true">Run</button>
-      <button type="button" aria-controls="panel-history" aria-pressed="true">History</button>
       <button type="button" aria-controls="panel-zoom" aria-pressed="true">Zoom controls</button>
     </div>
   </details>

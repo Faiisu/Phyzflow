@@ -349,7 +349,12 @@ def run_mcp_stack(args, repo_dir: Path, project_dir: Path, ui_settings) -> int:
         previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
         try:
             os.chdir(project_dir)
-            serve_workspace(project_dir, discover_flows(project_dir), ui_settings)
+            serve_workspace(
+                project_dir,
+                discover_flows(project_dir),
+                ui_settings,
+                on_controller=agent.jobs.attach_ui,
+            )
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
     return 0

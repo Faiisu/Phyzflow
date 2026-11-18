@@ -1,5 +1,6 @@
 """Host independent flow sheets using the existing local flow UI."""
 
+from collections.abc import Callable
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -179,13 +180,65 @@ class FlowSheet:
         return "unavailable"
 
 
-def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISettings) -> None:
+class WorkspaceController:
+    """In-process bridge so MCP/Agent jobs run and stop through the same FlowSheet worker as the UI."""
+
+    def __init__(self, get_sheet: Callable[[Path], FlowSheet]) -> None:
+        self._get_sheet = get_sheet
+
+    def ensure_sheet_worker(self, sheet_path: Path) -> tuple[FlowSheet, str]:
+        sheet = self._get_sheet(sheet_path)
+        status = sheet.status()
+        if status == "running":
+            raise FlowBusy("Another flow run is active on this sheet. Wait for it to finish before starting another.")
+        if sheet.worker is None or not sheet.worker.process.is_alive():
+            sheet.open(reload=False)
+        elif sheet.changed_source(status) is not None:
+            sheet.open(reload=True)
+        worker = sheet.worker
+        if worker is None or not worker.process.is_alive():
+            raise RuntimeError("Could not open the flow worker.")
+        return sheet, worker.url
+
+    def stop_sheet_run(self, sheet: FlowSheet) -> None:
+        sheet.stop()
+        if not sheet.closing:
+            try:
+                sheet.open(reload=False)
+            except (OSError, RuntimeError, EOFError):
+                pass
+
+
+def serve_workspace(
+    root: Path,
+    flows: list[tuple[str, Path]],
+    settings: UISettings,
+    *,
+    on_controller: Callable[[WorkspaceController], None] | None = None,
+) -> None:
     def make_sheet(title: str, path: Path) -> FlowSheet:
         return FlowSheet(title, path, settings.zoom, main=path == root)
 
     sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
     sheets_lock = Lock()
     closing = False
+
+    def resolve_sheet(sheet_path: Path) -> FlowSheet:
+        target = sheet_path.resolve()
+        with sheets_lock:
+            if closing:
+                raise RuntimeError("Workspace is shutting down.")
+            for existing in sheets:
+                if existing is not None and existing.root.resolve() == target:
+                    return existing
+            known = {sheet.root.resolve() for sheet in sheets if sheet is not None}
+            for title, path in discover_flows(root):
+                if path.resolve() not in known:
+                    sheets.append(make_sheet(title, path))
+            for existing in sheets:
+                if existing is not None and existing.root.resolve() == target:
+                    return existing
+        raise FileNotFoundError(f"Unknown flow sheet: {sheet_path}")
 
     class Handler(UIRequestHandler):
         def log_request(self, code="-", size="-"):
@@ -261,6 +314,9 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
                     return
 
             sheet = sheets[index] if index < len(sheets) else None
+            if self.command == "POST" and sheet is not None and sheet.status() == "running":
+                self.send_json({"error": "Cannot edit flow.py while the flow is running."}, HTTPStatus.CONFLICT)
+                return
 
             def perform_edit() -> dict[str, str]:
                 if sheet is None:
@@ -412,6 +468,8 @@ def serve_workspace(root: Path, flows: list[tuple[str, Path]], settings: UISetti
 
     try:
         with ThreadingHTTPServer((settings.ipv4, settings.port), Handler) as server:
+            if on_controller is not None:
+                on_controller(WorkspaceController(resolve_sheet))
             print(f"Workspace UI: {ui_address(settings.ipv4, server.server_port)}", flush=True)
             try:
                 server.serve_forever()

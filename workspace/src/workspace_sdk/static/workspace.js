@@ -43,17 +43,30 @@ function element(tag, text, className) {
   return node;
 }
 
+function syncFlowSourceLock() {
+  if (!sourceDialog.open || !sourceDraft || closeSource.disabled) return;
+  const running = active?.status === "running";
+  sourceInput.readOnly = running;
+  saveSource.disabled = running || !flowSourceIsDirty();
+  if (running) {
+    sourceMessage.textContent = "Flow is running. Editing is disabled.";
+  } else if (sourceMessage.textContent === "Flow is running. Editing is disabled.") {
+    sourceMessage.textContent = "";
+  }
+}
+
 function updateStatus(sheet, status) {
   sheet.status = status;
   sheet.indicator.textContent = labels[status] ?? status;
   sheet.indicator.dataset.state = status;
   sheet.stop.disabled = sheet.pending || status !== "running";
+  if (sheet === active) syncFlowSourceLock();
 }
 
 function showNotice() {
-  reloadFlow.disabled = !active || active.pending;
+  reloadFlow.disabled = !active || active.pending || active.status === "running";
   editFlowSource.disabled = !active || active.pending;
-  const change = active?.sourceChange ? "Source changed. Reload pending." : "";
+  const change = active?.sourceChange && active?.status !== "running" ? "Source changed." : "";
   const reloadText = active?.reloadError || change;
   reloadMessage.hidden = !reloadText;
   if (reloadMessage.textContent !== reloadText) reloadMessage.textContent = reloadText;
@@ -113,8 +126,9 @@ editFlowSource.addEventListener("click", async () => {
     sourceDraft = { sheet, source, revision };
     sourceInput.value = source;
     sourceInput.disabled = false;
-    sourceInput.focus();
     sourceMessage.textContent = "";
+    syncFlowSourceLock();
+    sourceInput.focus();
   } catch (error) {
     sourceMessage.textContent = error.message;
   } finally {
@@ -124,7 +138,7 @@ editFlowSource.addEventListener("click", async () => {
 });
 
 sourceInput.addEventListener("input", () => {
-  saveSource.disabled = !flowSourceIsDirty();
+  saveSource.disabled = active?.status === "running" || !flowSourceIsDirty();
 });
 
 sourceForm.addEventListener("submit", async event => {
@@ -445,11 +459,11 @@ async function pollStatus() {
     for (const sheet of sheets.filter(Boolean)) {
       if (flows[sheet.index] && !sheet.frameStopped && !sheet.pending && sheet.version === versions[sheet.index]) {
         const { status, revision, changed_source } = flows[sheet.index];
-        if (revision !== sheet.revision && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {
+        if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0)) && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;
           sheet.reloadError = null;
-          if (sheet.frame) showFrame(sheet, revision);
+          if (sheet.frame || (sheet === active && status === "running")) showFrame(sheet, revision);
         }
         if (status === "stopped") retainStoppedFrame(sheet, false);
         if (status !== "running" && sheet.status === "running") sheet.reloadError = null;

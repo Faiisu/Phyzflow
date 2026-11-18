@@ -113,11 +113,8 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     element.removeAttribute("id");
     for (const child of element.querySelectorAll("[id]")) child.removeAttribute("id");
     const headingId = `dashboard-heading-${id}`;
-    const runId = `dashboard-run-${id}`;
     element.querySelector('[data-dash="heading"]').id = headingId;
     element.setAttribute("aria-labelledby", headingId);
-    element.querySelector('[data-dash="run"]').id = runId;
-    element.querySelector('[data-dash="run-label"]').setAttribute("for", runId);
     releaseBoard(element, null);
     primaryBoard.parentElement.append(element);
     return { element, isPrimary: false };
@@ -126,7 +123,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   function createPanel() {
     const { element, isPrimary } = createPanelElement();
     const heading = element.querySelector('[data-dash="heading"]');
-    const runSelect = element.querySelector('[data-dash="run"]');
     const preview = element.querySelector('[data-dash="preview"]');
     const message = element.querySelector('[data-dash="message"]');
     const reload = element.querySelector('[data-dash="reload"]');
@@ -145,7 +141,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       listVersion: 0,
       runVersion: 0,
       savedRun: null,
-      following: false,
+      following: true,
       settings: {},
       opener: null,
     };
@@ -247,42 +243,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       panel.sendSnapshot();
     };
 
-    panel.selectRun = async function selectRun() {
-      const version = ++panel.runVersion;
-      const id = runSelect.value;
-      panel.following = id === "live";
-      panel.savedRun = null;
-      panel.sendSnapshot();
-      if (!id || panel.following) return;
-      try {
-        const run = await fetchJSON(`history/${id}`, "Could not load this run.");
-        if (version !== panel.runVersion) return;
-        panel.savedRun = run;
-        panel.sendSnapshot();
-      } catch (error) {
-        if (version === panel.runVersion) message.textContent = error.message;
-      }
-    };
-
-    panel.listRuns = async function listRuns(preferred) {
-      const version = ++panel.listVersion;
-      const selection = panel.runVersion;
-      try {
-        const runs = await fetchJSON("history", "Could not load run history.");
-        if (version !== panel.listVersion || element.hidden) return;
-        if (selection !== panel.runVersion) preferred = runSelect.value;
-        runSelect.replaceChildren(new Option("Live run", "live"), ...runs.map(run => new Option(
-          `${new Date(run.started_at).toLocaleString()} · ${run.status} · ${run.id.slice(0, 8)}`, run.id,
-        )));
-        runSelect.value = (preferred === "live" || runs.some(run => run.id === preferred))
-          ? preferred : runs[0]?.id ?? "live";
-        await panel.selectRun();
-      } catch (error) {
-        if (version === panel.listVersion) message.textContent = error.message;
-      }
-    };
-
-    panel.setScope = function setScope(nodeId, panelId = "default", panelLabel = "", preferred = liveRun?.status === "running" ? "live" : null) {
+    panel.setScope = function setScope(nodeId, panelId = "default", panelLabel = "") {
       if (!element.hidden && activePanels.has(panel)) {
         releaseBoard(element, layoutKey(panel.scope, panel.panelId));
       }
@@ -291,7 +252,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       panel.panelLabel = panelLabel;
       panel.runVersion++;
       panel.savedRun = null;
-      panel.following = preferred === "live";
+      panel.following = true;
       panel.settings = {};
       updateHeading();
       if (element.hidden) panel.opener = document.activeElement;
@@ -300,7 +261,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       revealBoard(element, layoutKey(nodeId, panelId));
       panel.loadDashboard();
       panel.loadSettings(panel.loadVersion);
-      panel.listRuns(preferred);
+      panel.sendSnapshot();
     };
 
     panel.close = function close() {
@@ -351,7 +312,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       panel.loadDashboard();
       panel.loadSettings(panel.loadVersion);
     });
-    runSelect.addEventListener("change", () => panel.selectRun());
 
     return panel;
   }
@@ -388,17 +348,16 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
   }
 
-  function openSinglePanel(nodeId, panelId = "default", panelLabel = "", preferred = liveRun?.status === "running" ? "live" : null) {
+  function openSinglePanel(nodeId, panelId = "default", panelLabel = "") {
     if (stopped) return;
     const existing = findPanel(nodeId, panelId);
     if (existing) {
       revealBoard(existing.element, layoutKey(nodeId, panelId));
-      if (preferred) existing.listRuns(preferred);
       syncVisualizeDrawer();
       return existing;
     }
     const panel = createPanel();
-    panel.setScope(nodeId, panelId, panelLabel, preferred);
+    panel.setScope(nodeId, panelId, panelLabel);
     syncVisualizeDrawer();
     return panel;
   }
@@ -554,11 +513,11 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       panel.ready = true;
       panel.sendSnapshot();
     } else if (data?.type === "dashboard-open-node" && panel.scope === null && graph.some(node => node.id === data.nodeId)) {
-      panel.setScope(data.nodeId, "default", "", panel.element.querySelector('[data-dash="run"]').value);
+      panel.setScope(data.nodeId, "default", "");
     } else if (data?.type === "dashboard-open-panel" && typeof data.panelId === "string") {
       const targetNode = data.nodeId ?? null;
       if (targetNode === null || graph.some(node => node.id === targetNode)) {
-        openSinglePanel(targetNode, data.panelId, "", panel.element.querySelector('[data-dash="run"]').value);
+        openSinglePanel(targetNode, data.panelId, "");
       }
     } else if (data?.type === "dashboard-set-setting") {
       panel.changeSetting(data, event.source);
@@ -575,9 +534,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
 
   function track(event) {
     if (event.result) {
-      for (const panel of activePanels) {
-        panel.listRuns(panel.element.querySelector('[data-dash="run"]').value);
-      }
       return;
     }
     if (!event.run_id) {
@@ -599,7 +555,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       settingChanges.clear();
       for (const panel of activePanels) {
         panel.runVersion++;
-        panel.element.querySelector('[data-dash="run"]').value = "live";
         panel.following = true;
       }
     } else if (liveRun?.id === event.run_id) {

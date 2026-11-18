@@ -156,7 +156,7 @@ class AgentJobTests(unittest.TestCase):
                 conflict = page.request.post(url + '/flows/0/reload', data={})
                 self.assertEqual(conflict.status, 409)
                 (root / 'flow.py').write_text(source.replace('original', 'updated'))
-                expect(page.locator('#reload-message')).to_have_text('Source changed. Reload pending.')
+                expect(page.locator('#reload-flow')).to_be_disabled()
                 expect(frame).to_have_attribute('src', '/flows/0/view/')
                 (root / 'release').touch()
                 job = wait_job(client, started['job_id'])
@@ -166,41 +166,48 @@ class AgentJobTests(unittest.TestCase):
                 self.assertEqual(history['source_version'], job['result']['source_version'])
                 expect(view.get_by_role('button', name='Run flow')).to_be_enabled()
 
-    def test_browser_refreshes_history_for_run_completed_between_live_polls(self):
+    def test_frontend_blocks_editing_while_running_and_hides_history_panel(self):
         from browser_support import local_ui, browser_page
         from playwright.sync_api import expect
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve() / 'project'
             root.mkdir()
-            (root / 'flow.py').write_text('from workspace_sdk import Flow,Output,Step\ndef work(): return 42\nflow=Flow((),(Step("Work",work,{}),),Output("Work"))\n')
-            with running_agent(root) as client, local_ui(root, single_flow=True) as (url, _):
-                hide_run = True
-                live_polls = []
-                history_reads = []
-                def live(route):
-                    live_polls.append(True)
-                    if hide_run:
-                        route.fulfill(json={'running': False, 'status': 'idle', 'events': []})
-                    else:
-                        route.continue_()
-                page.route('**/live-run', live)
-                page.on('request', lambda request: history_reads.append(request.url)
-                        if request.url == url + '/history' else None)
+            (root / 'flow.py').write_text(
+                'from workspace_sdk import Flow, Output, Step\n'
+                'from pathlib import Path\n'
+                'from time import sleep\n'
+                'def work():\n'
+                '    while not Path("release").exists(): sleep(.01)\n'
+                '    return 42\n'
+                'flow=Flow((),(Step("Work",work,{}),),Output("Work"))\n'
+            )
+            with local_ui(root) as (url, _):
                 page.goto(url)
-                expect(page.locator('#history-list')).to_contain_text('No saved runs yet.')
-                started = client.request('fast-run', 'demo', 'run_flow')['result']
-                job = wait_job(client, started['job_id'])
-                self.assertEqual(job['status'], 'succeeded', job)
-                hide_run = False
-                expect(page.locator('.history-run')).to_have_count(1)
-                self.assertEqual(page.locator('.history-run').get_attribute('data-run-id'), job['result']['run_id'])
-                refreshes = len(history_reads)
-                polls = len(live_polls)
-                deadline = monotonic() + 5
-                while len(live_polls) < polls + 3 and monotonic() < deadline:
-                    page.wait_for_timeout(100)
-                self.assertGreaterEqual(len(live_polls), polls + 3)
-                self.assertEqual(len(history_reads), refreshes)
+                frame = page.locator('iframe[title="Main flow"]')
+                view = frame.content_frame
+                expect(view.locator('#panel-history')).to_have_count(0)
+                expect(view.locator('#dashboard-run')).to_have_count(0)
+                view.get_by_role('button', name='Run flow').click()
+                expect(page.get_by_role('tab', name='Main')).to_contain_text('Running')
+
+                page.get_by_role('button', name='Edit flow.py').click()
+                dialog = page.get_by_role('dialog', name='Edit flow.py')
+                expect(dialog.get_by_role('textbox', name='Source code')).not_to_be_editable()
+                expect(dialog.get_by_role('button', name='Save', exact=True)).to_be_disabled()
+                dialog.get_by_role('button', name='Close', exact=True).click()
+
+                src_resp = page.request.get(url + '/flows/0/source').json()
+                blocked = page.request.post(
+                    url + '/flows/0/source',
+                    data={'source': src_resp['source'], 'revision': src_resp['revision']},
+                )
+                self.assertEqual(blocked.status, 409)
+
+                (root / 'release').touch()
+                expect(view.get_by_role('button', name='Run flow')).to_be_enabled()
+                page.get_by_role('button', name='Edit flow.py').click()
+                expect(dialog.get_by_role('textbox', name='Source code')).to_be_editable()
+                dialog.get_by_role('button', name='Close', exact=True).click()
 
     def test_ui_run_blocks_agent_start_on_same_sheet(self):
         from browser_support import local_ui, browser_page
@@ -288,6 +295,61 @@ class AgentJobTests(unittest.TestCase):
                 (root / 'helper.py').write_text('value=22\n')
                 second = client.request('second', 'demo', 'run_flow')['result']
                 self.assertEqual(wait_job(client, second['job_id'])['result']['output'], 22)
+
+    def test_unified_ui_controller_runs_and_cancels_in_same_worker(self):
+        from urllib.request import urlopen
+        from workspace_sdk.agent_jobs import AgentJobs
+        from workspace_sdk.execution import FlowBusy
+        from workspace_sdk.ui_settings import ZoomSettings
+        from workspace_sdk.workspace_ui import FlowSheet, WorkspaceController
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve() / 'project'
+            root.mkdir()
+            (root / 'flow.py').write_text(
+                'from workspace_sdk import Flow, Output, Step\n'
+                'from pathlib import Path\n'
+                'from time import sleep\n'
+                'def work():\n'
+                '    Path("started").touch()\n'
+                '    while not Path("release").exists(): sleep(.01)\n'
+                '    return "unified"\n'
+                'flow=Flow((), (Step("Work",work,{}),), Output("Work"))\n'
+            )
+            sheet = FlowSheet('Main', root, ZoomSettings(1.0, 0.0, 0.0), main=True)
+            controller = WorkspaceController(lambda path: sheet)
+            jobs = AgentJobs()
+            jobs.attach_ui(controller)
+            project = {'root': str(root), 'python': sys.executable, 'inference_environment': {}}
+            try:
+                started = jobs.start(project, 'run_flow', root, {})
+                deadline = monotonic() + 5
+                while not (root / 'started').exists() and monotonic() < deadline:
+                    sleep(0.02)
+                self.assertTrue((root / 'started').exists())
+                self.assertEqual(sheet.status(), 'running')
+                with urlopen(f"{sheet.worker.url}/live-run", timeout=2) as response:
+                    snapshot = json.loads(response.read())
+                self.assertTrue(snapshot['running'])
+                with self.assertRaises(FlowBusy):
+                    jobs.start(project, 'run_flow', root, {})
+
+                cancelled = jobs.get(project, started['job_id'], cancel=True)
+                self.assertEqual(cancelled['status'], 'cancelled')
+                self.assertEqual(sheet.status(), 'ready')
+
+                (root / 'release').touch()
+                second = jobs.start(project, 'run_flow', root, {})
+                deadline = monotonic() + 10
+                while monotonic() < deadline:
+                    state = jobs.get(project, second['job_id'])
+                    if state['status'] not in ('queued', 'running'):
+                        break
+                    sleep(0.05)
+                self.assertEqual(state['status'], 'succeeded', state)
+                self.assertEqual(state['result']['output'], 'unified')
+            finally:
+                sheet.stop(shutdown=True)
 
 
 if __name__ == '__main__':

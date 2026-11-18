@@ -48,9 +48,6 @@ const nodeSourceHighlight = document.querySelector("#node-source-highlight");
 const nodeSourceName = document.querySelector("#node-source-name");
 const nodeSourceMessage = document.querySelector("#node-source-message");
 const saveNodeSource = document.querySelector("#save-node-source");
-const historyList = document.querySelector("#history-list");
-const historyDetail = document.querySelector("#history-detail");
-const refreshHistoryButton = document.querySelector("#refresh-history");
 const nodes = new Map();
 const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", stopped: "Stopped" };
 let tracksGenerators = false;
@@ -424,7 +421,7 @@ function updateSourceDirty() {
   const dirty = sourceIsDirty();
   document.documentElement.toggleAttribute("data-unsaved-source", dirty || savingSource);
   saveNodeSource.disabled = (!dirty && currentSource?.revision !== "missing") ||
-    savingSource || Boolean(nodeSourceRequest) || stopPhase === "stopped";
+    savingSource || Boolean(nodeSourceRequest) || runInProgress || stopPhase === "stopped";
 }
 
 function canLeaveSource() {
@@ -510,7 +507,7 @@ async function openSource(index, path, line = null) {
   } finally {
     if (nodeSourceRequest === request) {
       nodeSourceRequest = null;
-      nodeSourceInput.readOnly = stopPhase === "stopped";
+      nodeSourceInput.readOnly = runInProgress || stopPhase === "stopped";
       updateSourceDirty();
     }
   }
@@ -524,7 +521,7 @@ nodeSourceInput.addEventListener("input", () => {
 });
 nodeSourceForm.addEventListener("submit", async event => {
   event.preventDefault();
-  if (stopPhase === "stopped" || savingSource || nodeSourceRequest || !currentSource ||
+  if (runInProgress || stopPhase === "stopped" || savingSource || nodeSourceRequest || !currentSource ||
       (!sourceIsDirty() && currentSource.revision !== "missing")) return;
   const { index, path, revision } = currentSource;
   const source = nodeSourceInput.value;
@@ -542,7 +539,7 @@ nodeSourceForm.addEventListener("submit", async event => {
     nodeSourceMessage.textContent = error.message;
   } finally {
     savingSource = false;
-    nodeSourceInput.readOnly = stopPhase === "stopped";
+    nodeSourceInput.readOnly = runInProgress || stopPhase === "stopped";
     updateSourceDirty();
   }
 });
@@ -616,8 +613,6 @@ function formatDuration(value) {
 }
 
 const inspectorTabs = [...document.querySelectorAll(".inspector-tabs [role=tab]")];
-const executionRunLabel = document.querySelector("#execution-run-label");
-const currentRunButton = document.querySelector("#execution-current-run");
 const executionNote = document.querySelector("#execution-note");
 const executionTiming = document.querySelector("#execution-timing");
 const executionStatus = document.querySelector("#execution-status");
@@ -630,7 +625,6 @@ const currentNodeTiming = new Map();
 const completedRunStates = ["succeeded", "failed"];
 let currentRunId = null;
 let currentRunFinished = false;
-let executionHistory = null;
 
 function selectInspectorTab(selected) {
   for (const tab of inspectorTabs) {
@@ -668,23 +662,15 @@ function showExecutionTime(container, timestamp, fallback) {
 }
 
 function renderInspectorExecution() {
-  const timing = executionHistory
-    ? executionHistory.steps?.find(step => step.id === activeNode)
-    : currentNodeTiming.get(activeNode);
-  const runId = executionHistory?.id ?? currentRunId;
-  executionRunLabel.textContent = runId ? `${executionHistory ? "Saved run" : "Current run"} · ${runId}` : "";
-  currentRunButton.hidden = !executionHistory;
+  const timing = currentNodeTiming.get(activeNode);
   executionTiming.hidden = !timing;
   executionNote.hidden = Boolean(timing);
-  const completed = executionHistory
-    ? completedRunStates.includes(executionHistory.status)
-    : currentRunFinished;
-  renderExecutionMetrics(completed ? timing?.metrics : null);
+  renderExecutionMetrics(currentRunFinished ? timing?.metrics : null);
 
   if (!timing) {
-    executionNote.textContent = executionHistory?.message ?? (executionHistory
-      ? "This node has no execution record in the selected run."
-      : currentRunId ? "No execution event received for this node." : "Run the flow or select a saved run.");
+    executionNote.textContent = currentRunId
+      ? "No execution event received for this node."
+      : "Run the flow to inspect live execution.";
     return;
   }
 
@@ -717,11 +703,6 @@ function renderExecutionMetrics(metrics) {
   executionMetrics.hidden = groups.length === 0;
   executionMetricGroups.replaceChildren(...groups);
 }
-
-currentRunButton.addEventListener("click", () => {
-  executionHistory = null;
-  renderInspectorExecution();
-});
 
 function trackInspectorExecution(message) {
   if (!message.run_id) return;
@@ -1143,117 +1124,14 @@ function showSample(container, label, sample) {
   }
 }
 
-let historySelection = 0;
-let selectedRunId = null;
-async function showHistoryRun(id) {
-  if (stopPhase === "stopped") return;
-  const selection = ++historySelection;
-  selectedRunId = id;
-  executionHistory = { id, message: "Loading saved run…" };
-  renderInspectorExecution();
-  for (const button of historyList.querySelectorAll(".history-run")) {
-    button.setAttribute("aria-current", String(button.dataset.runId === id));
-  }
-  historyDetail.replaceChildren(element("p", "Loading run…"));
-  try {
-    const response = await fetch(`history/${id}`);
-    if (!response.ok) throw new Error("Could not load this run.");
-    const run = await response.json();
-    if (selection !== historySelection) return;
-    if (executionHistory?.id === id) {
-      executionHistory = run;
-      renderInspectorExecution();
-    }
-    historyDetail.replaceChildren(
-      element("h3", "Saved run"),
-      element("p", run.id, "run-id"),
-      element("p", "Source version"),
-      element("code", run.source_version, "source-version"),
-      element("p", `Duration ${run.duration_ms.toFixed(2)} ms`),
-    );
-    showMetadata(historyDetail, "Run input", run.input);
-    showMetadata(historyDetail, "Run output", run.output);
-    const runSteps = new Map(run.steps.map(step => [step.id, step]));
-    for (const step of run.steps) {
-      const node = element("article", "", "history-node");
-      node.append(
-        element("h4", `${step.id} · ${labels[step.status]}`),
-        element("p", locationText(step.source)),
-      );
-      const duration = formatDuration(step.duration_ms);
-      if (duration) node.append(element("p", duration, "node-duration"));
-      if (step.blocked_by?.length) {
-        node.append(element("p", blockedByText(step.blocked_by, id => runSteps.get(id)?.status)));
-      }
-      showMetadata(node, "Input", step.input);
-      showMetadata(node, "Output", step.output);
-      if (step.reasons?.length) {
-        const reasons = element("ul", "");
-        for (const reason of step.reasons) reasons.append(element("li", reason));
-        node.append(element("p", "Decision reasons"), reasons);
-      }
-      showSample(node, "Input sample", step.input_sample);
-      showSample(node, "Output sample", step.output_sample);
-      if (step.error_type) {
-        const stack = element("ul", "", "stack-locations");
-        for (const frame of step.error_frames) stack.append(element("li", locationText(frame)));
-        node.append(element("strong", step.error_type), stack);
-      }
-      historyDetail.append(node);
-    }
-  } catch (error) {
-    if (selection === historySelection) {
-      if (executionHistory?.id === id) {
-        executionHistory.message = error.message;
-        renderInspectorExecution();
-      }
-      historyDetail.replaceChildren(element("p", error.message, "error"));
-    }
-  }
-}
-
-async function refreshHistory() {
-  if (stopPhase === "stopped") return;
-  refreshHistoryButton.disabled = true;
-  try {
-    const response = await fetch("history");
-    if (!response.ok) throw new Error("Could not load run history.");
-    const runs = await response.json();
-    if (!runs.length) {
-      historyList.replaceChildren(element("p", "No saved runs yet.", "muted"));
-      return;
-    }
-    const list = element("ul", "");
-    for (const run of runs) {
-      const item = element("li", "");
-      const select = element("button", "", "history-run");
-      select.type = "button";
-      select.dataset.runId = run.id;
-      select.disabled = stopPhase === "stopped";
-      select.setAttribute("aria-current", String(run.id === selectedRunId));
-      const state = element("strong", labels[run.status], "badge");
-      state.dataset.state = run.status;
-      const date = element("time", new Date(run.started_at).toLocaleString());
-      date.dateTime = run.started_at;
-      select.append(state, date);
-      select.addEventListener("click", () => showHistoryRun(run.id));
-      item.append(select);
-      list.append(item);
-    }
-    historyList.replaceChildren(list);
-  } catch (error) {
-    historyList.replaceChildren(element("p", error.message, "error"));
-  } finally {
-    refreshHistoryButton.disabled = stopPhase === "stopped";
-  }
-}
-
-refreshHistoryButton.addEventListener("click", refreshHistory);
-refreshHistory();
 button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ block: "nearest" }));
 
 function updateRunControls() {
   button.disabled = runInput.disabled = !projectReady || runInProgress || Boolean(stopPhase);
+  if (currentSource && !savingSource && !nodeSourceRequest) {
+    nodeSourceInput.readOnly = runInProgress || stopPhase === "stopped";
+    updateSourceDirty();
+  }
 }
 
 function showRunStreamError(message) {
@@ -1281,8 +1159,8 @@ window.addEventListener("workspace-stop", event => {
       }
     }
     result.querySelector(".run-stream-error")?.remove();
-    resetInput.disabled = openNodeFiles.disabled = refreshHistoryButton.disabled = true;
-    for (const control of document.querySelectorAll(".history-run, .open-error-source")) control.disabled = true;
+    resetInput.disabled = openNodeFiles.disabled = true;
+    for (const control of document.querySelectorAll(".open-error-source")) control.disabled = true;
     nodeSourceInput.readOnly = true;
     saveNodeSource.disabled = true;
     if (discardUnsaved && nodeFilesDialog.open) nodeFilesDialog.close();
@@ -1355,7 +1233,6 @@ form.addEventListener("submit", async event => {
 async function reconnectRun() {
   let cursor = 0;
   let observedRun = null;
-  let completedHistoryRun = null;
   while (!stopPhase) {
     try {
       if (streamingOwnRun) {
@@ -1363,6 +1240,7 @@ async function reconnectRun() {
         continue;
       }
       const response = await fetch("live-run");
+      if (response.status === 503 || response.status === 404 || response.status === 409) break;
       if (!response.ok) throw new Error("Could not reconnect to the running flow.");
       const snapshot = await response.json();
       // A POST stream already rendered this run; only attach to a different owner.
@@ -1379,10 +1257,6 @@ async function reconnectRun() {
         dashboards.track(message);
         showMessage(message);
         cursor = sequence;
-      }
-      if (!snapshot.running && runId && cursor !== Infinity && runId !== completedHistoryRun) {
-        completedHistoryRun = runId;
-        refreshHistory();
       }
       if (snapshot.status === "stopped") setStatus("stopped");
     } catch (error) {

@@ -1,5 +1,6 @@
 """Agent-owned asynchronous jobs in the configured project interpreter."""
 
+from http.client import HTTPConnection, HTTPException
 import json
 import os
 import signal
@@ -10,7 +11,7 @@ from time import monotonic, sleep
 from threading import Lock, Thread
 from uuid import uuid4
 
-from .execution import ExternalRun, sheet_lock
+from .execution import ExternalRun, FlowBusy, sheet_lock
 
 
 def project_environment(project):
@@ -36,6 +37,11 @@ class AgentJobs:
         self.state = state
         self.jobs = state.load_jobs() if state else {}
         self.collectors = []
+        self.ui_controller = None
+
+    def attach_ui(self, controller):
+        """Route run_flow/cancel through the active Workspace UI FlowSheet worker."""
+        self.ui_controller = controller
 
     def save(self, item, request_key=None):
         if self.state:
@@ -83,7 +89,84 @@ class AgentJobs:
         for thread in self.collectors:
             thread.join()
 
+    def _start_ui_run(self, project, sheet, inputs, request_key=None):
+        flow_sheet, worker_url = self.ui_controller.ensure_sheet_worker(sheet)
+        job_id = uuid4().hex
+        job = {'job_id': job_id, 'status': 'queued', 'operation': 'run_flow'}
+        item = {'project': project['root'], 'job': job, 'cancelled': False, 'ui_sheet': flow_sheet}
+        body = json.dumps(inputs if isinstance(inputs, dict) else {}).encode()
+        conn = HTTPConnection(worker_url.removeprefix('http://'), timeout=5)
+        try:
+            conn.request('POST', '/run', body=body, headers={'Content-Type': 'application/json'})
+            response = conn.getresponse()
+            if response.status == 409:
+                raise FlowBusy(response.reason or 'Another flow run is active on this sheet.')
+            if response.status != 200:
+                raise RuntimeError(f'Flow worker returned HTTP {response.status}.')
+            if conn.sock is not None:
+                conn.sock.settimeout(None)
+        except BaseException:
+            conn.close()
+            raise
+
+        with self.lock:
+            item['ui_connection'] = conn
+            self.jobs[job_id] = item
+            job['status'] = 'running'
+            self.save(item, request_key)
+
+        def collect():
+            run_id = None
+            final_result = None
+            final_error = None
+            has_result = False
+            try:
+                while True:
+                    raw = response.readline()
+                    if not raw:
+                        break
+                    try:
+                        message = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(message, dict):
+                        run_id = message.get('run_id', run_id)
+                        if 'result' in message:
+                            has_result = True
+                            final_result = message['result']
+                        if 'error' in message:
+                            final_error = message['error']
+            except (OSError, HTTPException):
+                pass
+            finally:
+                try:
+                    response.close()
+                except OSError:
+                    pass
+                conn.close()
+
+            with self.lock:
+                if item['cancelled']:
+                    job['status'] = 'cancelled'
+                elif final_error is not None:
+                    job.update(
+                        status='failed',
+                        error=final_error if isinstance(final_error, dict) else {'stage': 'run', 'message': str(final_error)},
+                    )
+                    if run_id:
+                        job['result'] = {'run_id': run_id}
+                elif has_result:
+                    job.update(status='succeeded', result={'run_id': run_id, 'output': final_result})
+                else:
+                    job.update(status='failed', error={'stage': 'worker', 'message': 'Flow stream ended without a result.'})
+                self.save(item)
+
+        self.launch_collector(collect)
+        return {'job_id': job_id, 'status': 'queued'}
+
     def start(self, project, operation, sheet, inputs, request_key=None):
+        if operation == 'run_flow' and self.ui_controller is not None:
+            return self._start_ui_run(project, sheet, inputs, request_key)
         reservation = sheet_lock(sheet)
         descriptor = reservation.__enter__()
         job_id = uuid4().hex
@@ -217,6 +300,18 @@ class AgentJobs:
             cancelling = cancel and item['job']['status'] in ('queued', 'running')
             if cancelling:
                 item['cancelled'] = True
+        if cancelling and 'ui_sheet' in item:
+            conn = item.get('ui_connection')
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            self.ui_controller.stop_sheet_run(item['ui_sheet'])
+            with self.lock:
+                item['job']['status'] = 'cancelled'
+                self.save(item)
+                return json.loads(json.dumps(item['job']))
         if cancelling and hasattr(item['process'], 'agent_lifeline'):
             # The supervisor owns a live group leader and escalation; never signal
             # a guardian PID that another collector may already have reaped.
