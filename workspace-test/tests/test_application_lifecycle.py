@@ -9,12 +9,12 @@ import unittest
 from playwright.sync_api import expect
 
 from browser_support import browser_page
-from test_application import application
+from test_application import application, sign_in
 from workspace_sdk.sheets import create_sheet
 
 
-def create_workspace(page, url, root):
-    page.goto(url)
+def create_workspace(page, url, state, root):
+    sign_in(page, url, state)
     page.get_by_role("button", name="Create Workspace").click()
     page.get_by_label("New folder path").fill(str(root))
     page.get_by_role("button", name="Create", exact=True).click()
@@ -78,8 +78,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
         with TemporaryDirectory() as temporary, browser_page() as page:
             parent = Path(temporary).resolve()
             root = parent / "Lifecycle"
-            with application(parent / "state") as url:
-                workspace = create_workspace(page, url, root)
+            state = parent / "state"
+            with application(state) as url:
+                workspace = create_workspace(page, url, state, root)
                 create_sheet(root, "One-time")
                 one_time_root = root / "flows/One-time"
                 (one_time_root / "nodes/start/entrypoint.py").write_text(
@@ -135,8 +136,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
         with TemporaryDirectory() as temporary, browser_page() as page:
             parent = Path(temporary).resolve()
             root = parent / "Lifecycle"
-            with application(parent / "state") as url:
-                workspace = create_workspace(page, url, root)
+            state = parent / "state"
+            with application(state) as url:
+                workspace = create_workspace(page, url, state, root)
                 python = root / ".venv/bin/python"
                 site_packages = Path(subprocess.check_output(
                     [python, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True,
