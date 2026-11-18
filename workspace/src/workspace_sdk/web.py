@@ -10,7 +10,7 @@ import sqlite3
 from threading import Lock
 from typing import Any
 
-from .console import capture_console
+from .console import ConsoleLogStore, capture_console
 from .dashboard import ASSET_ROUTE, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels
 from .flow import Flow, Output
 from .history import RunHistory
@@ -37,7 +37,7 @@ FLOW_VIEW_SUBPATH_PATTERN = (
     r"(/(?:app\.css|app\.js|canvas-layout\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
     r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
     r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
-    r"live-run|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|run)?)"
+    r"live-run|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|console-logs(?:/[0-9a-f]{32})?|run)?)"
 )
 _FLOW_VIEW_SUBPATH_RE = re.compile(FLOW_VIEW_SUBPATH_PATTERN)
 
@@ -49,7 +49,11 @@ def is_flow_view_route(method: str, subpath: str) -> bool:
     if method == "GET":
         return subpath != "/run" and not subpath.startswith("/node-source/")
     if method == "POST":
-        return subpath == "/run" or subpath.startswith(("/node-source/", "/dashboard-settings/"))
+        return (
+            subpath == "/run"
+            or subpath == "/console-logs"
+            or subpath.startswith(("/node-source/", "/dashboard-settings/"))
+        )
     return False
 
 
@@ -160,6 +164,7 @@ def serve(
     defaults_files = setting_files(root, steps)
     default_input = sample_input(root)
     history = RunHistory(root)
+    console_logs = ConsoleLogStore(root)
     settings = SettingsStore(root)
     live_settings = LiveSettings()
     run_lock = Lock()
@@ -187,12 +192,24 @@ def serve(
                 name, content_type = asset
                 self.send_bytes((STATIC / name).read_bytes(), content_type)
             elif self.path == "/live-run":
+                external = external_snapshot(root) if run_status != "running" else None
+                if external is not None:
+                    self.send_json(external)
+                    return
                 with live_lock:
+                    events = sorted([*live_events.values(), *console_events], key=lambda item: item[0])
                     data = {
                         "running": run_status == "running",
-                        "events": sorted([*live_events.values(), *console_events], key=lambda item: item[0]),
+                        "events": events,
                     }
-                self.send_json((external_snapshot(root) if run_status != "running" else None) or data)
+                if run_status != "running" and not events:
+                    try:
+                        saved = console_logs.latest_events()
+                    except (OSError, ValueError):
+                        saved = []
+                    if saved:
+                        data["events"] = [(index, event) for index, event in enumerate(saved, start=1)]
+                self.send_json(data)
             elif self.path == "/project":
                 data = json.dumps({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
@@ -267,6 +284,18 @@ def serve(
                     self.send_error(HTTPStatus.NOT_FOUND)
                 else:
                     self.send_bytes(json.dumps(data).encode(), "application/json")
+            elif self.path == "/console-logs" or self.path.startswith("/console-logs/"):
+                run_id = None if self.path == "/console-logs" else self.path.removeprefix("/console-logs/")
+                try:
+                    current_settings = console_logs.settings()
+                    events = console_logs.read_run(run_id)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                except OSError:
+                    self.send_json({"error": "Could not read console logs."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                else:
+                    resolved = run_id if run_id is not None else (events[0]["run_id"] if events else None)
+                    self.send_json({"settings": current_settings, "run_id": resolved, "events": events})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -277,7 +306,7 @@ def serve(
                 return
             source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
             settings_route = re.fullmatch(f"/{SETTINGS_ROUTE}", self.path)
-            if self.path != "/run" and source_route is None and settings_route is None:
+            if self.path not in ("/run", "/console-logs") and source_route is None and settings_route is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -293,6 +322,9 @@ def serve(
                 return
             if settings_route is not None:
                 self.change_setting(settings_route[1], inputs)
+                return
+            if self.path == "/console-logs":
+                self.update_console_logs(inputs)
                 return
 
             run_id = None
@@ -317,6 +349,16 @@ def serve(
                 if run_status == "running":
                     run_status = "failed"
                 run_lock.release()
+
+        def update_console_logs(self, data):
+            try:
+                updated = console_logs.update_settings(data)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            except OSError:
+                self.send_json({"error": "Could not save console log settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json({"settings": updated})
 
         def change_setting(self, scope, data):
             try:
@@ -454,12 +496,30 @@ def serve(
                     remember(event)
                     send(event)
 
+            log_error_reported = False
+
+            def report_log_error():
+                nonlocal log_error_reported
+                if not log_error_reported:
+                    log_error_reported = True
+                    record_event({"console_log_error": "Console logs could not be saved."})
+
             def record_console(stream, text):
                 if console_run_id is not None:
+                    try:
+                        console_logs.append(console_run_id, stream, text)
+                    except (OSError, ValueError):
+                        report_log_error()
                     record_event({"kind": "console", "run_id": console_run_id, "stream": stream, "text": text})
 
+            def tick_console():
+                try:
+                    console_logs.purge_expired()
+                except (OSError, ValueError):
+                    report_log_error()
+
             try:
-                with capture_console(record_console):
+                with capture_console(record_console, on_tick=tick_console):
                     result = run_recorded(
                         flow, root, loaded_sources, record_event, inputs=inputs, live_metrics=True, live_frames=True,
                         live_settings=live_settings, run_id=run_id,
