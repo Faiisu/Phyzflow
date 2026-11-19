@@ -12,7 +12,8 @@ from playwright.sync_api import sync_playwright
 def browser_page(*, show_scrollbars=False):
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
-            channel="chrome", ignore_default_args=["--hide-scrollbars"] if show_scrollbars else None,
+            channel=None if sys.platform == "win32" else "chrome",
+            ignore_default_args=["--hide-scrollbars"] if show_scrollbars else None,
         )
         try:
             yield browser.new_page(viewport={"width": 1440, "height": 900})

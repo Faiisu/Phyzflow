@@ -168,10 +168,15 @@ def add_workspace(root: Path) -> None:
     ensure_workspace_environment(root)
 
 
-def move_workspace_to_trash(root: Path) -> Path:
+def move_workspace_to_trash(root: Path) -> Path | None:
     configured = os.environ.get("PHYZFLOW_TRASH_DIR")
     if configured:
         trash = Path(configured)
+    elif os.name == "nt":
+        from .windows_workspace import recycle_folder
+
+        recycle_folder(root)
+        return None
     elif sys.platform == "darwin":
         trash = Path.home() / ".Trash"
     else:

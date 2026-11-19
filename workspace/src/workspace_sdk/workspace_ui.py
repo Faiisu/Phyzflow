@@ -137,10 +137,30 @@ def terminate(process: Popen) -> None:
 def workspace_command_pattern(root: Path) -> re.Pattern[str]:
     candidates = dict.fromkeys((str(root), str(root.resolve())))
     joined = "|".join(re.escape(item) for item in candidates)
-    return re.compile(rf"(?:^|[\s'\"=:])(?:{joined})(?=$|[/\s'\":,])")
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    separators = r"/\\" if os.name == "nt" else "/"
+    return re.compile(rf"(?:^|[\s'\"=:])(?:{joined})(?=$|[{separators}\s'\":,])", flags)
 
 
 def active_workspace_pids(root: Path, tracked_pids: tuple[int, ...] = ()) -> list[int]:
+    if os.name == "nt":
+        from .windows_workspace import windows_process_commands
+
+        pattern = workspace_command_pattern(root)
+        resolved = root.resolve()
+        try:
+            return sorted({
+                *tracked_pids,
+                *(
+                    pid for pid, command, executable in windows_process_commands()
+                    if pid != os.getpid() and (
+                        pattern.search(command)
+                        or executable and Path(executable).is_relative_to(resolved)
+                    )
+                ),
+            })
+        except OSError as error:
+            raise WorkspaceProcessRunningError(str(error)) from error
     if os.name != "posix":
         return list(dict.fromkeys(tracked_pids))
     active: list[int] = []
