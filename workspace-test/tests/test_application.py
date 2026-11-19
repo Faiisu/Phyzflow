@@ -15,10 +15,10 @@ from browser_support import browser_page
 
 
 @contextmanager
-def application(state: Path):
+def application(state: Path, *, args: tuple[str, ...] = ("--port", "0")):
     cli = Path(sys.executable).with_name("workspace")
     with subprocess.Popen(
-        [cli, "app", "--state-dir", state, "--port", "0"],
+        [cli, "app", "--state-dir", state, *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -49,6 +49,58 @@ def sign_in(page, url: str, state: Path) -> None:
 
 
 class ApplicationTests(unittest.TestCase):
+    def test_admin_saves_network_settings_for_the_next_server_start(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            state = Path(temp) / "state"
+            with application(state) as url:
+                endpoint = f"{url}/network-settings"
+                port = int(url.rsplit(":", 1)[1])
+                network = {"ipv4": "0.0.0.0", "port": port}
+                self.assertEqual(page.request.get(endpoint).status, 401)
+                self.assertEqual(page.request.post(endpoint, data=network, headers={"Origin": url}).status, 401)
+                page.goto(f"{url}/settings/network")
+                expect(page.get_by_role("heading", name="Sign in to Phyzflow")).to_be_visible()
+                sign_in(page, url, state)
+                self.assertEqual(page.request.post(endpoint, data=network, headers={"Origin": "http://example.invalid"}).status, 403)
+                invalid_port = page.request.post(endpoint, data={**network, "port": 65536}, headers={"Origin": url})
+                self.assertEqual(invalid_port.status, 400)
+                self.assertIn("The server port", invalid_port.json()["error"])
+
+                page.get_by_role("link", name="Network settings").click()
+                expect(page.get_by_role("heading", name="Network settings")).to_be_visible()
+                address = page.get_by_label("Bind IPv4 address")
+                expect(address).to_have_value("127.0.0.1")
+                expect(page.get_by_label("Port")).to_have_value("18080")
+                expect(page.locator("#active-listener")).to_have_text(f"127.0.0.1:{port}")
+                page.get_by_label("Port").fill(str(port))
+                address.fill("300.0.0.1")
+                save = page.get_by_role("button", name="Save settings")
+                save.click()
+                expect(page.get_by_role("alert")).to_contain_text("must be an IPv4 address")
+                self.assertFalse((state / "network.json").exists())
+
+                address.fill(network["ipv4"])
+                save.click()
+                expect(page.get_by_role("status")).to_contain_text("Restart Phyzflow")
+                expect(page.locator("#active-listener")).to_have_text(f"127.0.0.1:{port}")
+                page.reload()
+                expect(address).to_have_value(network["ipv4"])
+                expect(page.get_by_label("Port")).to_have_value(str(port))
+                page.get_by_role("link", name="Workspaces").click()
+                expect(page.get_by_role("heading", name="Workspaces")).to_be_visible()
+
+            with application(state, args=()) as restarted:
+                self.assertEqual(restarted, url)
+                sign_in(page, restarted, state)
+                self.assertEqual(page.request.get(f"{restarted}/network-settings").json(), {"saved": network, "active": network})
+
+            with application(state, args=("--ipv4", "127.0.0.1", "--port", "0")) as overridden:
+                sign_in(page, overridden, state)
+                settings = page.request.get(f"{overridden}/network-settings").json()
+                self.assertEqual(settings["saved"], network)
+                self.assertEqual(settings["active"]["ipv4"], "127.0.0.1")
+                self.assertEqual(settings["active"]["port"], int(overridden.rsplit(":", 1)[1]))
+
     def test_sign_in_with_the_installation_administrator(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             state = Path(temp).resolve() / "state"

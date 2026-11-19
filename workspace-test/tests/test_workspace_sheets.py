@@ -588,6 +588,7 @@ class WorkspaceSheetTests(unittest.TestCase):
                 original = first_source.read_text()
                 first_source.write_text("def invalid(\n")
                 reload_flow.click()
+                expect(page.locator("#notice-message")).to_be_visible()
                 expect(page.locator("#notice-message")).to_contain_text("flow.py:1")
                 updated = first_source.parent / "updated.py"
                 updated.write_text((first_source.parent / "steps.py").read_text().replace("First ", "Updated "))

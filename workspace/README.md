@@ -22,11 +22,15 @@ uv pip install './workspace[mcp]'
 workspace app
 ```
 
-Open the loopback address printed by the application. Use `--state-dir` to choose a separate state directory for another installation.
+Open the address printed by the application. Use `--state-dir` to choose a separate state directory for another installation.
 
 On first startup Phyzflow generates a password for the built-in `admin` account. Read the password on the host from `~/.phyzflow/admin/initial-password` or from `admin/initial-password` under your selected state directory. The application account owns the directory and can read the file. Save the password securely and remove the delivery file once you have signed in. Phyzflow keeps the password verifier in the state directory and uses the same credential on subsequent starts. The browser session lasts up to 12 hours and ends when the application restarts.
 
 Keep application state separate from Workspace folders.
+
+Select **Network settings** on the landing page to set the application's bind IPv4 address and port. Phyzflow saves the settings in `network.json` under its state directory and reads them at startup. The defaults are `127.0.0.1` and `18080`. Save the settings and restart Phyzflow to apply them. Use `workspace app --ipv4 127.0.0.1 --port 0` to override the saved address and start on an available port for a single launch.
+
+Use direct HTTP on loopback or an isolated test network. For HTTPS, bind Phyzflow to loopback and follow the [application deployment design](../docs/application-spec.md#deployment).
 
 Select **MCP access** on the landing page, name the client, and select the Workspaces it can access. Copy the generated token when it appears. Configure the MCP client for Streamable HTTP at `/mcp` on the application origin and supply `Authorization: Bearer <token>`. The `list_workspaces` tool lists granted Workspaces, and `inspect_workspace` lists sheets for a Workspace ID. Select an existing token to save new grants or revoke it. Changes apply on the next request, including for clients that are already connected.
 

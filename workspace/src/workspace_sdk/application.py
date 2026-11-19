@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, suppress
+from dataclasses import asdict
 import errno
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
@@ -29,7 +30,10 @@ from .application_mcp import (
 )
 from .sheet_runs import RunStateStore
 from .sheets import discover_flows, initialize_workspace
-from .ui_settings import load_ui_settings
+from .ui_settings import (
+    application_network, load_application_network, load_ui_settings, save_application_network,
+    validate_ipv4, validate_port,
+)
 from .web import STATIC, UIRequestHandler, ui_address
 from .workspace_environment import (
     ensure_workspace_environment, folders_overlap, same_folder, workspace_interpreter,
@@ -45,6 +49,8 @@ ASSETS = {
     "/": ("landing.html", "text/html"),
     "/landing.js": ("landing.js", "text/javascript"),
     "/mcp-access.js": ("mcp-access.js", "text/javascript"),
+    "/settings/network": ("network-settings.html", "text/html"),
+    "/network-settings.js": ("network-settings.js", "text/javascript"),
     "/workspace.css": ("workspace.css", "text/css"),
 }
 
@@ -185,7 +191,11 @@ def move_workspace_to_trash(root: Path) -> Path:
     return target
 
 
-def serve_application(state_dir: Path, port: int) -> None:
+def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | None = None) -> None:
+    network_path = state_dir / "network.json"
+    saved_network = load_application_network(network_path)
+    ipv4 = saved_network.ipv4 if ipv4 is None else validate_ipv4(ipv4, "The bind IP")
+    port = saved_network.port if port is None else validate_port(port, "The server port")
     administrator = Administrator(state_dir)
     registry = WorkspaceRegistry(state_dir)
     tokens = McpTokens(administrator.directory)
@@ -398,6 +408,30 @@ def serve_application(state_dir: Path, port: int) -> None:
             except sqlite3.Error:
                 self.send_json({"error": "Could not update MCP access settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+        def update_network_settings(self) -> None:
+            try:
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("Send network settings as a JSON object.")
+                body = self.read_json_dict(8192)
+                if body.keys() != {"ipv4", "port"}:
+                    raise ValueError("Provide the bind IPv4 address and server port.")
+                settings = application_network(body)
+            except ValueError as error:
+                self.send_json({"error": str(error) or "Send a valid network settings object."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    probe.bind((settings.ipv4, 0))
+            except OSError:
+                self.send_json({"error": "The bind IP is unavailable on this host."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                save_application_network(network_path, settings)
+            except OSError:
+                self.send_json({"error": "Could not save the network settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json({"saved": asdict(settings)})
+
         def do_GET(self) -> None:
             if self.path == "/mcp":
                 self.mcp_request()
@@ -425,6 +459,17 @@ def serve_application(state_dir: Path, port: int) -> None:
                     self.send_json({"workspaces": entries})
             elif self.path == "/mcp-tokens":
                 self.token_list()
+            elif self.path == "/network-settings":
+                try:
+                    settings = load_application_network(network_path)
+                except (OSError, ValueError):
+                    self.send_json({"error": "Could not read the saved network settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                else:
+                    address, listening_port = server.server_address
+                    self.send_json({
+                        "saved": asdict(settings),
+                        "active": {"ipv4": address, "port": listening_port},
+                    })
             elif self.path in ASSETS:
                 asset, content_type = ASSETS[self.path]
                 self.send_bytes((STATIC / asset).read_bytes(), f"{content_type}; charset=utf-8")
@@ -452,6 +497,9 @@ def serve_application(state_dir: Path, port: int) -> None:
                 return
             if self.path == "/workspace-folders":
                 self.browse_workspace_folders()
+                return
+            if self.path == "/network-settings":
+                self.update_network_settings()
                 return
             if self.path != "/workspaces":
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -571,8 +619,8 @@ def serve_application(state_dir: Path, port: int) -> None:
             self.send_error(HTTPStatus.NOT_FOUND)
 
     try:
-        with mcp_transport(access) as send_mcp, ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
-            print(f"Phyzflow: {ui_address('127.0.0.1', server.server_port)}", flush=True)
+        with mcp_transport(access) as send_mcp, ThreadingHTTPServer((ipv4, port), Handler) as server:
+            print(f"Phyzflow: {ui_address(ipv4, server.server_port)}", flush=True)
             if administrator.initial_password.is_file():
                 print(f"Sign in as admin with the initial password in {administrator.initial_password}.", flush=True)
             restore_thread = Thread(target=restore_workspaces, daemon=True)

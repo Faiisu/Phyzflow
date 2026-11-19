@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phyzflow | Network settings</title>
+  <link rel="stylesheet" href="/workspace.css">
+  <script type="module" src="/network-settings.js"></script>
+</head>
+<body class="landing">
+  <main class="workspace-list network-settings">
+    <div class="landing-topbar">
+      <div class="brand-header">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-title">Phyzflow</span>
+      </div>
+      <a class="utility-action landing-link" href="/">Workspaces</a>
+    </div>
+    <header class="workspace-list-heading">
+      <div class="heading-copy">
+        <h1>Network settings</h1>
+        <p class="landing-subtitle">Set the IPv4 address and port for the Phyzflow server.</p>
+      </div>
+    </header>
+    <div class="network-listener">
+      <span>Listening on</span>
+      <code id="active-listener">Loading…</code>
+    </div>
+    <form id="network-form">
+      <fieldset class="network-fields" disabled>
+        <legend>Startup settings</legend>
+        <div class="network-inputs">
+          <div class="sign-in-field">
+            <label for="bind-ip">Bind IPv4 address</label>
+            <input id="bind-ip" name="ipv4" type="text" maxlength="15" autocomplete="off" spellcheck="false" aria-describedby="bind-ip-hint" required>
+          </div>
+          <div class="sign-in-field">
+            <label for="server-port">Port</label>
+            <input id="server-port" name="port" type="number" min="1" max="65535" required>
+          </div>
+        </div>
+        <p class="landing-subtitle" id="bind-ip-hint">Use 127.0.0.1 for this host only, or 0.0.0.0 to listen on all IPv4 interfaces.</p>
+        <p class="landing-subtitle">Saved changes take effect after you restart Phyzflow.</p>
+        <button type="submit" class="primary-action">Save settings</button>
+      </fieldset>
+      <p id="network-status" role="status"></p>
+      <p id="network-error" class="dialog-error" role="alert" hidden></p>
+    </form>
+  </main>
+</body>
+</html>

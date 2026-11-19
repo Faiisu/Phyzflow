@@ -1,8 +1,9 @@
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from ipaddress import IPv4Address
 import json
 from pathlib import Path
 import sys
+from tempfile import NamedTemporaryFile
 from typing import Callable, TypedDict
 
 
@@ -24,6 +25,12 @@ class DeploySettings:
     port: int
     container_port: int
     context: str | None
+
+
+@dataclass(frozen=True)
+class ApplicationNetwork:
+    ipv4: str = "127.0.0.1"
+    port: int = 18080
 
 
 def read_project_settings(root: Path) -> dict:
@@ -50,6 +57,36 @@ def validate_port(value: object, label: str = "The UI port", *, minimum: int = 0
     if type(value) is not int or not minimum <= value <= 65535:
         raise ValueError(f"{label} must be an integer between {minimum} and 65535.")
     return value
+
+
+def application_network(values: dict) -> ApplicationNetwork:
+    defaults = ApplicationNetwork()
+    return ApplicationNetwork(
+        validate_ipv4(values.get("ipv4", defaults.ipv4), "The bind IP"),
+        validate_port(values.get("port", defaults.port), "The server port", minimum=1),
+    )
+
+
+def load_application_network(path: Path) -> ApplicationNetwork:
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ApplicationNetwork()
+    if not isinstance(values, dict):
+        raise ValueError("network.json must contain a JSON object.")
+    return application_network(values)
+
+
+def save_application_network(path: Path, settings: ApplicationNetwork) -> None:
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+        pending = Path(stream.name)
+        try:
+            json.dump(asdict(settings), stream, indent=2)
+            stream.write("\n")
+            stream.close()
+            pending.replace(path)
+        finally:
+            pending.unlink(missing_ok=True)
 
 
 def load_ui_settings(
