@@ -13,7 +13,6 @@ from typing import TypeVar
 from uuid import uuid4
 
 
-HEARTBEAT_INTERVAL_SECONDS = 15
 STALE_TIMEOUT_SECONDS = 45
 MAX_TRACKED_SESSIONS = 128
 
@@ -168,6 +167,13 @@ class SheetEditLease:
             },
         )
 
+    def _is_terminated_session(self, session_id: str) -> bool:
+        return (
+            session_id in self.invalidated_sessions
+            or session_id in self.closed_sessions
+            or session_id in self._closing_sessions
+        )
+
     def _read_lock(self) -> dict | None:
         return self._read_json(self._lock_path())
 
@@ -224,11 +230,7 @@ class SheetEditLease:
             raise ValueError("An owner name is required.")
         with self._lock:
             generation, _, _ = self._load_sessions()
-            if session_id is not None and (
-                session_id in self.invalidated_sessions
-                or session_id in self.closed_sessions
-                or session_id in self._closing_sessions
-            ):
+            if session_id is not None and self._is_terminated_session(session_id):
                 raise SheetLockedError(
                     "This editing session is no longer active.",
                     snapshot=self._snapshot(self._read_lock()),
@@ -275,12 +277,7 @@ class SheetEditLease:
     def heartbeat(self, principal: str, session_id: str) -> dict:
         with self._lock:
             self._load_sessions()
-            if (
-                not session_id
-                or session_id in self.invalidated_sessions
-                or session_id in self.closed_sessions
-                or session_id in self._closing_sessions
-            ):
+            if not session_id or self._is_terminated_session(session_id):
                 raise SheetLockedError(
                     "This editing session is no longer active.",
                     snapshot=self._snapshot(self._read_lock()),
@@ -306,12 +303,7 @@ class SheetEditLease:
     def mark_disconnected(self, session_id: str) -> dict | None:
         with self._lock:
             self._load_sessions()
-            if (
-                not session_id
-                or session_id in self.invalidated_sessions
-                or session_id in self.closed_sessions
-                or session_id in self._closing_sessions
-            ):
+            if not session_id or self._is_terminated_session(session_id):
                 return None
             current = self._read_lock()
             if current is None or current["session_id"] != session_id:
@@ -323,12 +315,7 @@ class SheetEditLease:
     def register_process(self, session_id: str, process: Popen, lifeline: int | None = None) -> None:
         with self._lock:
             self._load_sessions()
-            if (
-                not session_id
-                or session_id in self.invalidated_sessions
-                or session_id in self.closed_sessions
-                or session_id in self._closing_sessions
-            ):
+            if not session_id or self._is_terminated_session(session_id):
                 raise SheetLockedError(
                     "This editing session is no longer active.",
                     snapshot=self._snapshot(self._read_lock()),
@@ -340,30 +327,6 @@ class SheetEditLease:
                     snapshot=self._snapshot(current),
                 )
             self.owned_processes.setdefault(session_id, []).append((process, lifeline))
-
-    def unregister_process(self, session_id: str, process: Popen) -> None:
-        with self._lock:
-            entries = self.owned_processes.get(session_id)
-            if not entries:
-                return
-            remaining = []
-            for entry_process, lifeline in entries:
-                if entry_process is process:
-                    if lifeline is not None:
-                        with suppress(OSError):
-                            os.close(lifeline)
-                else:
-                    remaining.append((entry_process, lifeline))
-            if remaining:
-                self.owned_processes[session_id] = remaining
-            else:
-                self.owned_processes.pop(session_id, None)
-
-    def cleanup_processes(self, session_id: str) -> None:
-        with self._lock:
-            entries = self.owned_processes.pop(session_id, [])
-        for process, lifeline in entries:
-            _close_entry(process, lifeline)
 
     def cleanup_process(self, session_id: str | None, process: Popen, fallback_lifeline: int | None = None) -> None:
         lifeline = fallback_lifeline
@@ -392,12 +355,7 @@ class SheetEditLease:
             raise ValueError("Outcome must be 'succeeded', 'failed', or 'cancelled'.")
         with self._lock:
             self._load_sessions()
-            if (
-                not session_id
-                or session_id in self.invalidated_sessions
-                or session_id in self.closed_sessions
-                or session_id in self._closing_sessions
-            ):
+            if not session_id or self._is_terminated_session(session_id):
                 raise SheetLockedError(
                     "This editing session is no longer active.",
                     snapshot=self._snapshot(self._read_lock()),
@@ -473,11 +431,7 @@ class SheetEditLease:
     def verify_write(self, principal: str, session_id: str | None) -> None:
         with self._lock:
             self._load_sessions()
-            if session_id is not None and (
-                session_id in self.invalidated_sessions
-                or session_id in self.closed_sessions
-                or session_id in self._closing_sessions
-            ):
+            if session_id is not None and self._is_terminated_session(session_id):
                 raise SheetLockedError(
                     "This editing session is no longer active.",
                     snapshot=self._snapshot(self._read_lock()),

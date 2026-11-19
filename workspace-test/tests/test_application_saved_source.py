@@ -61,10 +61,12 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                         expect(tab).to_contain_text("Failed")
                     else:
                         page.get_by_role("button", name="Reload flow").click()
-                        expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
+                        expect(page.locator('iframe[title="Main recovery graph"]')).to_be_visible()
+                        expect(page.locator("#recovery-hint")).to_be_hidden()
                         expect(page.locator("#notice-message")).to_be_hidden()
                         run.click()
                         expect(tab).to_contain_text("Failed")
+                    expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
                     expect(page.locator("#notice-message")).to_contain_text(relative)
                     graph = page.frame_locator('iframe[title="Main recovery graph"]')
                     edit_node = graph.get_by_role("button", name="Edit Start source")
@@ -165,9 +167,10 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                 sign_in(page, url, state)
                 page.get_by_role("link", name=root.name).click()
                 expect(edit_node).to_be_visible()
-                expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
+                expect(page.locator("#recovery-hint")).to_be_hidden()
                 expect(result).to_be_hidden()
                 run.click()
+                expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
                 expect(result).to_contain_text("flow.py:1")
 
     def test_saved_source_takes_effect_only_on_the_next_run(self):

@@ -103,18 +103,6 @@ def create_mcp_server(client):
         """
         return client.request(request_id, device_id, project_id, 'cancel_job', {'job_id': job_id})
 
-    @server.tool()
-    def update_workspace(request_id: text, device_id: text, project_id: text,
-                         restart: bool = True) -> dict:
-        """Pull the latest Phyzflow repository updates on the Edge host and optionally restart."""
-        return client.request(request_id, device_id, project_id, 'update_workspace',
-                              {'restart': restart})
-
-    @server.tool()
-    def restart_workspace(request_id: text, device_id: text, project_id: text) -> dict:
-        """Restart the Edge Workspace UI and MCP server cleanly."""
-        return client.request(request_id, device_id, project_id, 'restart_workspace', {})
-
     return server
 
 

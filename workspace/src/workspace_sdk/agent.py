@@ -8,12 +8,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import shutil
 import stat
 import signal
-import subprocess
-import sys
-from threading import Lock, Thread, Timer
+from threading import Lock, Thread
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -79,8 +76,6 @@ class WorkspaceAgent:
         self.state = state
         self.mutation_lock = Lock()
         self.jobs = AgentJobs(state)
-        self.repo_dir = None
-        self.on_restart = None
         self.projects = {}
         for name, project in projects.items():
             root = Path(project['root']).expanduser().resolve(strict=True)
@@ -101,36 +96,6 @@ class WorkspaceAgent:
                                    'inference_environment': dict(inference_environment)}
             if state and state.directory.resolve().is_relative_to(root):
                 raise ValueError('Agent state directory must be outside configured projects.')
-
-    def attach_lifecycle(self, *, repo_dir: Path, on_restart) -> None:
-        self.repo_dir = Path(repo_dir).resolve()
-        self.on_restart = on_restart
-
-    def _run_git(self, *args: str, timeout: int = 60) -> str:
-        git = shutil.which('git') or 'git'
-        completed = subprocess.run(
-            [git, *args],
-            cwd=self.repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = ((completed.stdout or '') + (completed.stderr or '')).strip()
-        if completed.returncode != 0:
-            raise AgentError('command_failed', output[:1024] or f'git {args[0]} failed.', 'lifecycle')
-        return output
-
-    def _reinstall_sdk(self) -> None:
-        uv = shutil.which('uv')
-        pkg = f"{self.repo_dir / 'workspace'}[mcp]"
-        if uv:
-            cmd = [uv, 'pip', 'install', '--python', sys.executable, '--reinstall-package', 'workspace-sdk', pkg]
-        else:
-            cmd = [sys.executable, '-m', 'pip', 'install', '--no-deps', '--force-reinstall', str(self.repo_dir / 'workspace')]
-        completed = subprocess.run(cmd, cwd=self.repo_dir, capture_output=True, text=True, timeout=120)
-        if completed.returncode != 0:
-            detail = ((completed.stderr or '') + (completed.stdout or '')).strip()
-            raise AgentError('command_failed', detail[:1024] or 'Could not reinstall workspace-sdk.', 'lifecycle')
 
     def dispatch(self, request):
         mutations = {'write_file', 'apply_patch', 'run_flow', 'validate_flow', 'run_command', 'cancel_job'}
@@ -179,33 +144,11 @@ class WorkspaceAgent:
         allowed = {'inspect_project': set(), 'list_files': {'path'}, 'read_file': {'path'}, 'search_code': {'query'},
                    'run_command': {'program', 'argv', 'cwd'}, 'read_job_output': {'job_id', 'stream', 'cursor', 'limit'},
                    'validate_flow': {'sheet'}, 'run_flow': {'sheet', 'input'}, 'get_job': {'job_id'}, 'cancel_job': {'job_id'},
-                   'write_file': {'path', 'revision', 'source'}, 'apply_patch': {'path', 'revision', 'old_text', 'new_text'},
-                   'update_workspace': {'restart'}, 'restart_workspace': set()}
+                   'write_file': {'path', 'revision', 'source'}, 'apply_patch': {'path', 'revision', 'old_text', 'new_text'}}
         if operation not in allowed:
             raise AgentError('unsupported_operation', 'Unsupported operation.')
         if set(arguments) - allowed[operation]:
             raise AgentError('invalid_arguments', 'Unexpected operation arguments.')
-        if operation == 'restart_workspace':
-            if self.on_restart is None:
-                raise AgentError('unsupported_operation', 'Workspace restart is not configured.', 'lifecycle')
-            Timer(0.25, self.on_restart).start()
-            return {'status': 'restarting'}
-        if operation == 'update_workspace':
-            if self.repo_dir is None:
-                raise AgentError('unsupported_operation', 'Workspace repository path is not configured.', 'lifecycle')
-            restart = arguments.get('restart', True)
-            if not isinstance(restart, bool):
-                raise AgentError('invalid_arguments', 'restart must be a boolean.')
-            before = self._run_git('rev-parse', '--short', 'HEAD')
-            output = self._run_git('pull', '--ff-only')
-            after = self._run_git('rev-parse', '--short', 'HEAD')
-            if not restart or os.environ.get('PHYZFLOW_RESTART_WRAPPER') != '1':
-                self._reinstall_sdk()
-            restarting = bool(restart and self.on_restart is not None)
-            if restarting:
-                Timer(0.25, self.on_restart).start()
-            return {'previous_commit': before, 'current_commit': after, 'updated': before != after,
-                    'restarting': restarting, 'output': output[:4096]}
         if operation == 'run_command':
             program, argv = arguments.get('program'), arguments.get('argv')
             if not isinstance(program, str) or not isinstance(argv, list) or any(not isinstance(arg, str) or '\x00' in arg for arg in argv):
@@ -395,7 +338,6 @@ def create_agent_server(config: dict, port=0):
     try:
         server = AgentServer(('127.0.0.1', port), Handler)
         server.jobs = agent.jobs
-        server.attach_lifecycle = agent.attach_lifecycle
         return server
     except BaseException:
         state.close()

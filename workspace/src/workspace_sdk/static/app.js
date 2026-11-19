@@ -65,7 +65,6 @@ const forceOpenNodeSource = document.querySelector("#force-open-node-source");
 const saveNodeSource = document.querySelector("#save-node-source");
 const nodes = new Map();
 const labels = { running: "Running", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", stopped: "Stopped" };
-let tracksGenerators = false;
 let activeNode = null;
 let stopPhase = null;
 let runInProgress = false;
@@ -702,7 +701,11 @@ function fileTree(entries, parent, source, index) {
 }
 
 async function showNodeFiles(id, index, source, line = null, preferSettings = false) {
-  if (stopPhase === "stopped" || !canLeaveSource()) return;
+  if (!canLeaveSource()) return;
+  if (stopPhase === "stopped") {
+    window.parent.phyzflowEditNodeSource?.(window, source);
+    return;
+  }
   nodeFilesRequest?.abort();
   nodeSourceRequest?.abort();
   nodeSourceRequest = null;
@@ -979,7 +982,6 @@ function inspectNode(step, project) {
 
 function positionGraph(project) {
   const { steps } = project;
-  tracksGenerators = steps.some(step => step.track_generator);
   const rows = new Map();
   const producers = new Set(steps.flatMap(step => step.dependencies));
   for (const [index, step] of steps.entries()) {
@@ -1004,7 +1006,7 @@ function positionGraph(project) {
     select.setAttribute("aria-pressed", "false");
     select.addEventListener("click", () => {
       inspectNode(step, project);
-      if (recoveryView) window.parent.phyzflowEditRecoveryNode?.(window, step.source);
+      if (recoveryView) window.parent.phyzflowEditNodeSource?.(window, step.source);
       else if (compactPanelLayout.matches) setPanel("inspector", true).querySelector("[data-close-panel]").focus();
     });
     if (!recoveryView) {
@@ -1285,23 +1287,6 @@ function locationText(location) {
   return location.line == null ? location.file : `${location.file}:${location.line}`;
 }
 
-function showMetadata(container, label, metadata) {
-  if (metadata != null) {
-    container.append(element("p", label), jsonOutput(JSON.stringify(metadata, null, 2)));
-  }
-}
-
-function showSample(container, label, sample) {
-  if (sample !== undefined) {
-    container.append(element("p", label));
-    if (sample === null) {
-      container.append(element("p", "No JSON sample available."));
-    } else {
-      container.append(jsonOutput(sample));
-    }
-  }
-}
-
 button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ block: "nearest" }));
 
 function updateRunControls() {
@@ -1325,20 +1310,16 @@ window.addEventListener("workspace-stop", event => {
   updateRunControls();
   if (phase === "stopped") {
     setStatus("stopped", "Stopped");
-    if (tracksGenerators) {
-      for (const [id, { node, state }] of nodes) {
-        if (node.dataset.state !== "running") continue;
-        node.dataset.state = "stopped";
-        state.textContent = labels.stopped;
-        const timing = currentNodeTiming.get(id);
-        if (timing) timing.status = "stopped";
-      }
-      if (activeNode !== null && nodes.get(activeNode)?.node.dataset.state === "stopped") {
-        showInspectorState("stopped");
-      }
+    for (const [id, { node, state }] of nodes) {
+      if (node.dataset.state !== "running") continue;
+      node.dataset.state = "stopped";
+      state.textContent = labels.stopped;
+      const timing = currentNodeTiming.get(id);
+      if (timing) timing.status = "stopped";
+      if (activeNode === id) showInspectorState("stopped");
     }
     result.querySelector(".run-stream-error")?.remove();
-    resetInput.disabled = openNodeFiles.disabled = saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
+    resetInput.disabled = saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
     for (const control of document.querySelectorAll(".open-error-source")) control.disabled = true;
     nodeSourceInput.readOnly = true;
     saveNodeSource.disabled = true;

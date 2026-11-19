@@ -7,10 +7,8 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from workspace_sdk import Flow, Output, Step
-from workspace_sdk.deploy import DeploySettings as DeployReexport
 from workspace_sdk.deploy import load_deploy_settings as load_deploy_reexport
 from workspace_sdk.node_sources import SourceChanged
-from workspace_sdk.project import read_project_settings as read_settings_reexport
 from workspace_sdk.sheets import (
     archive_sheet_directory,
     can_delete_sheet,
@@ -81,7 +79,7 @@ class FlowViewRoutingAndTransportTests(unittest.TestCase):
             thread = Thread(
                 target=serve,
                 args=(flow, root, 0, {}),
-                kwargs={"zoom": {"speed": 1.0, "smooth_ms": 160}, "on_ready": ready_url.append},
+                kwargs={"zoom": {"speed": 1.0, "smooth_ms": 160}, "on_ready": lambda url, *_: ready_url.append(url)},
                 daemon=True,
             )
             thread.start()
@@ -172,9 +170,7 @@ class SheetLifecycleDeepeningTests(unittest.TestCase):
 
 class ProjectSettingsConsolidationTests(unittest.TestCase):
     def test_settings_module_is_single_source_for_ui_and_deploy(self):
-        self.assertIs(read_settings_reexport, read_project_settings)
         self.assertIs(load_deploy_reexport, load_deploy_settings)
-        self.assertIs(DeployReexport, DeploySettings)
 
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

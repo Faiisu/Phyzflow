@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from urllib.request import ProxyHandler, build_opener
 
-from .ui_settings import DeploySettings, load_deploy_settings
+from .ui_settings import load_deploy_settings
 
 
 class DeploymentError(RuntimeError):

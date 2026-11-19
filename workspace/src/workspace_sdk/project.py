@@ -6,7 +6,6 @@ from hashlib import sha256
 from importlib.machinery import PathFinder, SourceFileLoader
 import importlib.util
 from inspect import signature
-import json
 from pathlib import Path
 import sys
 import tomllib
@@ -16,7 +15,6 @@ from typing import Callable
 from .flow import Flow, Input, Output, Step
 from .node_settings import NodeSetting, parse_setting_defaults
 from .node_sources import node_settings_path, read_node_source
-from .ui_settings import read_project_settings
 
 
 class ValidationError(ValueError):

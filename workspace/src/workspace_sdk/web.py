@@ -87,8 +87,6 @@ class UIRequestHandler(BaseHTTPRequestHandler):
     def send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         self.send_bytes(json.dumps(data).encode(), "application/json", status)
 
-    send_source = send_json
-
     def local_request(self) -> bool:
         return matches_ui_host(self)
 
@@ -215,20 +213,19 @@ def serve(
                 self.send_json(data)
             elif self.path == "/project":
                 edit_lock = SheetEditLease(root).status(self.headers.get("X-Phyzflow-Edit-Session"))
-                data = json.dumps({
+                self.send_json({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
                     "zoom": zoom, "edit_running_source": run_token is not None, "edit_lock": edit_lock,
-                }).encode()
-                self.send_bytes(data, "application/json")
+                })
             elif self.path == "/status":
-                self.send_bytes(json.dumps({"status": "running" if sheet_busy(root) else run_status}).encode(), "application/json")
+                self.send_json({"status": "running" if sheet_busy(root) else run_status})
             elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):
                 scope = match[1]
                 try:
                     step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
-                    self.send_source({"panels": dashboard_panels(root, step_id)})
+                    self.send_json({"panels": dashboard_panels(root, step_id)})
                 except IndexError:
-                    self.send_source({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
+                    self.send_json({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
             elif match := re.fullmatch(f"/{ASSET_ROUTE}", self.path):
                 scope = match[1]
                 panel_id = match[2]
@@ -236,13 +233,13 @@ def serve(
                     step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
                     assets = dashboard_assets(root, step_id, panel_id)
                 except (FileNotFoundError, IndexError):
-                    self.send_source({"error": "Add index.html to this scope's dashboard folder."}, HTTPStatus.NOT_FOUND)
+                    self.send_json({"error": "Add index.html to this scope's dashboard folder."}, HTTPStatus.NOT_FOUND)
                 except PermissionError:
-                    self.send_source({"error": "Load dashboard assets from files inside the dashboard folder."}, HTTPStatus.FORBIDDEN)
+                    self.send_json({"error": "Load dashboard assets from files inside the dashboard folder."}, HTTPStatus.FORBIDDEN)
                 except (OSError, RuntimeError, ValueError):
-                    self.send_source({"error": "Dashboard assets must be UTF-8 files up to 256 KiB each."}, HTTPStatus.BAD_REQUEST)
+                    self.send_json({"error": "Dashboard assets must be UTF-8 files up to 256 KiB each."}, HTTPStatus.BAD_REQUEST)
                 else:
-                    self.send_source(assets)
+                    self.send_json(assets)
             elif match := re.fullmatch(f"/{SETTINGS_ROUTE}", self.path):
                 try:
                     scoped = self.scoped_steps(match[1])
@@ -250,9 +247,9 @@ def serve(
                 except IndexError:
                     self.send_error(HTTPStatus.NOT_FOUND)
                 except (OSError, sqlite3.Error):
-                    self.send_source({"error": "Could not read node settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                    self.send_json({"error": "Could not read node settings."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 else:
-                    self.send_source({
+                    self.send_json({
                         step.id: {
                             name: {
                                 "type": type(setting.default).__name__,
@@ -275,7 +272,7 @@ def serve(
                 except (OSError, RuntimeError):
                     self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not read the node folder.")
                     return
-                self.send_bytes(json.dumps(data).encode(), "application/json")
+                self.send_json(data)
             elif self.path == "/history" or self.path.startswith("/history/"):
                 try:
                     data = history.list_runs() if self.path == "/history" else history.read(
@@ -287,7 +284,7 @@ def serve(
                 if data is None:
                     self.send_error(HTTPStatus.NOT_FOUND)
                 else:
-                    self.send_bytes(json.dumps(data).encode(), "application/json")
+                    self.send_json(data)
             elif self.path == "/console-logs" or self.path.startswith("/console-logs/"):
                 run_id = None if self.path == "/console-logs" else self.path.removeprefix("/console-logs/")
                 try:
@@ -384,11 +381,11 @@ def serve(
                 else:
                     raise ValueError("Choose the next run or a live run.")
             except (IndexError, ValueError) as error:
-                self.send_source({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             except (OSError, sqlite3.Error):
-                self.send_source({"error": "Could not save this setting."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"error": "Could not save this setting."}, HTTPStatus.INTERNAL_SERVER_ERROR)
             else:
-                self.send_source(result)
+                self.send_json(result)
 
         def edit_source(self, index: int, data: dict):
             relative = data.get("path")
@@ -397,11 +394,11 @@ def serve(
             if not isinstance(relative, str) or (
                 "source" in data and (not isinstance(source, str) or not isinstance(revision, str))
             ):
-                self.send_source({"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST)
+                self.send_json({"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST)
                 return
             edit_while_running = run_token is not None and Path(relative).suffix == ".py"
             if source is not None and not edit_while_running and (run_status == "running" or sheet_busy(root)):
-                self.send_source({"error": "Cannot edit node files while the flow is running."}, HTTPStatus.CONFLICT)
+                self.send_json({"error": "Cannot edit node files while the flow is running."}, HTTPStatus.CONFLICT)
                 return
 
             def perform_edit() -> dict[str, str]:

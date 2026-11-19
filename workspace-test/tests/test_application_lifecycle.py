@@ -246,11 +246,38 @@ class ApplicationLifecycleTests(unittest.TestCase):
                     expect(frame.get_by_label("stderr")).not_to_contain_text(f"{other} stderr")
                     expect(frame.get_by_label("stdout")).not_to_contain_text("Runtime Error stdout")
 
-                page.get_by_role("button", name="Stop Left").click()
+                page.get_by_role("tab", name="Left").click()
+                left_frame = page.frame_locator('iframe[title="Left flow"]')
+                status = page.locator("#workspace-flow-status")
+                expect(left_frame.locator(".node .state")).to_have_text("Running")
+                stop_requests = []
+                page.route("**/flows/*/stop", lambda route: stop_requests.append(route))
+                with page.expect_request("**/flows/*/stop"):
+                    page.get_by_role("button", name="Stop Left").click()
+                expect(status).to_have_text("Stopping…")
+                stop_requests[0].continue_()
                 expect(page.get_by_role("tab", name="Left")).to_contain_text("Stopped")
+                expect(status).to_have_text("Stopped")
+                expect(left_frame.locator(".node .state")).to_have_text("Stopped")
                 wait_for(lambda: process_exited(pids["Left"]))
                 expect(page.get_by_role("tab", name="Right")).to_contain_text("Running")
                 right_units = right / "units"
                 before = right_units.stat().st_size
                 wait_for(lambda: right_units.stat().st_size > before)
+
+                expect(page.get_by_role("button", name="Open flow", exact=True)).to_be_hidden()
+                left_frame.get_by_role("button", name="Inspect Start").dblclick()
+                editor = page.get_by_role("dialog", name="Edit source")
+                expect(editor.get_by_label("Python file")).to_have_value("nodes/start/entrypoint.py")
+                editor.locator("#flow-source-input").fill('def start():\n    return "Edited after stopping"\n')
+                editor.get_by_role("button", name="Save", exact=True).click()
+                expect(editor.locator("#flow-source-message")).to_contain_text("Saved.")
+                editor.get_by_role("button", name="Close", exact=True).click()
+                expect(status).to_have_text("Stopped")
+                state = page.request.get(f"{page.url}workspace").json()
+                self.assertFalse(next(flow for flow in state["flows"] if flow["name"] == "Left")["worker_ready"])
+
+                page.get_by_role("button", name="Run flow", exact=True).click()
+                expect(status).to_have_text("Succeeded")
+                expect(left_frame.locator("#result pre")).to_have_text('"Edited after stopping"')
             wait_for(lambda: process_exited(pids["Right"]))

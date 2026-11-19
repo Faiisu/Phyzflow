@@ -14,10 +14,8 @@ from secrets import token_urlsafe
 import sqlite3
 import stat
 from subprocess import DEVNULL, PIPE, Popen
-import sys
 from tempfile import TemporaryDirectory
 from threading import Event
-from time import monotonic, sleep
 from typing import Literal
 from uuid import uuid4
 
@@ -242,30 +240,10 @@ def _ensure_worker_url(flow_sheet) -> str:
     from mcp.server.mcpserver.exceptions import ToolError
     from .workspace_ui import ReloadConflict
 
-    deadline = monotonic() + 10
-    while True:
-        with flow_sheet.lock:
-            status = flow_sheet.status()
-            worker = flow_sheet.worker
-            if status == "stopping":
-                raise ToolError("The flow is stopping. Try again after it stops.")
-            if status != "running":
-                if worker is None or not worker.url or worker.process.poll() is not None:
-                    try:
-                        flow_sheet.open(reload=False)
-                    except (ReloadConflict, OSError, RuntimeError, ValueError, EOFError) as error:
-                        raise ToolError(str(error) or "Could not open the flow worker.") from None
-                elif flow_sheet.changed_source(status) is not None:
-                    try:
-                        flow_sheet.open(reload=True)
-                    except (ReloadConflict, OSError, RuntimeError, ValueError, EOFError) as error:
-                        raise ToolError(str(error) or "Could not reload the flow worker.") from None
-                worker = flow_sheet.worker
-            if worker is not None and worker.url and worker.process.poll() is None:
-                return worker.url
-            if status != "running" or monotonic() >= deadline:
-                raise ToolError("Could not open the flow worker.")
-        sleep(0.02)
+    try:
+        return flow_sheet.ensure_worker_url()
+    except (ReloadConflict, OSError, RuntimeError, ValueError, EOFError) as error:
+        raise ToolError(str(error) or "Could not open the flow worker.") from None
 
 
 def _worker_json(flow_sheet, method: str, path: str, payload: dict | None = None) -> dict:

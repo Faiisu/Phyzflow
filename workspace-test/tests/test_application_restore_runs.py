@@ -450,9 +450,15 @@ def start():
 
                     page.get_by_role("tab", name="Manual").click()
                     expect(page.get_by_role("tab", name="Manual").locator(".sheet-status")).to_have_text("Stopped")
+                    expect(page.locator("#recovery-hint")).to_be_hidden()
                     expect(page.locator("#notice-message")).to_have_text("Flow stopped.")
-                    page.get_by_role("button", name="Open flow").click()
-                    expect(page.get_by_role("tab", name="Manual").locator(".sheet-status")).to_have_text("Ready")
+                    graph = page.frame_locator('iframe[title="Manual recovery graph"]')
+                    graph.get_by_role("button", name="Edit Start source").click()
+                    editor = page.get_by_role("dialog", name="Edit source")
+                    expect(editor.get_by_label("Python file")).to_have_value("nodes/start/entrypoint.py")
+                    editor.get_by_role("button", name="Close", exact=True).click()
+                    expect(page.get_by_role("button", name="Run flow", exact=True)).to_be_enabled()
+                    expect(page.get_by_role("tab", name="Manual").locator(".sheet-status")).to_have_text("Stopped")
                     self.assertEqual(len(read_lines(stopped_dir / "starts")), 1)
 
                     (root / "finish").touch()

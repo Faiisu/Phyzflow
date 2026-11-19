@@ -271,7 +271,8 @@ function needsRecovery(sheet) {
 }
 
 function usesSourceGraph(sheet) {
-  return editRunningSource && sheet?.workerReady === false && sheet.status !== "stopped";
+  if (sheet?.status === "stopped") return !sheet.frame && (editRunningSource || sheet.recoverable);
+  return editRunningSource && sheet?.workerReady === false;
 }
 
 function updateStatus(sheet, status) {
@@ -289,13 +290,14 @@ function activeRunButton() {
   return active.frame?.contentDocument?.getElementById("run-flow");
 }
 
-function canRunSourceGraph(sheet) {
-  return usesSourceGraph(sheet) && !sheet.pending && !["opening", "running", "stopping"].includes(sheet.status);
+function canRunWithoutWorker(sheet) {
+  return editRunningSource && (usesSourceGraph(sheet) || sheet?.status === "stopped") &&
+    !sheet.pending && !["opening", "running", "stopping"].includes(sheet.status);
 }
 
 function syncToolbar() {
   const button = activeRunButton();
-  runSheet.disabled = !canRunSourceGraph(active) && button?.disabled !== false;
+  runSheet.disabled = !canRunWithoutWorker(active) && button?.disabled !== false;
   const frameStatus = button?.ownerDocument.getElementById("status");
   const frameState = frameStatus?.dataset.state;
   const state = frameState || active?.status || "";
@@ -311,7 +313,7 @@ window.phyzflowSyncToolbar = frameWindow => {
 
 runSheet.addEventListener("click", async () => {
   const sheet = active;
-  if (!canRunSourceGraph(sheet)) {
+  if (!canRunWithoutWorker(sheet)) {
     activeRunButton()?.click();
     return;
   }
@@ -347,11 +349,16 @@ function showRecoveryGraph(sheet, visible) {
 function showNotice() {
   syncToolbar();
   const sourceGraph = usesSourceGraph(active);
+  const stopped = active?.status === "stopped";
   const recovering = Boolean((sourceGraph || needsRecovery(active)) && !active.pending);
   const hasRecoveryGraph = sourceGraph || (recovering && active.recoverable);
-  recoverSource.hidden = !recovering;
-  recoveryHint.hidden = !hasRecoveryGraph;
-  if (hasRecoveryGraph) {
+  const hasRecoveryError = Boolean(
+    active && (needsRecovery(active) || active.error || (active.status === "failed" && hasRecoveryGraph)),
+  );
+  const showRecoveryHint = hasRecoveryGraph && hasRecoveryError;
+  recoverSource.hidden = !recovering && (!stopped || active.pending);
+  recoveryHint.hidden = !showRecoveryHint;
+  if (showRecoveryHint) {
     const hint = active.recoverable
       ? "Last loaded graph. Select a node to edit its source."
       : "Source preview. Select a node to edit its source.";
@@ -387,7 +394,7 @@ function showNotice() {
   const error = active.runError ?? active.error;
   notice.hidden = !hasRecoveryGraph && Boolean(active.frame) && !snapshot && active.status !== "unavailable" && !error;
   if (notice.hidden) return;
-  const message = error ?? (sourceGraph ? "" : {
+  const message = error ?? (sourceGraph && !stopped ? "" : {
     opening: "Opening the flow…",
     stopping: "Stopping the flow…",
     stopped: snapshot ? "Stopped · Run snapshot" : "Flow stopped.",
@@ -395,7 +402,7 @@ function showNotice() {
   }[active.status] ?? "Open this flow to get started.");
   noticeMessage.hidden = !message;
   if (noticeMessage.textContent !== message) noticeMessage.textContent = message;
-  reopen.hidden = active.pending || sourceGraph;
+  reopen.hidden = active.pending || (editRunningSource && (sourceGraph || stopped));
 }
 
 reopen.addEventListener("click", () => openFlow(active));
@@ -540,7 +547,7 @@ async function openSourceEditor(recovering, preferred) {
   sourceInput.disabled = sourcePath.disabled = saveSource.disabled = closeSource.disabled = true;
   sourceFiles.hidden = !recovering;
   sourceTitle.textContent = recovering ? "Edit source" : "Edit flow.py";
-  sourceDiagnostic.hidden = !recovering;
+  sourceDiagnostic.hidden = !recovering || sheet.status === "stopped";
   sourceDiagnostic.textContent = recovering ? noticeMessage.textContent : "";
   forceOpenSource.hidden = true;
   sourceMessage.textContent = "Loading source…";
@@ -581,9 +588,11 @@ async function openSourceEditor(recovering, preferred) {
 
 editFlowSource.addEventListener("click", () => openSourceEditor(false));
 recoverSource.addEventListener("click", () => openSourceEditor(true));
-window.phyzflowEditRecoveryNode = (frameWindow, path) => {
-  if (active?.recoveryFrame?.contentWindow === frameWindow && (needsRecovery(active) || usesSourceGraph(active)) &&
-      !sourceDialog.open) void openSourceEditor(true, path);
+window.phyzflowEditNodeSource = (frameWindow, path) => {
+  const recovery = active?.recoveryFrame?.contentWindow === frameWindow &&
+    (needsRecovery(active) || usesSourceGraph(active));
+  const snapshot = active?.status === "stopped" && active.frame?.contentWindow === frameWindow;
+  if ((recovery || snapshot) && !sourceDialog.open) void openSourceEditor(true, path);
 };
 
 sourcePath.addEventListener("change", async () => {
@@ -772,6 +781,7 @@ async function stopFlow(sheet) {
   sheet.reloadError = null;
   updateStatus(sheet, "stopping");
   notifyFrameOfStop(sheet, "stopping");
+  showNotice();
   try {
     await command(sheet, "stop");
     sheet.sourceChange = null;
@@ -1016,7 +1026,8 @@ async function pollStatus() {
         sheet.workerReady = worker_ready;
         if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0) ||
             (sheet === active && worker_ready && sheet.recoveryFrame)) &&
-            !["opening", "unavailable", "stopped"].includes(status) && !error && !hasUnsavedSource(sheet)) {
+            !["opening", "unavailable", "stopped"].includes(status) && worker_ready !== false &&
+            !error && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;
           sheet.reloadError = null;

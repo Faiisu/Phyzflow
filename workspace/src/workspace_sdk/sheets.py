@@ -164,13 +164,22 @@ def archive_sheet_directory(
 
 
 def edit_sheet_flow_source(
-    sheet_root: Path, source: str | None, revision: str | None,
+    sheet_root: Path,
+    source: str | None,
+    revision: str | None,
+    relative: str = "flow.py",
+    *,
+    main: bool = False,
 ) -> dict[str, str]:
-    """Read or update a sheet's flow.py entrypoint with symlink and revision checks."""
-    path = sheet_root / "flow.py"
-    if path.resolve() != path or not path.is_file():
-        raise FileNotFoundError
-    return edit_source_file(path, source, revision)
+    if relative == "flow.py":
+        path = sheet_root / "flow.py"
+        if path.resolve() != path or not path.is_file():
+            raise FileNotFoundError
+        return edit_source_file(path, source, revision)
+    for file in editable_sheet_python_files(sheet_root, main=main):
+        if file.relative_to(sheet_root).as_posix() == relative and file.resolve() == file:
+            return edit_source_file(file, source, revision)
+    raise FileNotFoundError
 
 
 def write_new_file(path: Path, content: str, cleanup: ExitStack) -> None:

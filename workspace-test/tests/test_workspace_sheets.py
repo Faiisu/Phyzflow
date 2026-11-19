@@ -538,7 +538,9 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(first.locator("#status")).to_have_text("Stopped")
                 expect(first.get_by_role("button", name="Inspect Finish", exact=True)).to_have_attribute("aria-pressed", "true")
                 expect(first.locator("#zoom-level")).to_have_text("125%")
-                expect(first.locator(".node .state")).to_have_text(["Succeeded", "Running"])
+                expect(first.locator(".node .state")).to_have_text(["Succeeded", "Stopped"])
+                expect(first.locator("#inspector-state")).to_have_text("Stopped")
+                expect(page.locator("#workspace-flow-status")).to_have_text("Stopped")
                 expect(page.get_by_role("button", name="Run flow")).to_be_disabled()
                 expect(first.locator("#result .error")).to_have_count(0)
                 second_tab.click()
@@ -551,7 +553,7 @@ class WorkspaceSheetTests(unittest.TestCase):
                 self.assertEqual(len(page.request.get(f"{second_url}history").json()), 1)
 
                 first_tab.click()
-                expect(first.locator(".node .state")).to_have_text(["Succeeded", "Running"])
+                expect(first.locator(".node .state")).to_have_text(["Succeeded", "Stopped"])
                 page.get_by_role("button", name="Open flow").click()
                 expect(first.locator("#status")).to_have_text("Ready")
                 expect(first.locator(".node .state")).to_have_text(["Idle", "Idle"])
@@ -576,8 +578,10 @@ class WorkspaceSheetTests(unittest.TestCase):
                 expect(second_tab).to_contain_text("Running")
 
                 reload_flow = page.get_by_role("button", name="Reload flow")
-                reload_flow.click()
-                expect(page.locator("#reload-message")).to_contain_text("This flow is running")
+                expect(reload_flow).to_be_disabled()
+                blocked_reload = page.request.post(urljoin(url, "/flows/1/reload"), headers={"Origin": url})
+                self.assertEqual(blocked_reload.status, 409)
+                self.assertIn("active run or reload", blocked_reload.json()["error"])
                 expect(second_tab).to_contain_text("Running")
                 first_tab.click()
                 first_source = root / "flows" / "First" / "flow.py"

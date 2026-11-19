@@ -224,7 +224,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       frame: null,
       ready: false,
       loadVersion: 0,
-      listVersion: 0,
       runVersion: 0,
       savedRun: null,
       following: true,
@@ -355,7 +354,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       releaseBoard(element, layoutKey(panel.scope, panel.panelId));
       if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
       panel.loadVersion++;
-      panel.listVersion++;
       panel.runVersion++;
       panel.ready = false;
       panel.frame = null;
@@ -519,10 +517,10 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     syncVisualizeDrawer();
   }
 
-  async function open(nodeId, preferred = liveRun?.status === "running" ? "live" : null, panelId = null) {
+  async function open(nodeId, panelId = null) {
     if (stopped) return;
     if (panelId !== null) {
-      openSinglePanel(nodeId, panelId, "", preferred);
+      openSinglePanel(nodeId, panelId, "");
       return;
     }
     let panels = [];
@@ -534,11 +532,11 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
     if (panels.length <= 1) {
       const first = panels[0] ?? { id: "default", label: "" };
-      openSinglePanel(nodeId, first.id, first.label, preferred);
+      openSinglePanel(nodeId, first.id, first.label);
       return;
     }
     for (const entry of panels) {
-      openSinglePanel(nodeId, entry.id, entry.label, preferred);
+      openSinglePanel(nodeId, entry.id, entry.label);
     }
   }
 

@@ -86,23 +86,12 @@ def _scope_directory(root: Path, step_id: str | None) -> Path:
 
 
 def dashboard_panels(root: Path, step_id: str | None) -> list[dict[str, str]]:
-    base = _scope_directory(root, step_id)
-    panels: list[dict[str, str]] = []
-    root_index = base / "index.html"
-    if root_index.resolve() == root_index and root_index.is_file():
-        panels.append({"id": "default", "label": "Overview"})
-    panels_dir = base / "panels"
-    if panels_dir.is_dir() and panels_dir.resolve() == panels_dir:
-        for sub in sorted(panels_dir.iterdir(), key=lambda p: p.name):
-            if not sub.is_dir() or sub.resolve() != sub:
-                continue
-            if sub.name in (".", "..") or not PANEL_ID_PATTERN.fullmatch(sub.name):
-                continue
-            index_file = sub / "index.html"
-            if index_file.resolve() == index_file and index_file.is_file():
-                label = sub.name.replace("-", " ").replace("_", " ").strip() or sub.name
-                panels.append({"id": sub.name, "label": label})
-    return panels
+    resolved_root = root.resolve()
+    return [
+        {"id": entry["id"], "label": entry["label"]}
+        for entry in _scope_panel_entries(resolved_root, _scope_directory(resolved_root, step_id))
+        if entry["ready"]
+    ]
 
 
 def dashboard_assets(root: Path, step_id: str | None, panel_id: str | None = None) -> dict[str, str]:

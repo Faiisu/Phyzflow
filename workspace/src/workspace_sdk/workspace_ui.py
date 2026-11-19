@@ -25,7 +25,6 @@ from uuid import uuid4
 from .agent_supervisor import spawn_supervised
 from .execution import FlowBusy, sheet_busy, sheet_lock
 from .history import RunHistory
-from .node_sources import edit_source_file
 from .project import ValidationError, load_project
 from .sheet_locks import SheetEditLease, SheetLockedError
 from .sheet_runs import RunStateStore, SheetRun
@@ -454,6 +453,26 @@ class FlowSheet:
         worker = self.worker
         return bool(worker is not None and worker.url and worker.process.poll() is None)
 
+    def ensure_worker_url(self, *, timeout: float = 10.0) -> str:
+        deadline = monotonic() + timeout
+        while True:
+            with self.lock:
+                status = self.status()
+                worker = self.worker
+                if status == "stopping":
+                    raise RuntimeError("The flow is stopping. Try again after it stops.")
+                if status != "running":
+                    if worker is None or not worker.url or worker.process.poll() is not None:
+                        self.open(reload=False)
+                    elif self.changed_source(status) is not None:
+                        self.open(reload=True)
+                    worker = self.worker
+                if worker is not None and worker.url and worker.process.poll() is None:
+                    return worker.url
+                if status != "running" or monotonic() >= deadline:
+                    raise RuntimeError("Could not open the flow worker.")
+            sleep(0.02)
+
     def source_graph(self) -> dict:
         files = sorted(editable_sheet_python_files(self.root, main=self.main))
         paths = [path.relative_to(self.root) for path in files]
@@ -482,40 +501,6 @@ class FlowSheet:
             except (OSError, ValueError):
                 pass
         return "unavailable"
-
-
-class WorkspaceController:
-    """In-process bridge so MCP/Agent jobs run and stop through the same FlowSheet worker as the UI."""
-
-    def __init__(self, get_sheet: Callable[[Path], FlowSheet], shutdown_cb: Callable[[], None] | None = None) -> None:
-        self._get_sheet = get_sheet
-        self._shutdown = shutdown_cb
-
-    def shutdown(self) -> None:
-        if self._shutdown is not None:
-            Thread(target=self._shutdown, daemon=True).start()
-
-    def ensure_sheet_worker(self, sheet_path: Path) -> tuple[FlowSheet, str]:
-        sheet = self._get_sheet(sheet_path)
-        status = sheet.status()
-        if status == "running":
-            raise FlowBusy("Another flow run is active on this sheet. Wait for it to finish before starting another.")
-        if sheet.worker is None or sheet.worker.process.poll() is not None:
-            sheet.open(reload=False)
-        elif sheet.changed_source(status) is not None:
-            sheet.open(reload=True)
-        worker = sheet.worker
-        if worker is None or worker.process.poll() is not None:
-            raise RuntimeError("Could not open the flow worker.")
-        return sheet, worker.url
-
-    def stop_sheet_run(self, sheet: FlowSheet) -> None:
-        sheet.stop()
-        if not sheet.closing:
-            try:
-                sheet.open(reload=False)
-            except (OSError, RuntimeError, EOFError):
-                pass
 
 
 def workspace_routes(
@@ -808,12 +793,7 @@ def workspace_routes(
                         return {"files": sorted(path.relative_to(sheet.root).as_posix() for path in files)}
 
                     def edit() -> dict[str, str]:
-                        if relative == "flow.py":
-                            return edit_sheet_flow_source(sheet.root, source, revision)
-                        for file in editable_sheet_python_files(sheet.root, main=sheet.main):
-                            if file.relative_to(sheet.root).as_posix() == relative and file.resolve() == file:
-                                return edit_source_file(file, source, revision)
-                        raise FileNotFoundError
+                        return edit_sheet_flow_source(sheet.root, source, revision, relative, main=sheet.main)
 
                     if source is None:
                         return edit()
@@ -1165,10 +1145,8 @@ def serve_workspace(
     root: Path,
     flows: list[tuple[str, Path]],
     settings: UISettings,
-    *,
-    on_controller: Callable[[WorkspaceController], None] | None = None,
 ) -> None:
-    dispatch, close, resolve_sheet = workspace_routes(root, flows, settings)
+    dispatch, close, _ = workspace_routes(root, flows, settings)
 
     class Handler(UIRequestHandler):
         def do_GET(self) -> None:
@@ -1178,8 +1156,6 @@ def serve_workspace(
 
     try:
         with ThreadingHTTPServer((settings.ipv4, settings.port), Handler) as server:
-            if on_controller is not None:
-                on_controller(WorkspaceController(resolve_sheet, server.shutdown))
             print(f"Workspace UI: {ui_address(settings.ipv4, server.server_port)}", flush=True)
             try:
                 server.serve_forever()
