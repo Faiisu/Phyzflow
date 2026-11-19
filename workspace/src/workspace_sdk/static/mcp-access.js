@@ -6,6 +6,8 @@ const scopes = document.querySelector("#mcp-workspaces");
 const workspaceOptions = document.querySelector("#mcp-workspace-options");
 const issued = document.querySelector("#mcp-issued-token");
 const secret = document.querySelector("#mcp-secret");
+const copySecret = document.querySelector("#copy-mcp-secret");
+const endpointUrl = document.querySelector("#mcp-endpoint-url");
 const status = document.querySelector("#mcp-access-status");
 const problem = document.querySelector("#mcp-access-error");
 const close = document.querySelector("#close-mcp-access");
@@ -18,7 +20,20 @@ let busy = false;
 function clearSecret() {
   secret.value = "";
   issued.hidden = true;
+  if (copySecret) copySecret.textContent = "Copy";
 }
+
+if (endpointUrl) endpointUrl.textContent = `${window.location.origin}/mcp`;
+copySecret?.addEventListener("click", async () => {
+  if (!secret.value) return;
+  try {
+    await navigator.clipboard.writeText(secret.value);
+    copySecret.textContent = "Copied";
+  } catch {
+    secret.select();
+    copySecret.textContent = "Selected";
+  }
+});
 
 function showSelection() {
   const token = tokens.find(item => item.id === choice.value);

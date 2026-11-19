@@ -6,9 +6,15 @@
   <title>Phyzflow | Sign in</title>
   <link rel="stylesheet" href="/workspace.css">
 </head>
-<body class="landing">
+<body class="landing sign-in-page">
   <main class="workspace-list sign-in">
+    <div class="brand-header">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-title">Phyzflow</span>
+      <span class="brand-tag">Administrator</span>
+    </div>
     <h1>Sign in to Phyzflow</h1>
+    <p class="sign-in-subtitle">Use the installation password from your state directory to manage Workspaces and MCP access.</p>
     <form method="post" action="/login">
       <label for="username">Username</label>
       <input id="username" name="username" autocomplete="username" value="admin" required>
@@ -16,7 +22,7 @@
       <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
       <p class="dialog-error" role="alert" hidden>Incorrect username or password.</p>
       <div class="dialog-actions">
-        <button type="submit">Sign in</button>
+        <button type="submit" class="primary-action">Sign in</button>
       </div>
     </form>
   </main>

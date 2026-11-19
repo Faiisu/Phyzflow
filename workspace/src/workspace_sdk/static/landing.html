@@ -10,14 +10,31 @@
 </head>
 <body class="landing">
   <main class="workspace-list">
+    <div class="landing-topbar">
+      <div class="brand-header">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-title">Phyzflow</span>
+      </div>
+      <div class="instance-meta">
+        <span id="workspace-count" class="meta-pill" hidden></span>
+        <span class="meta-pill">Python 3.12 · Streamable MCP</span>
+      </div>
+    </div>
     <header class="workspace-list-heading">
-      <h1>Workspaces</h1>
+      <div class="heading-copy">
+        <h1>Workspaces</h1>
+        <p class="landing-subtitle">Isolated Python 3.12 environments for building, running, and inspecting flows.</p>
+      </div>
       <div class="workspace-list-actions">
-        <button type="button" id="new-workspace">Create Workspace</button>
-        <button type="button" id="add-workspace">Add Workspace</button>
-        <button type="button" id="open-mcp-access">MCP access</button>
+        <button type="button" id="new-workspace" class="primary-action">Create Workspace</button>
+        <button type="button" id="add-workspace" class="secondary-action">Add Workspace</button>
+        <button type="button" id="open-mcp-access" class="utility-action">MCP access</button>
       </div>
     </header>
+    <div id="workspace-filter-bar" class="workspace-filter-bar" hidden>
+      <label for="workspace-filter" class="sr-only">Filter Workspaces</label>
+      <input id="workspace-filter" type="search" placeholder="Filter Workspaces by name or path…" autocomplete="off">
+    </div>
     <p id="workspace-list-message" role="status">Loading Workspaces…</p>
     <p id="workspace-list-error" class="dialog-error" role="alert" hidden></p>
     <ul id="registered-workspaces" aria-label="Registered Workspaces"></ul>
@@ -32,13 +49,14 @@
       <p id="create-workspace-error" class="dialog-error" role="alert" hidden></p>
       <div class="dialog-actions">
         <button type="button" id="cancel-workspace">Cancel</button>
-        <button type="submit">Create</button>
+        <button type="submit" class="primary-action">Create</button>
       </div>
     </form>
   </dialog>
   <dialog id="mcp-access" class="sheet-dialog" aria-labelledby="mcp-access-title">
     <form autocomplete="off">
       <h2 id="mcp-access-title">MCP access</h2>
+      <p class="dialog-hint mcp-endpoint-hint">Streamable HTTP endpoint: <code id="mcp-endpoint-url">/mcp</code></p>
       <label for="mcp-token-choice">Token</label>
       <select id="mcp-token-choice" name="identity"></select>
       <div id="mcp-client-details">
@@ -51,7 +69,10 @@
       </fieldset>
       <div id="mcp-issued-token" hidden>
         <label for="mcp-secret">MCP bearer token</label>
-        <input id="mcp-secret" type="text" readonly spellcheck="false" autocapitalize="off">
+        <div class="secret-row">
+          <input id="mcp-secret" type="text" readonly spellcheck="false" autocapitalize="off">
+          <button type="button" id="copy-mcp-secret" class="secondary-action">Copy</button>
+        </div>
         <p class="dialog-hint">Copy this token now. Phyzflow only displays it once.</p>
       </div>
       <p id="mcp-access-status" role="status"></p>
@@ -59,7 +80,7 @@
       <div class="dialog-actions">
         <button type="button" id="close-mcp-access">Close</button>
         <button type="button" id="revoke-mcp-token" hidden>Revoke token</button>
-        <button type="submit" id="save-mcp-token">Issue token</button>
+        <button type="submit" id="save-mcp-token" class="primary-action">Issue token</button>
       </div>
     </form>
   </dialog>

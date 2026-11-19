@@ -1,6 +1,9 @@
 const list = document.querySelector("#registered-workspaces");
 const message = document.querySelector("#workspace-list-message");
 const listError = document.querySelector("#workspace-list-error");
+const countBadge = document.querySelector("#workspace-count");
+const filterBar = document.querySelector("#workspace-filter-bar");
+const filterInput = document.querySelector("#workspace-filter");
 const dialog = document.querySelector("#create-workspace");
 const form = dialog.querySelector("form");
 const path = form.elements.path;
@@ -13,6 +16,47 @@ const status = document.querySelector("#create-workspace-status");
 const problem = document.querySelector("#create-workspace-error");
 
 let action = "create";
+let allWorkspaces = [];
+
+function renderWorkspaces() {
+  const query = filterInput.value.trim().toLowerCase();
+  const visible = query
+    ? allWorkspaces.filter(item => item.name.toLowerCase().includes(query) || item.path.toLowerCase().includes(query))
+    : allWorkspaces;
+  list.replaceChildren(...visible.map(workspace => {
+    const item = document.createElement("li");
+    const badge = document.createElement("span");
+    const details = document.createElement("div");
+    const link = document.createElement("a");
+    const detail = document.createElement("span");
+    const remove = document.createElement("button");
+    badge.className = "workspace-monogram";
+    badge.setAttribute("aria-hidden", "true");
+    badge.textContent = (workspace.name.trim()[0] || "W").toUpperCase();
+    details.className = "workspace-entry-details";
+    link.href = `/workspaces/${workspace.id}/`;
+    link.textContent = workspace.name;
+    detail.textContent = workspace.path;
+    details.append(link, detail);
+    remove.type = "button";
+    remove.className = "delete-workspace";
+    remove.textContent = "Delete";
+    remove.setAttribute("aria-label", `Delete ${workspace.name}`);
+    remove.addEventListener("click", () => deleteWorkspace(workspace, remove));
+    item.append(badge, details, remove);
+    return item;
+  }));
+  if (!allWorkspaces.length) {
+    message.textContent = "Create or add a Workspace to get started.";
+    message.hidden = false;
+  } else if (!visible.length) {
+    message.textContent = "No matching Workspaces.";
+    message.hidden = false;
+  } else {
+    message.textContent = "";
+    message.hidden = true;
+  }
+}
 
 async function deleteWorkspace(workspace, button) {
   if (button.disabled) return;
@@ -36,29 +80,14 @@ async function refresh() {
     const response = await fetch("/workspaces");
     if (!response.ok) throw new Error("Could not load the Workspace list. Reload to try again.");
     const { workspaces } = await response.json();
+    allWorkspaces = workspaces;
     listError.hidden = true;
     listError.textContent = "";
-    list.replaceChildren(...workspaces.map(workspace => {
-      const item = document.createElement("li");
-      const details = document.createElement("div");
-      const link = document.createElement("a");
-      const detail = document.createElement("span");
-      const remove = document.createElement("button");
-      details.className = "workspace-entry-details";
-      link.href = `/workspaces/${workspace.id}/`;
-      link.textContent = workspace.name;
-      detail.textContent = workspace.path;
-      details.append(link, detail);
-      remove.type = "button";
-      remove.className = "delete-workspace";
-      remove.textContent = "Delete";
-      remove.setAttribute("aria-label", `Delete ${workspace.name}`);
-      remove.addEventListener("click", () => deleteWorkspace(workspace, remove));
-      item.append(details, remove);
-      return item;
-    }));
-    message.textContent = workspaces.length ? "" : "Create or add a Workspace to get started.";
-    message.hidden = Boolean(workspaces.length);
+    countBadge.textContent = `${workspaces.length} ${workspaces.length === 1 ? "Workspace" : "Workspaces"}`;
+    countBadge.hidden = false;
+    filterBar.hidden = workspaces.length < 2;
+    if (workspaces.length < 2) filterInput.value = "";
+    renderWorkspaces();
   } catch (error) {
     message.hidden = false;
     message.textContent = error.message;
@@ -79,6 +108,7 @@ function openDialog(nextAction) {
   dialog.showModal();
 }
 
+filterInput.addEventListener("input", renderWorkspaces);
 document.querySelector("#new-workspace").addEventListener("click", () => openDialog("create"));
 document.querySelector("#add-workspace").addEventListener("click", () => openDialog("add"));
 cancel.addEventListener("click", () => dialog.close());
