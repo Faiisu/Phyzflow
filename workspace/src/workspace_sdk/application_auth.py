@@ -4,7 +4,7 @@ from errno import EEXIST, ENOTEMPTY
 from hashlib import scrypt
 from hmac import compare_digest
 from http.cookies import CookieError, SimpleCookie
-from os import getuid
+import os
 from pathlib import Path
 from secrets import token_bytes, token_urlsafe
 from stat import S_ISDIR, S_ISREG
@@ -27,10 +27,16 @@ def private_write(path: Path, value: bytes) -> None:
 
 class Administrator:
     def __init__(self, state: Path) -> None:
-        state.mkdir(mode=0o700, parents=True, exist_ok=True)
-        state_info = state.stat()
-        if state_info.st_uid != getuid() or state_info.st_mode & 0o022:
-            raise ValueError("The application state folder must be owned by the installer and writable only by its owner.")
+        if os.name == "nt":
+            from .windows_credentials import WindowsCredentialPermissions
+
+            permissions = WindowsCredentialPermissions()
+            permissions.prepare(state)
+        else:
+            state.mkdir(mode=0o700, parents=True, exist_ok=True)
+            state_info = state.stat()
+            if state_info.st_uid != os.getuid() or state_info.st_mode & 0o022:
+                raise ValueError("The application state folder must be owned by the installer and writable only by its owner.")
 
         self.directory = state / "admin"
         self.initial_password = self.directory / "initial-password"
@@ -47,16 +53,25 @@ class Administrator:
                     if error.errno not in (EEXIST, ENOTEMPTY):
                         raise
 
-        directory_info = self.directory.lstat()
         verifier = self.directory / "verifier"
-        verifier_info = verifier.lstat()
-        if (
-            not S_ISDIR(directory_info.st_mode) or directory_info.st_uid != getuid()
-            or directory_info.st_mode & 0o077
-            or not S_ISREG(verifier_info.st_mode) or verifier_info.st_uid != getuid()
-            or verifier_info.st_mode & 0o077
-        ):
-            raise ValueError("The administrator credential requires owner-only access.")
+        if os.name == "nt":
+            permissions.verify(self.directory, directory=True)
+            permissions.verify(verifier)
+            if self.initial_password.exists() or self.initial_password.is_symlink():
+                permissions.verify(self.initial_password)
+            mcp_state = self.directory / "mcp.sqlite3"
+            if mcp_state.exists() or mcp_state.is_symlink():
+                permissions.verify(mcp_state)
+        else:
+            directory_info = self.directory.lstat()
+            verifier_info = verifier.lstat()
+            if (
+                not S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.getuid()
+                or directory_info.st_mode & 0o077
+                or not S_ISREG(verifier_info.st_mode) or verifier_info.st_uid != os.getuid()
+                or verifier_info.st_mode & 0o077
+            ):
+                raise ValueError("The administrator credential requires owner-only access.")
         record = verifier.read_bytes()
         if len(record) != 48:
             raise ValueError("The administrator verifier is invalid.")

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "workspace-sdk"
 version = "3.1.0"
 requires-python = ">=3.12"
+dependencies = ["pywin32>=306; sys_platform == 'win32'"]
 description = "Run and debug Python inference flows."
 
 [project.optional-dependencies]

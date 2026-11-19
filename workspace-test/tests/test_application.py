@@ -1,8 +1,10 @@
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Thread
 import json
-import select
+import os
+from queue import Empty, Queue
 import signal
 from stat import S_IMODE
 import subprocess
@@ -16,24 +18,32 @@ from browser_support import browser_page
 
 @contextmanager
 def application(state: Path, *, args: tuple[str, ...] = ("--port", "0")):
-    cli = Path(sys.executable).with_name("workspace")
+    cli = [Path(sys.executable).with_name("workspace")]
+    if os.name == "nt":
+        cli = [sys.executable, "-c", "from workspace_sdk.cli import main; raise SystemExit(main())"]
     with subprocess.Popen(
-        [cli, "app", "--state-dir", state, *args],
+        [*cli, "app", "--state-dir", state, *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     ) as process:
         try:
-            if not select.select([process.stdout], [], [], 10)[0]:
-                raise RuntimeError("The Phyzflow application did not start within ten seconds.")
+            ready = Queue()
+            Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
+            try:
+                line = ready.get(timeout=10).strip()
+            except Empty:
+                raise RuntimeError("The Phyzflow application did not start within ten seconds.") from None
             prefix = "Phyzflow: "
-            line = process.stdout.readline().strip()
             if not line.startswith(prefix):
                 raise RuntimeError(f"Phyzflow did not publish its address: {line!r}.")
             yield line.removeprefix(prefix)
         finally:
             if process.poll() is None:
-                process.send_signal(signal.SIGINT)
+                if os.name == "nt":
+                    process.terminate()
+                else:
+                    process.send_signal(signal.SIGINT)
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -49,6 +59,24 @@ def sign_in(page, url: str, state: Path) -> None:
 
 
 class ApplicationTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows applies NTFS permissions to application state.")
+    def test_windows_application_refuses_to_bootstrap_in_insecure_state(self):
+        with TemporaryDirectory() as temp:
+            state = Path(temp) / "state"
+            state.mkdir()
+            subprocess.run(
+                ["icacls.exe", str(state), "/grant", "*S-1-1-0:(OI)(CI)(F)"],
+                check=True, capture_output=True,
+            )
+            cli = Path(sys.executable).with_name("workspace.exe")
+            result = subprocess.run(
+                [cli, "app", "--state-dir", state, "--port", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Phyzflow requires private access", result.stderr)
+            self.assertFalse((state / "admin").exists())
+
     def test_admin_saves_network_settings_for_the_next_server_start(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             state = Path(temp) / "state"
@@ -132,7 +160,7 @@ class ApplicationTests(unittest.TestCase):
             with application(first) as first_url, application(second) as second_url:
                 first_delivery = first / "admin" / "initial-password"
                 second_delivery = second / "admin" / "initial-password"
-                for delivery in (first_delivery, second_delivery):
+                for delivery in (first_delivery, second_delivery) if os.name == "posix" else ():
                     self.assertEqual(S_IMODE(delivery.parent.stat().st_mode), 0o700)
                     self.assertEqual(S_IMODE(delivery.stat().st_mode), 0o600)
                 first_password = first_delivery.read_text().strip()
