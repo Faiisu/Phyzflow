@@ -14,3 +14,5 @@
 ## Verification
 
 Commit `5aa7b39` passed the shipped launcher and remote Chrome sign-in on Windows 11 IoT Enterprise build `26200.9974` with Python 3.12.10, including password rejection and sign-in after restarting the backend. A temporary unprivileged local account could neither read the initial password nor read or modify the verifier and MCP database. The application refused state writable by Everyone. Both existing macOS administrator authentication tests passed.
+
+Review follow-up in `4814aa3` verified that startup also rejects a private state directory under a parent that gives Everyone permission to delete its children. Normal Windows sign-in still passed.
