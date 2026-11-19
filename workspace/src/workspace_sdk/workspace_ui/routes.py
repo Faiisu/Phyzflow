@@ -1,0 +1,513 @@
+from __future__ import annotations
+
+from contextlib import nullcontext
+from http import HTTPStatus
+from http.client import HTTPConnection, HTTPException
+import re
+from urllib.parse import unquote
+
+from ..execution import FlowBusy, sheet_lock
+from ..node_settings import parse_setting_defaults
+from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
+from ..sheet_locks import SheetLockedError
+from ..sheets import (
+    can_delete_sheet,
+    edit_sheet_flow_source,
+    editable_sheet_python_files,
+)
+from ..web import (
+    FLOW_VIEW_ASSETS,
+    FLOW_VIEW_ASSET_PATTERN,
+    FLOW_VIEW_SUBPATH_PATTERN,
+    NODE_FILES_ROUTE,
+    NODE_SOURCE_ROUTE,
+    STATIC,
+    UIRequestHandler,
+    is_flow_view_route,
+)
+from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
+
+
+VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
+RECOVERY_PATH = re.compile(rf"/flows/([0-9]{{1,8}})/recovery({FLOW_VIEW_ASSET_PATTERN}|/[^/]*)")
+RECOVERY_NODE_FILES = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_FILES_ROUTE}")
+RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE_ROUTE}")
+FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
+EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
+WORKSPACE_ASSETS = {
+    "/": ("workspace.html", "text/html"),
+    "/workspace.css": ("workspace.css", "text/css"),
+    "/workspace.js": ("workspace.js", "text/javascript"),
+    "/workspace/source-editing.js": ("workspace/source-editing.js", "text/javascript"),
+    "/workspace/sheet-dialogs.js": ("workspace/sheet-dialogs.js", "text/javascript"),
+}
+
+
+def workspace_dispatch(
+    root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
+    create_workspace_sheet, delete_workspace_sheet, run_all_sheets,
+):
+    class Routes:
+        def __init__(self, request: UIRequestHandler, path: str):
+            self.request = request
+            self.path = path
+
+        def create_sheet(self) -> None:
+            try:
+                if self.request.headers.get_content_type() != "application/json":
+                    raise ValueError
+                data = self.request.read_json_dict(4096)
+            except (ValueError, UnicodeError):
+                self.request.send_json({"error": "Send a JSON object with a sheet name."}, HTTPStatus.BAD_REQUEST)
+                return
+            value = data.get("name")
+
+            try:
+                created = create_workspace_sheet(value)
+            except RuntimeError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            except FileExistsError:
+                self.request.send_json({"error": "That sheet name is already in use. Choose another name."}, HTTPStatus.CONFLICT)
+                return
+            except ValueError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            except OSError:
+                self.request.send_json({"error": "Could not write the flow file. Check the workspace folder permissions."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self.request.send_json({"index": created["index"]}, HTTPStatus.CREATED)
+
+        def delete_sheet(self, index: int) -> None:
+            session_id = self.request.headers.get("X-Phyzflow-Edit-Session")
+            with sheets_lock:
+                sheet = sheets[index]
+                if is_closing() or sheet is None:
+                    self.request.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
+                    return
+                sheet_root = sheet.root
+            try:
+                result = delete_workspace_sheet(
+                    sheet_root,
+                    principal="web" if session_id else None,
+                    session_id=session_id,
+                )
+            except (FileNotFoundError, RuntimeError):
+                self.request.send_json({"error": "This sheet is no longer available."}, HTTPStatus.CONFLICT)
+                return
+            except SheetLockedError as error:
+                self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
+                return
+            except ValueError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            except OSError:
+                self.request.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self.request.send_json(result)
+
+        def view_route(self) -> tuple[FlowSheet, int, str] | None:
+            route = VIEW_PATH.fullmatch(self.path)
+            if route is None or (index := int(route[1])) >= len(sheets):
+                return None
+            sheet = sheets[index]
+            return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
+
+        def flow_source(self, index: int, query: str | None, path: str | None) -> None:
+            source = revision = None
+            relative = unquote(path) if path is not None else "flow.py"
+            if self.request.command == "POST":
+                try:
+                    if query == "files" or self.request.headers.get_content_type() != "application/json":
+                        raise ValueError
+                    data = self.request.read_json_dict()
+                    source, revision = data.get("source"), data.get("revision")
+                    if not isinstance(source, str) or not isinstance(revision, str):
+                        raise ValueError
+                except (ValueError, UnicodeError):
+                    self.request.send_json({"error": "Send the source and revision as a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
+                    return
+
+            sheet = sheets[index] if index < len(sheets) else None
+            if source is not None and interpreter is None and sheet is not None and sheet.status() == "running":
+                message = f"Cannot edit {'flow.py' if relative == 'flow.py' else 'source'} while the flow is running."
+                self.request.send_json({"error": message}, HTTPStatus.CONFLICT)
+                return
+
+            def perform_edit() -> dict:
+                if sheet is None:
+                    raise FileNotFoundError
+                with sheet.lock:
+                    if sheet.closing or sheet.workspace_closing():
+                        raise FileNotFoundError
+                    if query == "files":
+                        files = editable_sheet_python_files(sheet.root, main=sheet.main)
+                        return {"files": sorted(path.relative_to(sheet.root).as_posix() for path in files)}
+
+                    def edit() -> dict[str, str]:
+                        return edit_sheet_flow_source(sheet.root, source, revision, relative, main=sheet.main)
+
+                    if source is None:
+                        return edit()
+                    session_id = self.request.headers.get("X-Phyzflow-Edit-Session")
+                    return sheet.edit_lease.write_locked("web", session_id, edit, path=relative)
+
+            filename = "flow.py" if relative == "flow.py" else "source file"
+            self.request.send_source_edit(perform_edit, not_found_error=f"This sheet's {filename} is unavailable.")
+
+        def recovery_node(self, index: int, node: int, *, edit: bool = False) -> None:
+            sheet = sheets[index] if index < len(sheets) else None
+            if sheet is None:
+                self.request.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if edit:
+                if self.request.headers.get_content_type() != "application/json":
+                    self.request.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                    return
+                try:
+                    data = self.request.read_json_dict()
+                    path, source, revision = data.get("path"), data.get("source"), data.get("revision")
+                    if not isinstance(path, str) or (
+                        "source" in data and (not isinstance(source, str) or not isinstance(revision, str))
+                    ):
+                        raise ValueError
+                except (ValueError, UnicodeError):
+                    self.request.send_json(
+                        {"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+            with sheet.lock:
+                if sheet.closing or sheet.workspace_closing():
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                graph = sheet.recovery_graph or sheet.source_graph()
+                if node >= len(graph["steps"]):
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                filename = graph["steps"][node]["source"]
+                if not edit:
+                    try:
+                        data = node_files(sheet.root, filename, include_missing_settings=False)
+                    except (OSError, RuntimeError):
+                        self.request.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not read the node folder.")
+                    else:
+                        self.request.send_json(data)
+                    return
+                def perform_edit() -> dict[str, str]:
+                    target = node_source_path(sheet.root, filename, path)
+                    if source is None:
+                        return edit_source_file(target, None, None)
+                    if sheet.status() in ("running", "stopping"):
+                        raise FlowBusy("Cannot edit node files while the flow is running.")
+                    if sheet.worker_ready():
+                        raise FlowBusy("The flow is open. Reopen the node files in the live sheet.")
+
+                    def save() -> dict[str, str]:
+                        if target == node_settings_path(sheet.root, filename):
+                            parse_setting_defaults(source)
+                        return edit_source_file(target, source, revision)
+
+                    with sheet_lock(sheet.root):
+                        return sheet.edit_lease.write_locked(
+                            "web", self.request.headers.get("X-Phyzflow-Edit-Session"), save, path=path,
+                        )
+
+                self.request.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")
+
+        def edit_lock(self, index: int) -> None:
+            sheet = sheets[index] if index < len(sheets) else None
+            if is_closing() or sheet is None or sheet.closing:
+                self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                if self.request.headers.get_content_type() != "application/json":
+                    raise ValueError
+                data = self.request.read_json_dict(8192)
+                action = data.get("action")
+                if action not in ("acquire", "heartbeat", "release", "force_open"):
+                    raise ValueError("Choose acquire, heartbeat, release, or force_open.")
+                session_id = data.get("session_id")
+                if session_id is not None and not isinstance(session_id, str):
+                    raise ValueError("session_id must be a string.")
+                if session_id is None:
+                    session_id = self.request.headers.get("X-Phyzflow-Edit-Session")
+            except (ValueError, UnicodeError) as error:
+                self.request.send_json({"error": str(error) or "Send a valid JSON edit-lock action."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                if action == "acquire":
+                    result = sheet.edit_lease.acquire("web", "web", "Web editor", session_id=session_id)
+                elif action == "heartbeat":
+                    result = sheet.edit_lease.heartbeat("web", session_id or "")
+                elif action == "release":
+                    result = sheet.edit_lease.release("web", session_id or "")
+                else:
+                    force_info = sheet.edit_lease.force_open()
+                    reload_error = None
+                    if force_info["forced"] and sheet.worker_ready() and sheet.status() not in ("running", "stopping"):
+                        try:
+                            sheet.open(reload=True)
+                        except ReloadConflict:
+                            pass
+                        except (OSError, RuntimeError, EOFError) as error:
+                            if interpreter is None or sheet.worker_ready():
+                                reload_error = str(error) or "The flow process exited."
+                    if data.get("acquire"):
+                        edit_lock = sheet.edit_lease.acquire("web", "web", "Web editor", session_id=session_id)
+                    else:
+                        edit_lock = sheet.edit_lease.status(session_id)
+                    result = {
+                        "forced": force_info["forced"],
+                        "previous_owner": force_info["previous_owner"],
+                        "revision": sheet.revision,
+                        "status": sheet.status(),
+                        "edit_lock": edit_lock,
+                    }
+                    if reload_error is not None:
+                        result["reload_error"] = reload_error
+                    result["worker_ready"] = sheet.worker_ready()
+            except SheetLockedError as error:
+                self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
+            except (ValueError, OSError) as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            else:
+                self.request.send_json(result)
+
+        def run_sheet(self, sheet: FlowSheet, revision: int) -> None:
+            if self.request.headers.get_content_type() != "application/json":
+                self.request.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            try:
+                inputs = self.request.read_json_dict()
+            except (ValueError, UnicodeError):
+                self.request.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
+                return
+            try:
+                attempt = sheet.start_run(inputs, revision=revision)
+            except (FlowBusy, ReloadConflict) as error:
+                self.request.send_error(HTTPStatus.CONFLICT, str(error))
+                return
+            except (OSError, RuntimeError, ValueError) as error:
+                self.request.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            try:
+                self.request.send_response(HTTPStatus.OK)
+                self.request.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.request.send_header("Cache-Control", "no-store")
+                self.request.end_headers()
+                for line in attempt.messages():
+                    self.request.wfile.write(line)
+            except OSError:
+                pass
+
+        def run_all(self) -> None:
+            self.request.send_json(run_all_sheets(by_index=True), HTTPStatus.ACCEPTED)
+
+        def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
+            headers = {}
+            edit_session = self.request.headers.get("X-Phyzflow-Edit-Session")
+            if edit_session is not None:
+                headers["X-Phyzflow-Edit-Session"] = edit_session
+            body = None
+            if self.request.command == "POST":
+                try:
+                    size = int(self.request.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 1024 * 1024:
+                        raise ValueError
+                except ValueError:
+                    self.request.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
+                    return
+                body = self.request.rfile.read(size)
+                headers["Content-Type"] = self.request.headers.get("Content-Type", "")
+
+            upstream = None
+            try:
+                try:
+                    # A reload can begin after the worker accepts a run, while its response streams.
+                    with sheet.lock if self.request.command == "POST" else nullcontext():
+                        if sheet.closing or sheet.workspace_closing():
+                            self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Workspace is shutting down.")
+                            return
+                        worker = sheet.worker
+                        if revision != sheet.revision:
+                            self.request.send_error(HTTPStatus.CONFLICT, "The flow has been reloaded. Refresh its sheet.")
+                            return
+                        if worker is None or not worker.url or worker.process.poll() is not None:
+                            self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Open the flow first.")
+                            return
+                        upstream = HTTPConnection(worker.url.removeprefix("http://"), timeout=2)
+                        upstream.connect()
+                        connection = upstream.sock
+                        upstream.request(self.request.command, path, body=body, headers=headers)
+                        response = upstream.getresponse()
+                        # HTTP/1.0 can detach the socket from HTTPConnection after the headers.
+                        if connection is not None:
+                            connection.settimeout(None)
+                except (OSError, HTTPException):
+                    self.request.send_error(HTTPStatus.BAD_GATEWAY, "The flow process is unavailable.")
+                    return
+
+                with response:
+                    try:
+                        self.request.send_response(response.status)
+                        for name in ("Content-Type", "Content-Length", "Cache-Control"):
+                            value = response.getheader(name)
+                            if value is not None:
+                                self.request.send_header(name, value)
+                        self.request.end_headers()
+                        while chunk := response.read1(65536):
+                            self.request.wfile.write(chunk)
+                    except (OSError, HTTPException):
+                        return
+            finally:
+                if upstream is not None:
+                    upstream.close()
+
+        def do_GET(self) -> None:
+            if not self.request.local_request():
+                self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if node := RECOVERY_NODE_FILES.fullmatch(self.path):
+                self.recovery_node(int(node[1]), int(node[2]))
+                return
+            if recovery := RECOVERY_PATH.fullmatch(self.path):
+                index = int(recovery[1])
+                sheet = sheets[index] if index < len(sheets) else None
+                graph = sheet.recovery_graph if sheet is not None else None
+                if sheet is None:
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                elif recovery[2] == "/project":
+                    self.request.send_json(graph if graph is not None else sheet.source_graph())
+                elif asset := FLOW_VIEW_ASSETS.get(recovery[2]):
+                    name, content_type = asset
+                    self.request.send_bytes((STATIC / name).read_bytes(), content_type)
+                else:
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if source := FLOW_SOURCE_PATH.fullmatch(self.path):
+                self.flow_source(int(source[1]), source[2], source[3])
+                return
+            if self.path == "/workspace":
+                viewer_sessions = {
+                    part.strip()
+                    for part in (self.request.headers.get("X-Phyzflow-Edit-Session") or "").split(",")
+                    if part.strip()
+                } or None
+                current = discovered_sheets()
+                flows = []
+                for sheet in current:
+                    if sheet is None:
+                        flows.append(None)
+                        continue
+                    status = sheet.status()
+                    entry = {
+                        "name": sheet.title, "status": status, "deletable": can_delete_sheet(root, sheet.root),
+                        "revision": sheet.revision, "changed_source": sheet.changed_source(status),
+                        "edit_lock": sheet.edit_lease.status(viewer_sessions),
+                        "recoverable": sheet.recovery_graph is not None,
+                    }
+                    if interpreter is not None:
+                        attempt = sheet.attempt
+                        entry["worker_ready"] = sheet.worker_ready()
+                        entry["run_id"] = attempt.run_id if attempt is not None else None
+                        entry["error"] = attempt.start_error if attempt is not None else None
+                    flows.append(entry)
+                self.request.send_json({
+                    "name": root.name, "flows": flows, "run_all": interpreter is not None,
+                    "edit_running_source": interpreter is not None,
+                })
+                return
+            view = self.view_route()
+            if view is not None and is_flow_view_route("GET", view[2]):
+                self.forward_view(*view)
+                return
+            asset = WORKSPACE_ASSETS.get(self.path)
+            if asset is None:
+                self.request.send_error(HTTPStatus.NOT_FOUND)
+                return
+            filename, content_type = asset
+            self.request.send_bytes((STATIC / filename).read_bytes(), f"{content_type}; charset=utf-8")
+
+        def do_POST(self) -> None:
+            if not self.request.valid_post_origin():
+                self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if node := RECOVERY_NODE_SOURCE.fullmatch(self.path):
+                self.recovery_node(int(node[1]), int(node[2]), edit=True)
+                return
+            if interpreter is not None and (run := re.fullmatch(r"/flows/([0-9]{1,8})/run", self.path)):
+                index = int(run[1])
+                sheet = sheets[index] if index < len(sheets) else None
+                if sheet is None:
+                    self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+                    return
+                try:
+                    sheet.start_run(None)
+                except (FlowBusy, RuntimeError, OSError, ValueError) as error:
+                    self.request.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
+                else:
+                    self.request.send_json({}, HTTPStatus.ACCEPTED)
+                return
+            if source := FLOW_SOURCE_PATH.fullmatch(self.path):
+                self.flow_source(int(source[1]), source[2], source[3])
+                return
+            if lock_route := EDIT_LOCK_PATH.fullmatch(self.path):
+                self.edit_lock(int(lock_route[1]))
+                return
+            if self.path == "/flows":
+                self.create_sheet()
+                return
+            if self.path == "/run-all" and interpreter is not None:
+                self.run_all()
+                return
+            view = self.view_route()
+            if view is not None and is_flow_view_route("POST", view[2]):
+                if interpreter is not None and view[2] == "/run":
+                    self.run_sheet(view[0], view[1])
+                    return
+                self.forward_view(*view)
+                return
+            command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload|reload/([0-9a-f]{64}))", self.path)
+            if command is None or (index := int(command[1])) >= len(sheets):
+                self.request.send_error(HTTPStatus.NOT_FOUND)
+                return
+            sheet = sheets[index]
+            if command[2] == "delete":
+                self.delete_sheet(index)
+                return
+            if sheet is None:
+                self.request.send_json({"error": "This sheet has been deleted."}, HTTPStatus.NOT_FOUND)
+                return
+            if command[2] == "stop":
+                try:
+                    sheet.stop()
+                except OSError as error:
+                    self.request.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                else:
+                    self.request.send_json({"status": "stopped"})
+                return
+            try:
+                revision = sheet.open(reload=command[2].startswith("reload"), automatic_source=command[3])
+                prefix = f"/revision/{revision}" if revision else ""
+                self.request.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision, "status": sheet.status()})
+            except ReloadConflict as error:
+                self.request.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
+            except ReloadDeferred:
+                self.request.send_json({"deferred": True}, HTTPStatus.CONFLICT)
+            except (OSError, RuntimeError, EOFError) as error:
+                if interpreter is not None and not sheet.worker_ready() and not sheet.workspace_closing():
+                    self.request.send_json({"editor": True, "revision": sheet.revision, "status": sheet.status()})
+                else:
+                    self.request.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
+
+    def dispatch(request: UIRequestHandler, path: str) -> None:
+        if is_closing():
+            request.send_json({"error": "Workspace is shutting down."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        routes = Routes(request, path)
+        if request.command == "GET":
+            routes.do_GET()
+        else:
+            routes.do_POST()
+
+    return dispatch

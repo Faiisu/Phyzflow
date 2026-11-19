@@ -40,6 +40,10 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     tab = page.get_by_role("tab", name="Main")
                     run = page.get_by_role("button", name="Run flow", exact=True)
                     workspace_url = page.url
+                    module = page.request.get(f"{workspace_url}workspace/source-editing.js")
+                    self.assertEqual(module.status, 200)
+                    self.assertEqual(module.headers["content-type"], "text/javascript; charset=utf-8")
+                    self.assertEqual(page.request.get(f"{workspace_url}workspace/unknown.js").status, 404)
                     reloads = []
                     page.on("request", lambda request: reloads.append(request.url) if "/reload/" in request.url else None)
                     flow.get_by_role("button", name="Inspect Start").dblclick()
@@ -50,6 +54,12 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     editor = dialog.get_by_role("textbox", name="Source code")
                     original = node.read_text()
                     expect(editor).to_have_value(original)
+                    revision = page.request.get(f"{workspace_url}workspace").json()["flows"][0]["revision"]
+                    view_url = f"{workspace_url}flows/0/revision/{revision}/view/"
+                    module = page.request.get(f"{view_url}flow-view/node-source.js")
+                    self.assertEqual(module.status, 200)
+                    self.assertEqual(module.headers["content-type"], "text/javascript; charset=utf-8")
+                    self.assertEqual(page.request.get(f"{view_url}flow-view/unknown.js").status, 404)
                     invalid = "def broken(\n"
                     editor.fill(invalid)
                     dialog.get_by_role("button", name="Save", exact=True).click()
@@ -92,6 +102,11 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     view = f"revision/{revision}/" if revision else ""
                     self.assertEqual(page.request.get(f"{page.url}flows/0/{view}view/").status, 503)
                     endpoint = f"{page.url}flows/0/recovery/node-source/0"
+                    recovery_url = f"{page.url}flows/0/recovery/"
+                    module = page.request.get(f"{recovery_url}flow-view/node-source.js")
+                    self.assertEqual(module.status, 200)
+                    self.assertEqual(module.headers["content-type"], "text/javascript; charset=utf-8")
+                    self.assertEqual(page.request.get(f"{recovery_url}flow-view/unknown.js").status, 404)
                     for path in ("../outside.py", "nodes/start/alias.py", "flow.py"):
                         rejected = page.request.post(endpoint, headers={"Origin": url}, data={"path": path})
                         self.assertEqual(rejected.status, 404)

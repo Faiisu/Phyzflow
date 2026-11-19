@@ -19,4 +19,4 @@ workspace = "workspace_sdk.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-workspace_sdk = ["static/*"]
+workspace_sdk = ["static/*", "static/flow-view/*.js", "static/workspace/*.js"]

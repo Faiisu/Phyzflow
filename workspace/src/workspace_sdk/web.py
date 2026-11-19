@@ -33,9 +33,14 @@ FLOW_VIEW_ASSETS = {
     "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
     "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
     "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
+    **{
+        f"/flow-view/{name}.js": (f"flow-view/{name}.js", "text/javascript; charset=utf-8")
+        for name in ("display", "graph", "inspector", "node-source", "run-controls")
+    },
 }
+FLOW_VIEW_ASSET_PATTERN = "|".join(re.escape(path) for path in FLOW_VIEW_ASSETS if path != "/")
 FLOW_VIEW_SUBPATH_PATTERN = (
-    r"(/(?:app\.css|app\.js|canvas-layout\.js|dashboard-ui\.js|edge-routing\.js|prism-syntax\.js|project|"
+    rf"({FLOW_VIEW_ASSET_PATTERN}|/(?:project|"
     r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
     r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
     r"live-run|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|console-logs(?:/[0-9a-f]{32})?|run)?)"

@@ -95,6 +95,13 @@ class FlowViewRoutingAndTransportTests(unittest.TestCase):
                 self.assertIn("DEFAULT_PANEL_WIDTH = 600", body)
                 self.assertIn("DEFAULT_PANEL_HEIGHT = 400", body)
 
+            with urlopen(f"{base_url}/flow-view/graph.js", timeout=2) as response:
+                self.assertEqual(response.headers.get_content_type(), "text/javascript")
+                self.assertIn(b"export function initGraph", response.read())
+            with self.assertRaises(HTTPError) as exc:
+                urlopen(f"{base_url}/flow-view/graph.js.bak", timeout=2)
+            self.assertEqual(exc.exception.code, 404)
+
             with urlopen(f"{base_url}/dashboard-panels/workflow", timeout=2) as response:
                 panels = json.loads(response.read().decode("utf-8"))["panels"]
                 self.assertEqual(panels, [{"id": "2d-graph", "label": "2d graph"}])
