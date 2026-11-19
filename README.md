@@ -4,27 +4,38 @@ Phyzflow is a local application for humans and AI agents to build, run, and insp
 
 ## Quick start
 
-### Launcher scripts
+### Start the local application
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and make it available on your PATH. From the repository root, run the launcher for your platform.
+1. Install uv and make it available on your PATH. The launcher uses Python 3.12 when creating the repository's `.venv` and installs the local SDK with MCP support. [Install uv](https://docs.astral.sh/uv/getting-started/installation/).
+2. From the repository root, run the launcher for your platform.
 
-**Linux**
+   **macOS and Linux**
 
-```sh
-./run-workspace.sh
+   ```sh
+   ./deploy/phyzflow.sh
+   ```
+
+   **Windows PowerShell**
+
+   ```powershell
+   .\deploy\phyzflow.bat
+   ```
+
+3. Open the URL printed in the terminal and sign in as `admin`. On first startup, the terminal also prints the path to the initial password file, which defaults to `~/.phyzflow/admin/initial-password`. [Administrator sign-in and application settings](workspace/README.md#sign-in-to-the-local-phyzflow-application).
+4. Select **Create Workspace**, choose a new folder, and open the Workspace from the list. Select **Main**, then **Run flow**. The starter flow returns `{"message": "Hello from Workspace"}`. To register an existing Python flow project, choose **Add Workspace** and select its folder.
+
+```mermaid
+flowchart LR
+    launch["Run the launcher"] --> signin["Sign in as admin"]
+    signin --> choose{"Workspace folder"}
+    choose -->|"New folder"| create["Create Workspace"]
+    choose -->|"Existing project"| add["Add Workspace"]
+    create --> run["Open a sheet and run the flow"]
+    add --> run
+    run --> inspect["Inspect output or open the failing node's source"]
 ```
 
-**Windows PowerShell**
-
-```powershell
-.\run-workspace.bat
-```
-
-The launchers create a local `default-workspace/` with a runnable **Main** sheet on first use. Work on your flows in this directory. Git ignores it, and later launches reuse its files. The launcher creates a Python 3.12 virtual environment if the project lacks one and installs the local SDK into its `.venv`. Install any flow-specific dependencies in the same environment. Open the URL printed in the terminal and choose **Run flow**.
-
-Pass a project directory to open another workspace. Open the development sheets explicitly with `./run-workspace.sh workspace-test/sheets-demo` on Linux or `.\run-workspace.bat workspace-test/sheets-demo` in Windows PowerShell.
-
-Both scripts ask for the bind IPv4 address and port on startup. Press Enter at either prompt to use the value from `setting.json` or the built-in default of `127.0.0.1` and port `18080`. Entries apply to the current launch. Use port `0` to pick an available port. Use a non-loopback address or `0.0.0.0` on a trusted network where others may edit the project and run flows.
+The default address is `http://127.0.0.1:18080`. To resolve a port conflict, append `--port 0` to the launcher command and open the new URL printed in the terminal. To save a different address or port, use **Network settings** and restart the app.
 
 ### Run the ticket example from the CLI
 
@@ -46,4 +57,3 @@ To try the dashboard examples, run `.venv/bin/workspace --project workspace-test
 - [macOS launcher and CLI commands for AI agents](workspace/README.md)
 - [Sample flows, configuration, and tests](workspace-test/README.md)
 - [Deploy the sample flow to Docker on Linux ARM64](workspace-test/deployment-trial/README.md#deploy-and-verify)
-- [Development plan](docs/development-plan.md)

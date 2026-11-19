@@ -2,7 +2,7 @@
 
 This directory contains the Workspace SDK, Runner, CLI, Web UI, and deployment tooling. The SDK is installed as a dependency by the sample project in [`workspace-test/`](../workspace-test/).
 
-See the [development plan](../docs/development-plan.md) for the implementation order and acceptance criteria.
+See the [application specification](../docs/application-spec.md) for requirements and acceptance scenarios.
 
 ## Open a local Workspace on macOS
 
@@ -15,7 +15,7 @@ Build a release on macOS from the repository root with `sh workspace/release/mac
 
 ## Sign in to the local Phyzflow application
 
-Install the SDK with MCP support in the application environment. From the repository root:
+Use the [repository launchers](../README.md#start-the-local-application) to create the application environment and start Phyzflow. If you already have the SDK environment, install MCP support and start the application from the repository root:
 
 ```sh
 uv pip install './workspace[mcp]'
@@ -28,7 +28,7 @@ On first startup Phyzflow generates a password for the built-in `admin` account.
 
 Keep application state separate from Workspace folders.
 
-On Windows, run `deploy\phyzflow.bat` from the repository to install and start the application. New Workspaces use uv-managed Python 3.12 so Phyzflow can stop their process trees. An existing Workspace can reuse a virtual environment backed by uv-managed or standalone Python 3.12. If its environment uses Microsoft Store Python, move the existing environment aside, add the Workspace, and reinstall its dependencies in the new environment.
+On Windows, new Workspaces use uv-managed Python 3.12 so Phyzflow can stop their process trees. An existing Workspace can reuse a virtual environment backed by uv-managed or standalone Python 3.12. If its environment uses Microsoft Store Python, move the existing environment aside, add the Workspace, and reinstall its dependencies in the new environment.
 
 Select **Network settings** on the landing page to set the application's bind IPv4 address and port. Phyzflow saves the settings in `network.json` under its state directory and reads them at startup. The defaults are `127.0.0.1` and `18080`. Save the settings and restart Phyzflow to apply them. Use `workspace app --ipv4 127.0.0.1 --port 0` to override the saved address and start on an available port for a single launch.
 
@@ -64,7 +64,7 @@ In the Workspace, select a sheet and choose **Edit flow.py** to open its flow so
 
 Open sheets reload automatically after Python files in their project folders change and the edits settle. The next run uses the reloaded code. If a run is active or the source editor has unsaved text, the sheet shows **Reload pending** and waits. If validation fails, the sheet shows the diagnostic and retries after another source change. To resume an explicitly stopped sheet, select **Open flow**.
 
-Use `workspace init --with-main "$project_path"` to start with a runnable **Main** sheet. The Linux and Windows launchers use this command to initialize the local `default-workspace/`.
+Use `workspace init --with-main "$project_path"` to start with a runnable **Main** sheet.
 
 For `workspace deploy`, set the host IPv4 address, host port, container port, and Docker context under `deploy` in the project's `setting.json`. See [the deployment settings and CLI overrides](../workspace-test/deployment-trial/README.md#deploy-and-verify).
 
