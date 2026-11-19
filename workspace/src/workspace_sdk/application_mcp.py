@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from .agent_supervisor import spawn_supervised
 from .console import ConsoleLogStore
-from .dashboard import inspect_sheet_dashboards
+from .dashboard import DASHBOARD_RESIZE_GUIDANCE, inspect_sheet_dashboards
 from .execution import FlowBusy
 from .history import RunHistory
 from .node_sources import MAX_SOURCE_BYTES, SourceChanged, edit_source_file
@@ -413,7 +413,7 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error) or f"Could not delete sheet {sheet!r}.") from None
         return {"sheet": sheet, **result}
 
-    @server.tool(description="Inspect discovered dashboard panels, asset paths, and the shared theme contract for a sheet.")
+    @server.tool(description="Inspect a sheet's dashboard panels, asset paths, theme contract, and resize guidance.")
     def inspect_dashboards(workspace_id: str, sheet: str = "Main") -> dict:
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         return {"sheet": sheet, **inspect_sheet_dashboards(flow_sheet.root)}
@@ -1012,7 +1012,14 @@ def mcp_transport(access: WorkspaceAccess):
     from anyio.from_thread import start_blocking_portal
     from httpx2 import ASGITransport, AsyncClient
 
-    server = MCPServer("Phyzflow", log_level="WARNING")
+    server = MCPServer(
+        "Phyzflow",
+        instructions=(
+            "Before creating or editing a dashboard panel, call inspect_dashboards for its layout and theme contract. "
+            f"{DASHBOARD_RESIZE_GUIDANCE}"
+        ),
+        log_level="WARNING",
+    )
     register_workspace_tools(server, access)
     app = server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True, max_request_body_size=MCP_BODY_LIMIT,

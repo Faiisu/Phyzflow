@@ -10,6 +10,13 @@ PANEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js")
 MAX_ASSET_BYTES = 256 * 1024
 
+DASHBOARD_RESIZE_GUIDANCE = (
+    "Design every dashboard panel to respond to its own available width and height. "
+    "As the user resizes the panel, reflow the layout, resize charts, and keep primary values and controls visible. "
+    "Let secondary details scroll when needed. "
+    "Verify the panel by dragging its resize handles in Phyzflow while keeping the browser window size fixed."
+)
+
 DASHBOARD_THEME_REFERENCE = {
     "shared_stylesheet_injected": True,
     "style_attribute": 'data-phyzflow-theme="true"',
@@ -50,6 +57,7 @@ DASHBOARD_THEME_REFERENCE = {
         "muted",
     ],
     "narrow_breakpoint_px": 420,
+    "resize_guidance": DASHBOARD_RESIZE_GUIDANCE,
     "bridge": {
         "global": "window.workspaceDashboard",
         "methods": [

@@ -243,6 +243,10 @@ class ApplicationDashboardTests(unittest.TestCase):
                     self.assertIn("--series-1", info["theme_reference"]["tokens"]["color"])
                     self.assertIn("--mono", info["theme_reference"]["tokens"]["typography"])
                     self.assertIn("subscribe(listener)", info["theme_reference"]["bridge"]["methods"])
+                    resize_guidance = info["theme_reference"]["resize_guidance"]
+                    self.assertIn("its own available width and height", resize_guidance)
+                    self.assertIn("keeping the browser window size fixed", resize_guidance)
+                    self.assertIn(resize_guidance, client.instructions or "")
 
                     opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
                     self.assertFalse(opened.is_error, opened.content[0].text)
