@@ -1,5 +1,6 @@
 """Provision and manage the shared Python interpreter for a registered Workspace."""
 
+import json
 import os
 from pathlib import Path
 from shutil import rmtree
@@ -49,16 +50,25 @@ def _verify_python_312_venv(environment: Path, interpreter: Path) -> None:
         if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
             raise ValueError
         result = subprocess.run(
-            [interpreter, "-I", "-c", "import sys; print(sys.prefix); print(*sys.version_info[:2], sep='.')"],
+            [
+                interpreter, "-I", "-c",
+                "import json, sys; print(json.dumps([sys.prefix, list(sys.version_info[:2]), sys.base_prefix]))",
+            ],
             capture_output=True, text=True, check=True, timeout=10,
         )
-        prefix, version = result.stdout.strip().splitlines()
+        prefix, version, base_prefix = json.loads(result.stdout)
         if Path(prefix).resolve() != environment.resolve() or not (environment / "pyvenv.cfg").is_file():
             raise ValueError
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
         raise ValueError(f"The existing environment at {environment} is broken. Repair or move it and try again.") from None
-    if version != "3.12":
-        raise ValueError(f"The environment at {environment} uses Python {version}. Repair or move it and try again with Python 3.12.")
+    if version != [3, 12]:
+        version_text = ".".join(map(str, version))
+        raise ValueError(f"The environment at {environment} uses Python {version_text}. Repair or move it and try again with Python 3.12.")
+    if os.name == "nt" and "windowsapps" in (part.casefold() for part in Path(base_prefix).parts):
+        raise ValueError(
+            f"The environment at {environment} uses Microsoft Store Python, which cannot contain sheet processes. "
+            "Move the environment and use uv-managed Python 3.12 or a standalone Python 3.12 installation."
+        )
 
 
 def ensure_workspace_environment(root: Path) -> Path:
@@ -69,8 +79,9 @@ def ensure_workspace_environment(root: Path) -> Path:
         return interpreter
 
     try:
+        managed_python = ["--managed-python"] if os.name == "nt" else []
         result = subprocess.run(
-            ["uv", "venv", "--no-project", "--python", "3.12", environment],
+            ["uv", "venv", "--no-project", *managed_python, "--python", "3.12", environment],
             cwd=root, capture_output=True, text=True, timeout=180,
         )
         if result.returncode or not interpreter.is_file():
@@ -81,6 +92,12 @@ def ensure_workspace_environment(root: Path) -> Path:
         if environment.is_dir() and not environment.is_symlink():
             rmtree(environment)
         raise
+    return interpreter
+
+
+def verified_workspace_interpreter(root: Path) -> Path:
+    interpreter = workspace_interpreter(root)
+    _verify_python_312_venv(root / ".venv", interpreter)
     return interpreter
 
 

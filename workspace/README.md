@@ -28,6 +28,8 @@ On first startup Phyzflow generates a password for the built-in `admin` account.
 
 Keep application state separate from Workspace folders.
 
+On Windows, run `deploy\phyzflow.bat` from the repository to install and start the application. New Workspaces use uv-managed Python 3.12 so Phyzflow can stop their process trees. An existing Workspace can reuse a virtual environment backed by uv-managed or standalone Python 3.12. If its environment uses Microsoft Store Python, move the existing environment aside, add the Workspace, and reinstall its dependencies in the new environment.
+
 Select **Network settings** on the landing page to set the application's bind IPv4 address and port. Phyzflow saves the settings in `network.json` under its state directory and reads them at startup. The defaults are `127.0.0.1` and `18080`. Save the settings and restart Phyzflow to apply them. Use `workspace app --ipv4 127.0.0.1 --port 0` to override the saved address and start on an available port for a single launch.
 
 Use direct HTTP on loopback or an isolated test network. For HTTPS, bind Phyzflow to loopback and follow the [application deployment design](../docs/application-spec.md#deployment).

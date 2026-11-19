@@ -14,6 +14,20 @@ from test_application_lifecycle import create_workspace, process_exited, wait_fo
 from workspace_sdk.sheets import create_sheet
 
 
+def kill_worker(pid):
+    if os.name == "nt":
+        import win32api
+        import win32con
+
+        process = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
+        try:
+            win32api.TerminateProcess(process, 1)
+        finally:
+            process.Close()
+    else:
+        os.kill(pid, signal.SIGKILL)
+
+
 class ApplicationCrashRestartTests(unittest.TestCase):
     def test_worker_crash_restarts_the_same_input_three_times_without_interrupting_other_sheets(self):
         with TemporaryDirectory() as temporary, browser_page() as page:
@@ -34,17 +48,24 @@ class ApplicationCrashRestartTests(unittest.TestCase):
                     r'''import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from time import sleep
 
 def start(value):
-    with Path("starts").open("a") as starts:
-        starts.write(json.dumps([os.getpid(), value]) + "\n")
-    print(f"Entered the first step: {value}")
-    while not Path("finish").exists() and not Path("fail").exists():
-        sleep(.02)
-    if Path("fail").exists():
-        raise RuntimeError("Reported failure")
-    return value
+    child = subprocess.Popen([sys.executable, "-c", "from time import sleep; sleep(30)"])
+    try:
+        with Path("starts").open("a") as starts:
+            starts.write(json.dumps([os.getpid(), value, child.pid]) + "\n")
+        print(f"Entered the first step: {value}")
+        while not Path("finish").exists() and not Path("fail").exists():
+            sleep(.02)
+        if Path("fail").exists():
+            raise RuntimeError("Reported failure")
+        return value
+    finally:
+        child.terminate()
+        child.wait()
 
 def finish(value):
     return f"Completed: {value}"
@@ -96,10 +117,11 @@ def start():
                     attempt = states()["Main"]["run_id"]
                     self.assertNotIn(attempt, attempts)
                     attempts.add(attempt)
-                    pid, value = starts()[index]
+                    pid, value, child_pid = starts()[index]
                     self.assertEqual(value, "Explicit input")
-                    os.kill(pid, signal.SIGKILL)
+                    kill_worker(pid)
                     wait_for(lambda: process_exited(pid))
+                    wait_for(lambda: process_exited(child_pid))
                     self.assertEqual(states()["Other"]["run_id"], other_id)
                     wait_for(lambda: units.stat().st_size > previous_units)
                     previous_units = units.stat().st_size
@@ -111,8 +133,7 @@ def start():
                 self.assertEqual(states()["Main"]["run_id"], attempt)
 
                 (root / "finish").touch()
-                page.get_by_role("button", name="Open flow").click()
-                expect(main).to_contain_text("Failed")
+                page.get_by_role("button", name="Reload flow").click()
                 frame.locator("#input").fill('{"input": "New input"}')
                 frame.get_by_role("button", name="Run with this input").click()
                 expect(frame.locator("#result pre")).to_have_text('"Completed: New input"')
@@ -137,6 +158,7 @@ def start():
                 page.get_by_role("button", name="Stop Main").click()
                 expect(main).to_contain_text("Stopped")
                 wait_for(lambda: process_exited(starts()[-1][0]))
+                wait_for(lambda: process_exited(starts()[-1][2]))
                 sleep(.6)
                 self.assertEqual(len(starts()), 7)
                 self.assertEqual(states()["Main"]["run_id"], running_id)

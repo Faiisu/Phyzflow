@@ -36,7 +36,7 @@ from .ui_settings import (
 )
 from .web import STATIC, UIRequestHandler, ui_address
 from .workspace_environment import (
-    ensure_workspace_environment, folders_overlap, same_folder, workspace_interpreter,
+    ensure_workspace_environment, folders_overlap, same_folder, verified_workspace_interpreter, workspace_interpreter,
 )
 from .workspace_ui import (
     WorkspaceProcessRunningError, verify_workspace_processes_stopped, workspace_routes,
@@ -218,9 +218,10 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
             if workspace_id in deleting:
                 raise RuntimeError("This Workspace is being deleted.")
             if workspace_id not in mounted:
+                interpreter = verified_workspace_interpreter(root) if os.name == "nt" else workspace_interpreter(root)
                 mounted[workspace_id] = workspace_routes(
                     root, discover_flows(root), load_ui_settings(root, port),
-                    interpreter=workspace_interpreter(root),
+                    interpreter=interpreter,
                     workspace_id=workspace_id,
                     run_state=run_state,
                     app_closing=shutdown_event.is_set,

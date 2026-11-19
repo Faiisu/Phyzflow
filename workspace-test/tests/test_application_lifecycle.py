@@ -34,6 +34,22 @@ def wait_for(check):
 
 
 def process_exited(pid):
+    if os.name == "nt":
+        import pywintypes
+        import win32api
+        import win32con
+        import win32event
+
+        try:
+            handle = win32api.OpenProcess(win32con.SYNCHRONIZE, False, pid)
+        except pywintypes.error as error:
+            if error.winerror == 87:
+                return True
+            raise
+        try:
+            return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_OBJECT_0
+        finally:
+            handle.Close()
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

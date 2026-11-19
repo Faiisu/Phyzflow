@@ -12,7 +12,7 @@ set "VENV_DIR=%REPO_DIR%\.venv"
 set "PYTHON=%VENV_DIR%\Scripts\python.exe"
 
 if not exist "%PYTHON%" (
-    uv.exe venv --allow-existing --python 3.12 "%VENV_DIR%"
+    uv.exe venv --allow-existing --managed-python --python 3.12 "%VENV_DIR%"
     if errorlevel 1 exit /b 1
 )
 

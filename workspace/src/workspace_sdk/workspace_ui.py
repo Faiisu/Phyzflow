@@ -1,5 +1,7 @@
 """Host independent flow sheets using the existing local flow UI."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, nullcontext, suppress
@@ -18,6 +20,7 @@ from time import monotonic, sleep
 import sys
 from threading import Lock, RLock, Thread
 import traceback
+from typing import TYPE_CHECKING
 from urllib.parse import unquote
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
@@ -41,6 +44,9 @@ from .sheets import (
 )
 from .ui_settings import UISettings, ZoomSettings
 from .web import FLOW_VIEW_ASSETS, FLOW_VIEW_SUBPATH_PATTERN, STATIC, UIRequestHandler, is_flow_view_route, sample_input, ui_address
+
+if TYPE_CHECKING:
+    from .windows_worker import WindowsWorker
 
 
 VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
@@ -76,7 +82,7 @@ def serve_flow(
 
 @dataclass
 class OpenFlow:
-    process: Popen
+    process: Popen | WindowsWorker
     url: str = ""
     run_token: str | None = None
     lifeline: int | None = None
@@ -86,9 +92,14 @@ class OpenFlow:
             self.process.wait(timeout=2)
         except TimeoutExpired:
             return False
+        if self.run_token is not None and os.name == "nt":
+            self.process.stop()
         return True
 
     def stop(self) -> None:
+        if self.run_token is not None and os.name == "nt":
+            self.process.stop()
+            return
         if self.run_token is None or os.name != "posix":
             terminate(self.process)
             return
@@ -130,6 +141,8 @@ def workspace_command_pattern(root: Path) -> re.Pattern[str]:
 
 
 def active_workspace_pids(root: Path, tracked_pids: tuple[int, ...] = ()) -> list[int]:
+    if os.name != "posix":
+        return list(dict.fromkeys(tracked_pids))
     active: list[int] = []
     seen: set[int] = set()
     for pid in tracked_pids:
@@ -140,8 +153,6 @@ def active_workspace_pids(root: Path, tracked_pids: tuple[int, ...] = ()) -> lis
                 continue
             seen.add(pid)
             active.append(pid)
-    if os.name != "posix":
-        return active
     pattern = workspace_command_pattern(root)
     try:
         output = check_output(
@@ -171,7 +182,7 @@ def active_workspace_pids(root: Path, tracked_pids: tuple[int, ...] = ()) -> lis
 
 def verify_workspace_processes_stopped(
     root: Path,
-    tracked_processes: tuple[Popen, ...] = (),
+    tracked_processes: tuple[Popen | WindowsWorker, ...] = (),
     *,
     wait_seconds: float = 1.0,
 ) -> None:
@@ -364,6 +375,10 @@ class FlowSheet:
             lifeline = None
             if token is not None and os.name == "posix":
                 process, lifeline = spawn_supervised(argv, cwd=self.root, **options)
+            elif token is not None and os.name == "nt":
+                from .windows_worker import WindowsWorker
+
+                process = WindowsWorker(argv, cwd=self.root, **options)
             else:
                 process = Popen(argv, cwd=self.root, **options)
             worker = self.worker = OpenFlow(process, run_token=token, lifeline=lifeline)

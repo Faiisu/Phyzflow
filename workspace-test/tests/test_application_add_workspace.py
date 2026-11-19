@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import os
 from shutil import copy2, copytree
 import subprocess
 import unittest
@@ -192,7 +193,8 @@ class AddWorkspaceTests(unittest.TestCase):
             write_flow(root / "flows" / "Second", body)
             environment = root / ".venv"
             interpreter = project_python(root)
-            subprocess.run(["uv", "venv", "--no-project", "--python", "3.12", environment], check=True)
+            managed_python = ["--managed-python"] if os.name == "nt" else []
+            subprocess.run(["uv", "venv", "--no-project", *managed_python, "--python", "3.12", environment], check=True)
             wheel = parent / "shared_sample-1.0-py3-none-any.whl"
             with ZipFile(wheel, "w") as archive:
                 archive.writestr("shared_sample.py", "def answer(): return 72\n")

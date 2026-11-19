@@ -2,12 +2,13 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
-import select
+from queue import Empty, Queue
 import signal
 from stat import S_IMODE
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Thread
 from time import sleep
 import unittest
 
@@ -15,6 +16,7 @@ from playwright.sync_api import expect
 
 from browser_support import browser_page
 from test_application import sign_in
+from test_application_crash_restart import kill_worker
 from test_application_lifecycle import create_workspace, process_exited, wait_for
 from workspace_sdk.history import RunHistory
 from workspace_sdk.runner import Flow, Step, Output, run
@@ -25,25 +27,41 @@ from workspace_sdk.workspace_ui import workspace_routes
 
 
 @contextmanager
-def managed_application(state: Path, *, shutdown_signal: int = signal.SIGINT):
-    cli = Path(sys.executable).with_name("workspace")
+def managed_application(state: Path, *, shutdown_signal: int | None = signal.SIGINT):
+    windows = os.name == "nt"
+    cli = [Path(sys.executable).with_name("workspace")]
+    if windows:
+        cli = [
+            sys.executable, "-c",
+            "import os; print(os.getpid(), flush=True); from workspace_sdk.cli import main; raise SystemExit(main())",
+        ]
     with subprocess.Popen(
-        [cli, "app", "--state-dir", state, "--port", "0"],
+        [*cli, "app", "--state-dir", state, "--port", "0"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     ) as process:
+        actual_pid = None
+        ready = Queue()
+        Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
         try:
-            if not select.select([process.stdout], [], [], 10)[0]:
-                raise RuntimeError("The Phyzflow application did not start within ten seconds.")
+            try:
+                line = ready.get(timeout=10).strip()
+                if windows:
+                    actual_pid = int(line)
+                    Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
+                    line = ready.get(timeout=10).strip()
+            except Empty:
+                raise RuntimeError("The Phyzflow application did not start within ten seconds.") from None
             prefix = "Phyzflow: "
-            line = process.stdout.readline().strip()
             if not line.startswith(prefix):
                 raise RuntimeError(f"Phyzflow did not publish its address: {line!r}.")
             yield line.removeprefix(prefix), process
         finally:
             if process.poll() is None:
-                if shutdown_signal == signal.SIGKILL:
+                if windows and actual_pid is not None:
+                    kill_worker(actual_pid)
+                elif windows or shutdown_signal is None:
                     process.kill()
                 else:
                     process.send_signal(shutdown_signal)
@@ -116,9 +134,13 @@ def start():
         '''import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from time import sleep
 
 def start():
+    child = subprocess.Popen([sys.executable, "-c", "from time import sleep; sleep(60)"])
+    Path("child-pid").write_text(str(child.pid))
     with Path("starts").open("a", encoding="utf-8") as log:
         log.write(json.dumps([os.getpid()]) + "\\n")
     print("Continuous running", flush=True)
@@ -133,6 +155,7 @@ def start():
 
 
 class ApplicationRestoreRunsTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "SIGTERM application shutdown is a POSIX scenario.")
     def test_restores_active_onetime_automation_and_continuous_runs_on_sigterm_restart_without_browser(self):
         with TemporaryDirectory() as temporary:
             parent = Path(temporary).resolve()
@@ -209,14 +232,14 @@ class ApplicationRestoreRunsTests(unittest.TestCase):
                     expect(page.get_by_role("tab", name="Continuous")).to_contain_text("Stopped")
                     wait_for(lambda: process_exited(second_pids["Continuous"]))
 
-    def test_restores_active_runs_after_abrupt_sigkill_without_browser(self):
+    def test_restores_active_runs_after_abrupt_termination_without_browser(self):
         with TemporaryDirectory() as temporary:
             parent = Path(temporary).resolve()
             root = parent / "Abrupt"
             state = parent / "state"
 
             with browser_page() as page:
-                with managed_application(state, shutdown_signal=signal.SIGKILL) as (url, _):
+                with managed_application(state, shutdown_signal=None) as (url, _):
                     workspace = create_workspace(page, url, state, root)
                     sheets = write_restorable_workspace_sheets(root)
                     workspace.click()
@@ -233,10 +256,12 @@ class ApplicationRestoreRunsTests(unittest.TestCase):
                     wait_for(lambda: (sheets["Continuous"] / "units").exists())
                     before_states = {flow["name"]: flow for flow in page.request.get(status_url).json()["flows"]}
                     first_pids = {name: read_lines(directory / "starts")[0][0] for name, directory in sheets.items()}
+                    child_pid = int((sheets["Continuous"] / "child-pid").read_text())
 
             with managed_application(state, shutdown_signal=signal.SIGINT) as (url, _):
                 for pid in first_pids.values():
                     wait_for(lambda p=pid: process_exited(p))
+                wait_for(lambda: process_exited(child_pid))
                 for directory in sheets.values():
                     wait_for(lambda d=directory: len(read_lines(d / "starts")) == 2)
                 self.assertEqual(read_lines(sheets["Main"] / "starts")[1][1], "Survives sigkill")
