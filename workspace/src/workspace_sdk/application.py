@@ -20,7 +20,8 @@ import sqlite3
 import subprocess
 import sys
 from threading import Event, Lock, Thread, current_thread, main_thread
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import url2pathname
 from uuid import uuid4
 
 from .application_auth import Administrator
@@ -70,7 +71,9 @@ def _find_phyzflow_checkout() -> Path | None:
         if raw:
             url = json.loads(raw).get("url", "")
             if isinstance(url, str) and url.startswith("file://"):
-                source_dir = Path(unquote(urlparse(url).path)).resolve()
+                source = urlsplit(url)
+                authority = f"//{source.netloc}" if source.netloc.lower() not in ("", "localhost") else ""
+                source_dir = Path(url2pathname(authority + source.path)).resolve()
                 checkout = source_dir.parent
                 if source_dir.name == "workspace" and _is_phyzflow_checkout(checkout):
                     return checkout

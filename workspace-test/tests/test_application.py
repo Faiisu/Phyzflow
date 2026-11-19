@@ -17,12 +17,15 @@ from browser_support import browser_page
 
 
 @contextmanager
-def application(state: Path, *, args: tuple[str, ...] = ("--port", "0")):
+def application(
+    state: Path, *, args: tuple[str, ...] = ("--port", "0"), cwd: Path | None = None,
+):
     cli = [Path(sys.executable).with_name("workspace")]
     if os.name == "nt":
         cli = [sys.executable, "-c", "from workspace_sdk.cli import main; raise SystemExit(main())"]
     with subprocess.Popen(
         [*cli, "app", "--state-dir", state, *args],
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
