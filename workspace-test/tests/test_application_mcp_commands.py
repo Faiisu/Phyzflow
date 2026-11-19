@@ -297,6 +297,8 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                     invalid = output(call_tool(portal, client, "validate_flow", workspace_id=workspace_id, sheet="Main", session_id=session_main))
                     self.assertFalse(invalid["valid"])
                     self.assertEqual(invalid["stage"], "validation")
+                    self.assertEqual(invalid["file"], "flow.py")
+                    self.assertEqual(invalid["line"], 2)
                     self.assertIn("flow.py:2", invalid["error"])
 
                     entry_rev = output(call_tool(

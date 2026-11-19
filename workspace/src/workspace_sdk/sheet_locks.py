@@ -164,7 +164,7 @@ class SheetEditLease:
             {
                 "generation": current_gen,
                 "closed": closed[-MAX_TRACKED_SESSIONS:],
-                "invalidated": invalidated[-MAX_TRACKED_SESSIONS:],
+                "invalidated": invalidated,
             },
         )
 

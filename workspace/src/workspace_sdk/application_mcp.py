@@ -21,6 +21,7 @@ from time import monotonic, sleep
 from typing import Literal
 from uuid import uuid4
 
+from .agent_supervisor import spawn_supervised
 from .console import ConsoleLogStore
 from .dashboard import inspect_sheet_dashboards
 from .execution import FlowBusy
@@ -29,7 +30,7 @@ from .node_sources import MAX_SOURCE_BYTES, SourceChanged, edit_source_file
 from .sheet_locks import SheetLockedError
 from .sheets import discover_flows
 from .workspace_environment import (
-    folders_overlap, install_workspace_packages, workspace_interpreter,
+    install_workspace_packages, is_protected_path, workspace_interpreter,
 )
 
 
@@ -171,10 +172,8 @@ def available_root(path: Path) -> bool:
 def ensure_not_protected(path: Path, protected_folders: tuple[Path, ...]) -> None:
     from mcp.server.mcpserver.exceptions import ToolError
 
-    resolved = path.resolve(strict=False)
-    for folder in protected_folders:
-        if folders_overlap(path, folder) or folders_overlap(resolved, folder):
-            raise ToolError("Protected application paths are not accessible.")
+    if is_protected_path(path, protected_folders):
+        raise ToolError("Protected application paths are not accessible.")
 
 
 def resolve_workspace_sheet(access: WorkspaceAccess, workspace_id: str, sheet: str):
@@ -595,11 +594,7 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
                 child_path = Path(child.path)
                 if flow_sheet.main and directory == sheet_root and child.name == "flows":
                     continue
-                if any(
-                    folders_overlap(child_path, folder)
-                    or folders_overlap(child_path.resolve(strict=False), folder)
-                    for folder in access.protected_folders
-                ):
+                if is_protected_path(child_path, access.protected_folders):
                     continue
                 if child.is_dir(follow_symlinks=False):
                     if not (child_path / "pyvenv.cfg").is_file():
@@ -776,25 +771,14 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
             disconnected = False
             try:
                 if os.name == "posix":
-                    reader, lifeline = os.pipe()
-                    supervisor = Path(__file__).with_name("agent_supervisor.py")
-                    try:
-                        process = Popen(
-                            [sys.executable, "-I", str(supervisor), str(reader), "-1", "-1", *argv],
-                            cwd=flow_sheet.root,
-                            env=env,
-                            stdin=DEVNULL,
-                            stdout=DEVNULL,
-                            stderr=PIPE,
-                            start_new_session=True,
-                            pass_fds=(reader,),
-                        )
-                    except BaseException:
-                        os.close(lifeline)
-                        lifeline = None
-                        raise
-                    finally:
-                        os.close(reader)
+                    process, lifeline = spawn_supervised(
+                        argv,
+                        cwd=flow_sheet.root,
+                        env=env,
+                        stdin=DEVNULL,
+                        stdout=DEVNULL,
+                        stderr=PIPE,
+                    )
                 else:
                     process = Popen(
                         argv,
@@ -970,27 +954,23 @@ def register_workspace_tools(server, access: WorkspaceAccess) -> None:
                     event for event in attempt.snapshot_events()
                     if event.get("kind") == "console"
                 ]
-            if run_id is not None:
-                saved_events = store.read_run(run_id)
-                resolved = run_id
-                events = saved_events if saved_events else live_events
-                if saved_events and not current_settings["save_logs"] and len(live_events) > len(saved_events):
-                    events = live_events
-            elif attempt is not None:
+            target_run_id = run_id
+            if target_run_id is None and attempt is not None:
                 saved_events = store.read_run(attempt.run_id)
                 if saved_events or live_events or attempt.status == "running" or not current_settings["save_logs"]:
-                    resolved = attempt.run_id
-                    events = saved_events if saved_events else live_events
-                    if saved_events and not current_settings["save_logs"] and len(live_events) > len(saved_events):
-                        events = live_events
+                    target_run_id = attempt.run_id
+            else:
+                saved_events = store.read_run(target_run_id) if target_run_id is not None else []
+
+            if target_run_id is not None:
+                resolved = target_run_id
+                if not saved_events or (not current_settings["save_logs"] and len(live_events) > len(saved_events)):
+                    events = live_events
                 else:
-                    saved_events = store.read_run(None)
-                    resolved = saved_events[0]["run_id"] if saved_events else None
                     events = saved_events
             else:
-                saved_events = store.read_run(None)
-                resolved = saved_events[0]["run_id"] if saved_events else None
-                events = saved_events
+                events = store.read_run(None)
+                resolved = events[0]["run_id"] if events else None
         except (ValueError, OSError) as error:
             raise ToolError(str(error) or "Could not read console logs.") from None
         stdout = "".join(event["text"] for event in events if event.get("stream") == "stdout")

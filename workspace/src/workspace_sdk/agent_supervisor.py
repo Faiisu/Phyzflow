@@ -19,6 +19,38 @@ def exit_with(code):
     return code
 
 
+def spawn_supervised(
+    argv,
+    *,
+    cwd,
+    env=None,
+    stdin=None,
+    stdout=None,
+    stderr=None,
+    owner_fd=-1,
+    inherited_fd=-1,
+):
+    reader, lifeline = os.pipe()
+    pass_fds = (reader, *(fd for fd in (owner_fd, inherited_fd) if fd >= 0))
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", __file__, str(reader), str(owner_fd), str(inherited_fd), *argv],
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+            pass_fds=pass_fds,
+        )
+    except BaseException:
+        os.close(lifeline)
+        raise
+    finally:
+        os.close(reader)
+    return process, lifeline
+
+
 def worker():
     signal.signal(signal.SIGTERM, lambda *_: None)
     signal.signal(signal.SIGINT, lambda *_: None)
