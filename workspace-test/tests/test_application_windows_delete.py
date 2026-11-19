@@ -67,7 +67,7 @@ class WindowsDeleteTests(unittest.TestCase):
                 workspace = create_workspace(page, url, state, root)
                 script = root / "detached.py"
                 script.write_text("import time\ntime.sleep(120)\n", encoding="utf-8")
-                child = subprocess.Popen([sys._base_executable, script])
+                child = subprocess.Popen([sys._base_executable, script.as_posix()])
                 try:
                     confirm_workspace_deletion(page, root.name)
                     expect(page.get_by_role("alert")).to_contain_text("a Workspace process is still running")
@@ -76,6 +76,23 @@ class WindowsDeleteTests(unittest.TestCase):
                 finally:
                     child.terminate()
                     child.wait(timeout=10)
+
+    def test_recycling_an_unsupported_drive_preserves_the_folder(self):
+        from workspace_sdk.windows_workspace import recycle_folder
+
+        with TemporaryDirectory() as folder:
+            drive = next((f"{letter}:" for letter in "ZYXWVUT" if not Path(f"{letter}:/").exists()), None)
+            if drive is None:
+                self.skipTest("No unused drive letter is available.")
+            subprocess.run(["subst.exe", drive, folder], check=True)
+            try:
+                root = Path(f"{drive}/PhyzflowDisposableTest")
+                root.mkdir()
+                with self.assertRaisesRegex(OSError, "Could not move .* to the Windows Recycle Bin"):
+                    recycle_folder(root)
+                self.assertTrue(root.is_dir())
+            finally:
+                subprocess.run(["subst.exe", drive, "/d"], check=True)
 
     def test_delete_keeps_a_workspace_when_windows_rejects_recycling(self):
         import win32con

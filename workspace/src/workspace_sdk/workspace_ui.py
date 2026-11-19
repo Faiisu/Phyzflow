@@ -136,6 +136,8 @@ def terminate(process: Popen) -> None:
 
 def workspace_command_pattern(root: Path) -> re.Pattern[str]:
     candidates = dict.fromkeys((str(root), str(root.resolve())))
+    if os.name == "nt":
+        candidates = (candidate.replace("\\", "/") for candidate in candidates)
     joined = "|".join(re.escape(item) for item in candidates)
     flags = re.IGNORECASE if os.name == "nt" else 0
     separators = r"/\\" if os.name == "nt" else "/"
@@ -154,7 +156,7 @@ def active_workspace_pids(root: Path, tracked_pids: tuple[int, ...] = ()) -> lis
                 *(
                     pid for pid, command, executable in windows_process_commands()
                     if pid != os.getpid() and (
-                        pattern.search(command)
+                        pattern.search(command.replace("\\", "/"))
                         or executable and Path(executable).is_relative_to(resolved)
                     )
                 ),

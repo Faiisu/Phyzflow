@@ -6,9 +6,6 @@ from win32com.client import GetObject
 from win32com.shell import shell, shellcon
 
 
-FOFX_RECYCLEONDELETE = 0x00080000
-
-
 @contextmanager
 def com_apartment():
     pythoncom.CoInitialize()
@@ -21,16 +18,13 @@ def com_apartment():
 def recycle_folder(path):
     with com_apartment():
         try:
-            operation = pythoncom.CoCreateInstance(
-                shell.CLSID_FileOperation, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IFileOperation,
-            )
-            operation.SetOperationFlags(
-                FOFX_RECYCLEONDELETE | shellcon.FOF_NOERRORUI | shellcon.FOF_NOCONFIRMATION | shellcon.FOF_SILENT,
-            )
             item = shell.SHCreateItemFromParsingName(str(path), None, shell.IID_IShellItem)
-            operation.DeleteItem(item, None)
-            operation.PerformOperations()
-            if operation.GetAnyOperationsAborted() or path.exists():
+            source = item.BindToHandler(None, shell.BHID_Transfer, shell.IID_ITransferSource)
+            destination = shell.SHCreateItemFromIDList(
+                shell.SHGetSpecialFolderLocation(0, shellcon.CSIDL_BITBUCKET), shell.IID_IShellItem,
+            )
+            _, recycled_item = source.RecycleItem(item, destination, 0)
+            if recycled_item is None or path.exists():
                 raise OSError(f"Could not move {path.name} to the Windows Recycle Bin.")
         except pywintypes.com_error as error:
             raise OSError(f"Could not move {path.name} to the Windows Recycle Bin: {error.strerror}.") from error

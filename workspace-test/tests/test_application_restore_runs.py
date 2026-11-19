@@ -2,20 +2,18 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
-from queue import Empty, Queue
 import signal
 from stat import S_IMODE
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from threading import Thread
 from time import sleep
 import unittest
 
 from playwright.sync_api import expect
 
 from browser_support import browser_page
-from test_application import sign_in
+from test_application import read_application_line, sign_in
 from test_application_crash_restart import kill_worker
 from test_application_lifecycle import create_workspace, process_exited, wait_for
 from workspace_sdk.history import RunHistory
@@ -42,17 +40,11 @@ def managed_application(state: Path, *, shutdown_signal: int | None = signal.SIG
         text=True,
     ) as process:
         actual_pid = None
-        ready = Queue()
-        Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
         try:
-            try:
-                line = ready.get(timeout=10).strip()
-                if windows:
-                    actual_pid = int(line)
-                    Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
-                    line = ready.get(timeout=10).strip()
-            except Empty:
-                raise RuntimeError("The Phyzflow application did not start within ten seconds.") from None
+            line = read_application_line(process.stdout)
+            if windows:
+                actual_pid = int(line)
+                line = read_application_line(process.stdout)
             prefix = "Phyzflow: "
             if not line.startswith(prefix):
                 raise RuntimeError(f"Phyzflow did not publish its address: {line!r}.")

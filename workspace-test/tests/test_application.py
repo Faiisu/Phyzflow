@@ -16,6 +16,15 @@ from playwright.sync_api import expect
 from browser_support import browser_page
 
 
+def read_application_line(stdout) -> str:
+    ready = Queue()
+    Thread(target=lambda: ready.put(stdout.readline()), daemon=True).start()
+    try:
+        return ready.get(timeout=10).strip()
+    except Empty:
+        raise RuntimeError("The Phyzflow application did not start within ten seconds.") from None
+
+
 @contextmanager
 def application(
     state: Path, *, args: tuple[str, ...] = ("--port", "0"), cwd: Path | None = None,
@@ -31,12 +40,7 @@ def application(
         text=True,
     ) as process:
         try:
-            ready = Queue()
-            Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
-            try:
-                line = ready.get(timeout=10).strip()
-            except Empty:
-                raise RuntimeError("The Phyzflow application did not start within ten seconds.") from None
+            line = read_application_line(process.stdout)
             prefix = "Phyzflow: "
             if not line.startswith(prefix):
                 raise RuntimeError(f"Phyzflow did not publish its address: {line!r}.")
@@ -83,6 +87,25 @@ class ApplicationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("Phyzflow requires private access", result.stderr)
             self.assertFalse((state / "admin").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows applies NTFS permissions to application state.")
+    def test_windows_application_refuses_a_state_parent_that_allows_other_users_to_delete_children(self):
+        with TemporaryDirectory() as temp:
+            parent = Path(temp).resolve() / "unsafe"
+            parent.mkdir()
+            subprocess.run(
+                ["icacls.exe", str(parent), "/grant", "*S-1-1-0:(DC)"],
+                check=True, capture_output=True,
+            )
+            state = parent / "state"
+            cli = Path(sys.executable).with_name("workspace.exe")
+            result = subprocess.run(
+                [cli, "app", "--state-dir", state, "--port", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(f"Phyzflow requires private access to {parent}", result.stderr)
+            self.assertFalse(state.exists())
 
     def test_admin_saves_network_settings_for_the_next_server_start(self):
         with TemporaryDirectory() as temp, browser_page() as page:
