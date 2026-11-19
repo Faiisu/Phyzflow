@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+from shutil import copy2, copytree
 import subprocess
 import unittest
 from zipfile import ZipFile
@@ -8,7 +9,7 @@ from zipfile import ZipFile
 from playwright.sync_api import expect
 
 from browser_support import browser_page
-from test_application import application, sign_in
+from test_application import application, project_python, sign_in
 
 
 def add_workspace(page, root):
@@ -143,9 +144,43 @@ class AddWorkspaceTests(unittest.TestCase):
                 self.assertEqual({file.name for file in root.iterdir()}, {"flow.py", ".venv"})
                 workspace.click()
                 self.assertEqual(run_sheet(page, "Main"), [
-                    str(root / ".venv/bin/python"), [3, 12], "existing flow",
+                    str(project_python(root)), [3, 12], "existing flow",
                 ])
                 self.assertEqual(source.read_bytes(), original)
+
+    def test_run_and_debug_the_support_ticket_sample(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root = parent / "Support tickets"
+            root.mkdir()
+            state = parent / "state"
+            sample_project = Path(__file__).resolve().parents[1]
+            for name in ("flow.py", "sample.json", "pyproject.toml"):
+                copy2(sample_project / name, root)
+            copytree(sample_project / "ticket_demo", root / "ticket_demo")
+            sample = json.loads((root / "sample.json").read_text(encoding="utf-8"))
+
+            with application(state) as url:
+                sign_in(page, url, state)
+                add_workspace(page, root)
+                page.get_by_role("link", name=root.name).click(timeout=20_000)
+                self.assertEqual(run_sheet(page, "Main"), sample["output"])
+
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                flow.get_by_role("textbox", name="Run input JSON").fill(json.dumps(sample["failure_input"]))
+                page.get_by_role("button", name="Run flow", exact=True).click()
+                expect(page.get_by_role("tab", name="Main")).to_contain_text("Failed")
+                error = flow.get_by_role("region", name="Run", exact=True)
+                expect(error.get_by_role("heading", name="Predict failed", exact=True)).to_be_visible()
+                error.get_by_role("button", name="Open source").click()
+                dialog = flow.get_by_role("dialog", name="Predict files")
+                expect(dialog.get_by_text("Line 3 selected.", exact=True)).to_be_visible()
+                dialog.get_by_role("button", name="Close node files").click()
+
+                flow.get_by_role("button", name="Inspect Decide", exact=True).press("Enter")
+                inspector = flow.get_by_role("region", name="Node inspector")
+                inspector.get_by_role("tab", name="Execution").click()
+                expect(inspector.get_by_role("tabpanel", name="Execution").locator("#execution-status")).to_have_text("Skipped")
 
     def test_both_sheets_reuse_the_existing_environment_and_its_installed_dependency(self):
         with TemporaryDirectory() as temp, browser_page() as page:
@@ -156,7 +191,7 @@ class AddWorkspaceTests(unittest.TestCase):
             write_flow(root, body)
             write_flow(root / "flows" / "Second", body)
             environment = root / ".venv"
-            interpreter = environment / "bin/python"
+            interpreter = project_python(root)
             subprocess.run(["uv", "venv", "--no-project", "--python", "3.12", environment], check=True)
             wheel = parent / "shared_sample-1.0-py3-none-any.whl"
             with ZipFile(wheel, "w") as archive:
@@ -211,7 +246,7 @@ class AddWorkspaceTests(unittest.TestCase):
                             self.assertEqual(path.read_bytes(), original)
                         page.get_by_role("button", name="Cancel").click()
                 self.assertEqual(subprocess.check_output([
-                    incompatible / ".venv" / "bin/python", "-c", "import sys; print(sys.version_info.minor)",
+                    project_python(incompatible), "-c", "import sys; print(sys.version_info.minor)",
                 ], text=True).strip(), "11")
 
     def test_reject_duplicate_nested_and_application_state_folders(self):

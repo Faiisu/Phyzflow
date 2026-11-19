@@ -12,7 +12,10 @@ MAX_INSTALL_PACKAGES = 32
 
 
 def workspace_interpreter(root: Path) -> Path:
-    return root / ".venv" / "bin" / "python"
+    environment = root / ".venv"
+    if os.name == "nt":
+        return environment / "Scripts" / "python.exe"
+    return environment / "bin" / "python"
 
 
 def same_folder(left: Path, right: Path) -> bool:

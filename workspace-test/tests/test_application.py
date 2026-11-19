@@ -51,6 +51,10 @@ def application(state: Path, *, args: tuple[str, ...] = ("--port", "0")):
                 process.wait()
 
 
+def project_python(root: Path) -> Path:
+    return root / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+
+
 def sign_in(page, url: str, state: Path) -> None:
     page.goto(f"{url}/login")
     page.get_by_label("Password").fill((state / "admin" / "initial-password").read_text().strip())
@@ -235,7 +239,7 @@ class ApplicationTests(unittest.TestCase):
                 page.get_by_role("button", name="Create", exact=True).click()
                 workspace = page.get_by_role("link", name="Diagnostics")
                 expect(workspace).to_be_visible(timeout=20_000)
-                interpreter = root / ".venv/bin/python"
+                interpreter = project_python(root)
                 actual = subprocess.check_output(
                     [interpreter, "-c", "import json, sys; print(json.dumps(sys.version_info[:2]))"],
                     text=True,
@@ -262,7 +266,7 @@ class ApplicationTests(unittest.TestCase):
                 page.get_by_role("button", name="Create", exact=True).click()
                 workspace = page.get_by_role("link", name="Diagnostics")
                 expect(workspace).to_be_visible(timeout=20_000)
-                interpreter = root / ".venv/bin/python"
+                interpreter = project_python(root)
                 (root / "nodes/start/entrypoint.py").write_text(
                     r'''from pathlib import Path
 import subprocess
