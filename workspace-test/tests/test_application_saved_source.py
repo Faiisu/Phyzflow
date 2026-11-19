@@ -8,6 +8,7 @@ from playwright.sync_api import expect
 from browser_support import browser_page
 from test_application import application, sign_in
 from test_application_lifecycle import create_workspace
+from workspace_sdk.sheets import create_sheet
 
 
 class ApplicationSavedSourceTests(unittest.TestCase):
@@ -31,9 +32,9 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     flow = page.frame_locator('iframe[title="Main flow"]')
                     tab = page.get_by_role("tab", name="Main")
                     run = page.get_by_role("button", name="Run flow", exact=True)
-                    if failing_run:
-                        run.click()
-                        expect(tab).to_contain_text("Succeeded")
+                    workspace_url = page.url
+                    reloads = []
+                    page.on("request", lambda request: reloads.append(request.url) if "/reload/" in request.url else None)
                     flow.get_by_role("button", name="Inspect Start").dblclick()
                     dialog = flow.get_by_role("dialog", name="Start files")
                     dialog.get_by_role("button", name=filename, exact=True).click()
@@ -45,15 +46,30 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     dialog.get_by_role("button", name="Save", exact=True).click()
                     expect(dialog.locator("#node-source-message")).to_contain_text("Saved.")
                     dialog.get_by_role("button", name="Close node files").click()
+                    expect(page.locator("#reload-message")).to_contain_text("Source changed.")
+                    for _ in range(4):
+                        page.wait_for_event("response", predicate=lambda response: response.url == f"{workspace_url}workspace")
+                    self.assertEqual(reloads, [])
+                    expect(tab).to_contain_text("Ready")
+                    expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
+                    expect(page.locator("#notice-message")).to_be_hidden()
+                    expect(run).to_be_enabled()
                     if failing_run:
+                        page.reload()
+                        expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
                         run.click()
                         expect(tab).to_contain_text("Failed")
                     else:
-                        expect(tab).to_contain_text("Unavailable")
+                        page.get_by_role("button", name="Reload flow").click()
+                        expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
+                        expect(page.locator("#notice-message")).to_be_hidden()
+                        run.click()
+                        expect(tab).to_contain_text("Failed")
+                    expect(page.locator("#notice-message")).to_contain_text(relative)
                     graph = page.frame_locator('iframe[title="Main recovery graph"]')
                     edit_node = graph.get_by_role("button", name="Edit Start source")
                     expect(edit_node).to_be_visible(timeout=3000)
-                    expect(run).to_be_disabled()
+                    expect(run).to_be_enabled()
                     if failing_run:
                         page.set_viewport_size({"width": 390, "height": 844})
                     else:
@@ -92,9 +108,67 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     self.assertEqual(node.read_text(), original)
                     source.get_by_role("button", name="Close", exact=True).click()
                     expect(run).to_be_enabled()
-                    expect(page.locator('iframe[title="Main recovery graph"]')).to_have_count(0)
                     run.click()
                     expect(tab).to_contain_text("Succeeded")
+                    expect(page.locator('iframe[title="Main recovery graph"]')).to_have_count(0)
+
+    def test_graph_opens_before_run_with_invalid_source_and_survives_application_restart(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root, state = parent / "Source preview", parent / "state"
+            node = root / "nodes/start/entrypoint.py"
+            result = page.locator("#notice-message")
+            run = page.get_by_role("button", name="Run flow", exact=True)
+            tab = page.get_by_role("tab", name="Main")
+            graph = page.frame_locator('iframe[title="Main recovery graph"]')
+            edit_node = graph.get_by_role("button", name="Edit Start source")
+            with application(state) as url:
+                workspace = create_workspace(page, url, state, root)
+                flow = root / "flow.py"
+                flow.write_text(flow.read_text().replace(
+                    'steps=(Step("Start", start, {}),),\n    output=Output("Start"),',
+                    'steps=(Step("Finish", lambda value: value, {"value": Output("Start")}),\n'
+                    '           Step("Start", start, {})),\n    output=Output("Finish"),',
+                ))
+                create_sheet(root, "Broken definition").write_text("def invalid(\n")
+                valid = node.read_text()
+                node.write_text("def invalid(\n")
+                workspace.click()
+                expect(edit_node).to_be_visible()
+                expect(graph.get_by_role("button", name="Edit Finish source")).to_be_visible()
+                expect(graph.get_by_text("Depends on Start", exact=True)).to_have_count(1)
+                expect(result).to_be_hidden()
+                expect(tab).to_contain_text("Ready")
+                run.click()
+                expect(tab).to_contain_text("Failed")
+                expect(result).to_contain_text("nodes/start/entrypoint.py:1")
+                edit_node.click()
+                source = page.get_by_role("dialog", name="Edit source")
+                expect(source.get_by_label("Python file")).to_have_value("nodes/start/entrypoint.py")
+                source.get_by_role("textbox", name="Source code").fill(valid)
+                source.get_by_role("button", name="Save").click()
+                expect(source.locator("#flow-source-message")).to_contain_text("Saved.")
+                source.get_by_role("button", name="Close").click()
+                run.click()
+                expect(tab).to_contain_text("Succeeded")
+                expect(page.frame_locator('iframe[title="Main flow"]').get_by_role("button", name="Inspect Start")).to_be_visible()
+                page.get_by_role("tab", name="Broken definition").click()
+                draft = page.frame_locator('iframe[title="Broken definition recovery graph"]')
+                draft.get_by_role("button", name="Edit flow.py source").click()
+                source = page.get_by_role("dialog", name="Edit source")
+                expect(source.get_by_role("textbox", name="Source code")).to_have_value("def invalid(\n")
+                expect(result).to_be_hidden()
+                source.get_by_role("button", name="Close").click()
+
+            flow.write_text("def invalid(\n")
+            with application(state) as url:
+                sign_in(page, url, state)
+                page.get_by_role("link", name=root.name).click()
+                expect(edit_node).to_be_visible()
+                expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
+                expect(result).to_be_hidden()
+                run.click()
+                expect(result).to_contain_text("flow.py:1")
 
     def test_saved_source_takes_effect_only_on_the_next_run(self):
         for editor in ("browser", "filesystem"):
@@ -198,7 +272,7 @@ flow = Flow((), (Step("Start", start, {}), Step("Finish", finish, {"detail": Out
                         json.loads(result.inner_text()),
                         {"flow": "original", "node": "original", "local": "original"},
                     )
-                    expect(page.locator("#reload-message")).to_have_text("Source changed.")
+                    expect(page.locator("#reload-message")).to_have_text("Source changed. Run to use the saved code.")
                     run.click()
                     expect(result).to_contain_text('"updated"')
                     self.assertEqual(

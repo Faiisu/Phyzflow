@@ -339,6 +339,8 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     flow_dialog.get_by_role("button", name="Close").click()
                     self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), edited_flow)
 
+                    expect(page.locator("#reload-message")).to_contain_text("Run to use the saved code.")
+                    page.get_by_role("button", name="Reload flow").click()
                     expect(flow.get_by_role("button", name="Inspect Browser Saved Step")).to_be_visible()
 
                 with portal.wrap_async_context_manager(mcp_client(url, token_a)) as reconnected_a:

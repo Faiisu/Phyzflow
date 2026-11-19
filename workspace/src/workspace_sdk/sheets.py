@@ -1,7 +1,9 @@
 """Discover and create the Python projects represented by Workspace sheets."""
 
+import ast
 from collections.abc import Iterator
 from contextlib import ExitStack
+from graphlib import CycleError, TopologicalSorter
 from hashlib import sha256
 from importlib.metadata import version
 import json
@@ -11,7 +13,7 @@ from typing import Callable
 from unicodedata import category, normalize
 from uuid import uuid4
 
-from .node_sources import edit_source_file
+from .node_sources import edit_source_file, read_node_source
 from .ui_settings import load_ui_settings
 
 
@@ -70,6 +72,58 @@ def editable_sheet_python_files(root: Path, *, main: bool) -> Iterator[Path]:
     for path in sheet_source_files(root, main=main):
         if path.suffix == ".py" and not path.name.startswith(".") and not path.is_symlink() and path.is_file():
             yield path
+
+
+def declared_graph(root: Path, files: set[str]) -> list[dict]:
+    if "flow.py" not in files:
+        return []
+    try:
+        module = ast.parse(read_node_source(root / "flow.py"))
+    except (OSError, ValueError, SyntaxError, RecursionError):
+        return []
+    imports = {}
+    for statement in module.body:
+        if isinstance(statement, ast.ImportFrom) and statement.module and not statement.level:
+            path = statement.module.replace(".", "/")
+            for alias in statement.names:
+                imports[alias.asname or alias.name] = next(
+                    (file for file in (f"{path}.py", f"{path}/__init__.py") if file in files), "flow.py",
+                )
+    flow = next((node for node in ast.walk(module)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Flow"), None)
+    if flow is None:
+        return []
+    steps = next((item.value for item in flow.keywords if item.arg == "steps"),
+                 flow.args[1] if len(flow.args) > 1 else None)
+    if not isinstance(steps, (ast.Tuple, ast.List)):
+        return []
+
+    graph = {}
+    for step in steps.elts:
+        if not isinstance(step, ast.Call) or not isinstance(step.func, ast.Name) or step.func.id != "Step":
+            return []
+        args = {name: value for name, value in zip(("id", "function", "arguments"), step.args)}
+        args.update((item.arg, item.value) for item in step.keywords)
+        name, function, arguments = (args.get(key) for key in ("id", "function", "arguments"))
+        if not isinstance(name, ast.Constant) or not isinstance(name.value, str) or name.value in graph:
+            return []
+        path = imports.get(function.id, "flow.py") if isinstance(function, ast.Name) else "flow.py"
+        dependencies = list(dict.fromkeys(
+            ref.args[0].value for ref in ast.walk(arguments)
+            if isinstance(ref, ast.Call) and isinstance(ref.func, ast.Name) and ref.func.id == "Output"
+            and ref.args and isinstance(ref.args[0], ast.Constant) and isinstance(ref.args[0].value, str)
+        )) if arguments is not None else []
+        graph[name.value] = {
+            "id": name.value, "source": path, "file": path, "description": "",
+            "dependencies": dependencies, "arguments": [],
+        }
+    if any(dependency not in graph for step in graph.values() for dependency in step["dependencies"]):
+        return []
+    try:
+        order = tuple(TopologicalSorter({key: step["dependencies"] for key, step in graph.items()}).static_order())
+    except CycleError:
+        return []
+    return [graph[key] for key in order]
 
 
 def source_stamp(root: Path, *, main: bool = False) -> str:

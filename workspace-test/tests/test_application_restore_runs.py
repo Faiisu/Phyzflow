@@ -443,6 +443,9 @@ def start():
 
                     page.get_by_role("tab", name="StartupError").click()
                     expect(page.get_by_role("tab", name="StartupError").locator(".sheet-status")).to_have_text("Failed")
+                    expect(page.locator("#recovery-hint")).to_be_visible()
+                    expect(page.locator("#notice-message")).to_be_hidden()
+                    page.get_by_role("button", name="Run flow", exact=True).click()
                     expect(page.locator("#notice-message")).to_contain_text("flow.py")
 
                     page.get_by_role("tab", name="Manual").click()

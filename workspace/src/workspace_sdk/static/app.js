@@ -1566,6 +1566,7 @@ try {
   if (!recoveryView) {
     const sample = JSON.stringify(project.input, null, 2);
     input.value = sample;
+    input.disabled = false;
     resetInput.addEventListener("click", () => {
       input.value = sample;
       input.focus();

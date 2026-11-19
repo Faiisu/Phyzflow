@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 from subprocess import Popen, SubprocessError, TimeoutExpired, check_output
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
@@ -32,6 +33,7 @@ from .sheets import (
     archive_sheet_directory,
     can_delete_sheet,
     create_sheet,
+    declared_graph,
     discover_flows,
     edit_sheet_flow_source,
     editable_sheet_python_files,
@@ -213,6 +215,8 @@ class FlowSheet:
         self.workspace_id = workspace_id
         self.sheet_key = sheet_key
         self.run_state = run_state
+        if run_state is not None and workspace_id is not None and sheet_key is not None:
+            self.recovery_graph = run_state.load_graph(workspace_id, sheet_key)
         self.run_generation = 0
         self.attempted_source: str | None = None
         self.attempt: SheetRun | None = None
@@ -379,6 +383,9 @@ class FlowSheet:
                 self.recovery_graph = {
                     "name": self.root.name, "steps": reply["steps"], "output": reply["output"], "zoom": self.zoom,
                 }
+                if self.run_state is not None and self.workspace_id is not None and self.sheet_key is not None:
+                    with suppress(sqlite3.Error):
+                        self.run_state.record_graph(self.workspace_id, self.sheet_key, self.recovery_graph)
             except BaseException:
                 self.stop_worker(status="unavailable")
                 raise
@@ -432,6 +439,8 @@ class FlowSheet:
         attempt = self.attempt
         if self.inactive_status == "stopping":
             return "stopping"
+        if self.inactive_status == "unavailable" and self.interpreter is not None and self.worker is None:
+            return attempt.status if attempt is not None else "ready"
         if self.inactive_status == "unavailable" and (
             attempt is None
             or (attempt.status != "running" and not attempt.crash_exhausted and attempt.start_error is None)
@@ -440,6 +449,25 @@ class FlowSheet:
         if attempt is not None and (attempt.status == "running" or self.inactive_status != "stopped"):
             return attempt.status
         return self.worker_status()
+
+    def worker_ready(self) -> bool:
+        worker = self.worker
+        return bool(worker is not None and worker.url and worker.process.poll() is None)
+
+    def source_graph(self) -> dict:
+        files = sorted(editable_sheet_python_files(self.root, main=self.main))
+        paths = [path.relative_to(self.root) for path in files]
+        steps = declared_graph(self.root, {path.as_posix() for path in paths})
+        if not steps:
+            steps = [
+                {"id": path.parent.as_posix() if path.name == "entrypoint.py" else path.as_posix(),
+                 "source": path.as_posix(), "file": path.as_posix(), "description": "",
+                 "dependencies": [], "arguments": []}
+                for path in paths if path.as_posix() == "flow.py" or (
+                    len(path.parts) == 3 and path.parts[0] == "nodes" and path.name == "entrypoint.py"
+                )
+            ]
+        return {"name": self.root.name, "steps": steps, "zoom": self.zoom}
 
     def worker_status(self) -> str:
         if not self.closing and sheet_busy(self.root):
@@ -525,7 +553,6 @@ def workspace_routes(
             saved = states[sheet.sheet_key]
             sheet.run_generation = max(sheet.run_generation, saved["generation"])
             status = saved["status"]
-            error = saved["error"]
             if status == "running":
                 try:
                     record = RunHistory(sheet.root).read(saved["run_id"])
@@ -533,7 +560,6 @@ def workspace_routes(
                     record = None
                 if record is not None and record.get("status") in ("succeeded", "failed"):
                     status = record["status"]
-                    error = None
                     run_state.record_terminal(
                         workspace_id, sheet.sheet_key, saved["generation"], saved["run_id"], status,
                     )
@@ -547,7 +573,6 @@ def workspace_routes(
                     generation=saved["generation"],
                     run_id=saved["run_id"],
                     status=status,
-                    start_error=error,
                 )
                 sheet.inactive_status = "ready"
 
@@ -834,7 +859,8 @@ def workspace_routes(
                         except ReloadConflict:
                             pass
                         except (OSError, RuntimeError, EOFError) as error:
-                            reload_error = str(error) or "The flow process exited."
+                            if interpreter is None or sheet.worker_ready():
+                                reload_error = str(error) or "The flow process exited."
                     if data.get("acquire"):
                         edit_lock = sheet.edit_lease.acquire("web", "web", "Web editor", session_id=session_id)
                     else:
@@ -848,6 +874,8 @@ def workspace_routes(
                     }
                     if reload_error is not None:
                         result["reload_error"] = reload_error
+                    if interpreter is not None:
+                        result["worker_ready"] = sheet.worker_ready()
             except SheetLockedError as error:
                 self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
             except (ValueError, OSError) as error:
@@ -953,10 +981,10 @@ def workspace_routes(
                 index = int(recovery[1])
                 sheet = sheets[index] if index < len(sheets) else None
                 graph = sheet.recovery_graph if sheet is not None else None
-                if graph is None:
+                if sheet is None or (graph is None and interpreter is None):
                     self.request.send_error(HTTPStatus.NOT_FOUND)
                 elif recovery[2] == "/project":
-                    self.request.send_json(graph)
+                    self.request.send_json(graph if graph is not None else sheet.source_graph())
                 elif asset := FLOW_VIEW_ASSETS.get(recovery[2]):
                     name, content_type = asset
                     self.request.send_bytes((STATIC / name).read_bytes(), content_type)
@@ -987,6 +1015,7 @@ def workspace_routes(
                     }
                     if interpreter is not None:
                         attempt = sheet.attempt
+                        entry["worker_ready"] = sheet.worker_ready()
                         entry["run_id"] = attempt.run_id if attempt is not None else None
                         entry["error"] = attempt.start_error if attempt is not None else None
                     flows.append(entry)
@@ -1013,6 +1042,19 @@ def workspace_routes(
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if interpreter is not None and (run := re.fullmatch(r"/flows/([0-9]{1,8})/run", self.path)):
+                index = int(run[1])
+                sheet = sheets[index] if index < len(sheets) else None
+                if sheet is None:
+                    self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+                    return
+                try:
+                    sheet.start_run(None)
+                except (FlowBusy, RuntimeError, OSError, ValueError) as error:
+                    self.request.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
+                else:
+                    self.request.send_json({}, HTTPStatus.ACCEPTED)
                 return
             if source := FLOW_SOURCE_PATH.fullmatch(self.path):
                 self.flow_source(int(source[1]), source[2], source[3])
@@ -1061,7 +1103,10 @@ def workspace_routes(
             except ReloadDeferred:
                 self.request.send_json({"deferred": True}, HTTPStatus.CONFLICT)
             except (OSError, RuntimeError, EOFError) as error:
-                self.request.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
+                if interpreter is not None and not sheet.worker_ready() and not sheet.workspace_closing():
+                    self.request.send_json({"editor": True, "revision": sheet.revision, "status": sheet.status()})
+                else:
+                    self.request.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
 
     def dispatch(request: UIRequestHandler, path: str) -> None:
         if closing:

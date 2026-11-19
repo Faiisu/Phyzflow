@@ -34,6 +34,28 @@ class RunStateStore:
                 "PRIMARY KEY (workspace_id, sheet_path))"
             )
 
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS sheet_graphs ("
+                "workspace_id TEXT NOT NULL, sheet_path TEXT NOT NULL, graph TEXT NOT NULL, "
+                "PRIMARY KEY (workspace_id, sheet_path))"
+            )
+
+    def record_graph(self, workspace_id: str, sheet_path: str, graph: dict) -> None:
+        steps = [{**step, "description": ""} for step in graph["steps"]]
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO sheet_graphs (workspace_id, sheet_path, graph) VALUES (?, ?, ?)",
+                (workspace_id, sheet_path, json.dumps({**graph, "steps": steps})),
+            )
+
+    def load_graph(self, workspace_id: str, sheet_path: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT graph FROM sheet_graphs WHERE workspace_id = ? AND sheet_path = ?",
+                (workspace_id, sheet_path),
+            ).fetchone()
+        return json.loads(row[0]) if row is not None else None
+
     def _record_state(
         self,
         workspace_id: str,
@@ -114,10 +136,15 @@ class RunStateStore:
                 "DELETE FROM sheet_states WHERE workspace_id = ? AND sheet_path = ?",
                 (workspace_id, sheet_path),
             )
+            self._db.execute(
+                "DELETE FROM sheet_graphs WHERE workspace_id = ? AND sheet_path = ?",
+                (workspace_id, sheet_path),
+            )
 
     def delete_workspace(self, workspace_id: str) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM sheet_states WHERE workspace_id = ?", (workspace_id,))
+            self._db.execute("DELETE FROM sheet_graphs WHERE workspace_id = ?", (workspace_id,))
 
     def close(self) -> None:
         with self._lock:

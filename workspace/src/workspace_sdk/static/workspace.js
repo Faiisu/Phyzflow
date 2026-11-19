@@ -270,9 +270,13 @@ function needsRecovery(sheet) {
   return sheet && (sheet.status === "unavailable" || Boolean(sheet.runError));
 }
 
+function usesSourceGraph(sheet) {
+  return editRunningSource && sheet?.workerReady === false && sheet.status !== "stopped";
+}
+
 function updateStatus(sheet, status) {
   sheet.status = status;
-  sheet.view.classList.toggle("is-unavailable", needsRecovery(sheet));
+  sheet.view.classList.toggle("is-unavailable", needsRecovery(sheet) || usesSourceGraph(sheet));
   sheet.indicator.textContent = labels[status] ?? status;
   sheet.indicator.dataset.state = status;
   sheet.stop.disabled = sheet.pending || !["running", "stopping"].includes(status);
@@ -280,14 +284,18 @@ function updateStatus(sheet, status) {
 }
 
 function activeRunButton() {
-  if (!active || active.pending || active.frameStopped || needsRecovery(active) ||
+  if (!active || active.pending || active.frameStopped || needsRecovery(active) || usesSourceGraph(active) ||
       ["opening", "running", "stopping", "stopped", "unavailable"].includes(active.status)) return null;
   return active.frame?.contentDocument?.getElementById("run-flow");
 }
 
+function canRunSourceGraph(sheet) {
+  return usesSourceGraph(sheet) && !sheet.pending && !["opening", "running", "stopping"].includes(sheet.status);
+}
+
 function syncToolbar() {
   const button = activeRunButton();
-  runSheet.disabled = button?.disabled !== false;
+  runSheet.disabled = !canRunSourceGraph(active) && button?.disabled !== false;
   const frameStatus = button?.ownerDocument.getElementById("status");
   const frameState = frameStatus?.dataset.state;
   const state = frameState || active?.status || "";
@@ -301,7 +309,28 @@ window.phyzflowSyncToolbar = frameWindow => {
   if (active?.frame?.contentWindow === frameWindow) syncToolbar();
 };
 
-runSheet.addEventListener("click", () => activeRunButton()?.click());
+runSheet.addEventListener("click", async () => {
+  const sheet = active;
+  if (!canRunSourceGraph(sheet)) {
+    activeRunButton()?.click();
+    return;
+  }
+  sheet.pending = true;
+  sheet.version++;
+  sheet.error = sheet.runError = null;
+  updateStatus(sheet, "running");
+  showNotice();
+  try {
+    await command(sheet, "run");
+  } catch (error) {
+    sheet.error = error.message;
+    updateStatus(sheet, error.status ?? "failed");
+  } finally {
+    sheet.pending = false;
+    sheet.version++;
+    showNotice();
+  }
+});
 
 function showRecoveryGraph(sheet, visible) {
   if (!sheet) return;
@@ -317,15 +346,24 @@ function showRecoveryGraph(sheet, visible) {
 
 function showNotice() {
   syncToolbar();
-  const recovering = Boolean(needsRecovery(active) && !active.pending);
-  const hasRecoveryGraph = recovering && active.recoverable;
+  const sourceGraph = usesSourceGraph(active);
+  const recovering = Boolean((sourceGraph || needsRecovery(active)) && !active.pending);
+  const hasRecoveryGraph = sourceGraph || (recovering && active.recoverable);
   recoverSource.hidden = !recovering;
   recoveryHint.hidden = !hasRecoveryGraph;
+  if (hasRecoveryGraph) {
+    const hint = active.recoverable
+      ? "Last loaded graph. Select a node to edit its source."
+      : "Source preview. Select a node to edit its source.";
+    if (recoveryHint.textContent !== hint) recoveryHint.textContent = hint;
+  }
   notice.classList.toggle("is-recovery", hasRecoveryGraph);
   showRecoveryGraph(active, hasRecoveryGraph);
   reloadFlow.disabled = !active || active.pending || active.status === "running";
   editFlowSource.disabled = !active || active.pending;
-  const change = active?.sourceChange && active?.status !== "running" ? "Source changed." : "";
+  const deferSource = editRunningSource;
+  const pendingSource = deferSource ? "Source changed. Run to use the saved code." : "Source changed.";
+  const change = active?.sourceChange && active?.status !== "running" ? pendingSource : "";
   const reloadText = active?.reloadError || change;
   reloadMessage.hidden = !reloadText;
   if (reloadMessage.textContent !== reloadText) reloadMessage.textContent = reloadText;
@@ -334,26 +372,30 @@ function showNotice() {
   if (editLockMessage.textContent !== lockText) editLockMessage.textContent = lockText;
   forceOpenFlow.hidden = !lockText || Boolean(active?.pending);
   sourceChangeMessage.hidden = !change;
+  const sourceChangeText = deferSource ? pendingSource : "Source changed. Reload pending.";
+  if (sourceChangeMessage.textContent !== sourceChangeText) sourceChangeMessage.textContent = sourceChangeText;
   const snapshot = Boolean(active?.frameStopped) && !hasRecoveryGraph;
   notice.classList.toggle("is-snapshot", snapshot);
   if (!active) {
     notice.hidden = false;
+    noticeMessage.hidden = false;
     const message = "Create a sheet to get started.";
     if (noticeMessage.textContent !== message) noticeMessage.textContent = message;
     reopen.hidden = true;
     return;
   }
   const error = active.runError ?? active.error;
-  notice.hidden = Boolean(active.frame) && !snapshot && active.status !== "unavailable" && !error;
+  notice.hidden = !hasRecoveryGraph && Boolean(active.frame) && !snapshot && active.status !== "unavailable" && !error;
   if (notice.hidden) return;
-  const message = error ?? {
+  const message = error ?? (sourceGraph ? "" : {
     opening: "Opening the flow…",
     stopping: "Stopping the flow…",
     stopped: snapshot ? "Stopped · Run snapshot" : "Flow stopped.",
     unavailable: "The flow process is unavailable.",
-  }[active.status] ?? "Open this flow to get started.";
+  }[active.status] ?? "Open this flow to get started.");
+  noticeMessage.hidden = !message;
   if (noticeMessage.textContent !== message) noticeMessage.textContent = message;
-  reopen.hidden = active.pending;
+  reopen.hidden = active.pending || sourceGraph;
 }
 
 reopen.addEventListener("click", () => openFlow(active));
@@ -401,6 +443,7 @@ forceOpenForm.addEventListener("submit", async event => {
       sheet.activeEditors.clear();
     }
     if (data.revision !== undefined) sheet.revision = data.revision;
+    if (data.worker_ready !== undefined) sheet.workerReady = data.worker_ready;
     if (data.reload_error) {
       sheet.reloadError = data.reload_error;
       updateStatus(sheet, data.status ?? "unavailable");
@@ -408,7 +451,7 @@ forceOpenForm.addEventListener("submit", async event => {
       sheet.error = null;
       sheet.runError = null;
       sheet.reloadError = null;
-      if (data.status !== "running" && data.status !== "stopping") {
+      if (data.worker_ready !== false && data.status !== "running" && data.status !== "stopping") {
         showFrame(sheet, sheet.revision);
       }
       updateStatus(sheet, data.status ?? "ready");
@@ -539,8 +582,8 @@ async function openSourceEditor(recovering, preferred) {
 editFlowSource.addEventListener("click", () => openSourceEditor(false));
 recoverSource.addEventListener("click", () => openSourceEditor(true));
 window.phyzflowEditRecoveryNode = (frameWindow, path) => {
-  if (active?.recoveryFrame?.contentWindow === frameWindow && needsRecovery(active) &&
-      !active.pending && !sourceDialog.open) void openSourceEditor(true, path);
+  if (active?.recoveryFrame?.contentWindow === frameWindow && (needsRecovery(active) || usesSourceGraph(active)) &&
+      !sourceDialog.open) void openSourceEditor(true, path);
 };
 
 sourcePath.addEventListener("change", async () => {
@@ -642,7 +685,7 @@ async function command(sheet, action) {
 function showFrame(sheet, revision) {
   const prefix = revision ? `/revision/${revision}` : "";
   const url = `${workspacePath}flows/${sheet.index}${prefix}/view/`;
-  if (!sheet.frame || sheet.frameStopped || sheet.frame.getAttribute("src") !== url) {
+  if (!sheet.frame || sheet.frameStopped || sheet.recoveryFrame || sheet.frame.getAttribute("src") !== url) {
     const frame = document.createElement("iframe");
     frame.title = `${sheet.name} flow`;
     frame.src = url;
@@ -671,10 +714,11 @@ async function openFlow(sheet, action = "open", automaticSource = null) {
   updateStatus(sheet, "opening");
   showNotice();
   try {
-    const { revision, status } = await command(sheet, automaticSource ? `reload/${automaticSource}` : action);
+    const { revision, status, editor } = await command(sheet, automaticSource ? `reload/${automaticSource}` : action);
     sheet.revision = revision;
     sheet.sourceChange = null;
-    showFrame(sheet, revision);
+    sheet.workerReady = !editor;
+    if (!editor) showFrame(sheet, revision);
     updateStatus(sheet, status ?? "ready");
   } catch (error) {
     if (error.deferred || (automaticSource && error.status)) {
@@ -702,7 +746,7 @@ function checkSourceChange(sheet, source) {
     sheet.sourceChangedAt = performance.now();
   }
   if (!source || performance.now() - sheet.sourceChangedAt < 500 ||
-      (editRunningSource && !sheet.runError && ["succeeded", "failed"].includes(sheet.status)) ||
+      editRunningSource ||
       ["running", "opening"].includes(sheet.status) || hasUnsavedSource(sheet) ||
       sheet.frame?.contentDocument?.querySelector("#node-files")?.open ||
       (sheet === active && sourceDialog.open && (flowSourceIsDirty() || closeSource.disabled))) return;
@@ -797,6 +841,7 @@ function makeSheet(flow, index) {
   const sheet = {
     index, name: flow.name, tab, indicator, stop, group, view,
     frame: null, frameStopped: false, recoveryFrame: null, recoverable: flow.recoverable, pending: false, version: 0,
+    workerReady: flow.worker_ready,
     revision: flow.revision, runError: flow.error,
     editLock: flow.edit_lock ?? null, editSessionId: null, activeEditors: new Set(), heartbeatTimer: null,
   };
@@ -966,13 +1011,16 @@ async function pollStatus() {
         }
       }
       if (flows[sheet.index] && (!sheet.frameStopped || !runAll.hidden) && !sheet.pending && sheet.version === versions[sheet.index]) {
-        const { status, revision, changed_source, error, recoverable } = flows[sheet.index];
+        const { status, revision, changed_source, error, recoverable, worker_ready } = flows[sheet.index];
         sheet.recoverable = recoverable;
-        if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0)) && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {
+        sheet.workerReady = worker_ready;
+        if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0) ||
+            (sheet === active && worker_ready && sheet.recoveryFrame)) &&
+            !["opening", "unavailable", "stopped"].includes(status) && !error && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;
           sheet.reloadError = null;
-          if (sheet.frame || (sheet === active && status === "running")) showFrame(sheet, revision);
+          if (sheet.frame || (sheet === active && (status === "running" || worker_ready))) showFrame(sheet, revision);
         }
         if (status === "stopped") retainStoppedFrame(sheet, false);
         sheet.runError = error;
@@ -992,9 +1040,9 @@ try {
   const name = document.querySelector("#workspace-name");
   name.textContent = workspace.name;
   name.title = workspace.name;
-  syncSheets(workspace.flows);
   runAll.hidden = !workspace.run_all;
   editRunningSource = workspace.edit_running_source;
+  syncSheets(workspace.flows);
   newSheet.disabled = false;
   pollStatus().catch(() => {});
 } catch (error) {

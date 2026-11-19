@@ -44,6 +44,8 @@ Use a default retention of seven days. Rotate saved logs daily so retention also
 
 **FLOW-05.** Saved source changes take effect on the next run of the sheet. A run already in progress continues with the source version it started with.
 
+Opening a sheet and saving Python source keep the graph and editors available. Run validates the latest saved source and reports validation failures on the sheet. Reload flow refreshes the graph when the saved source can be loaded. If the source cannot be loaded, Phyzflow shows the last loaded graph or a source preview with editable nodes. The last loaded graph survives an application restart.
+
 **MCP-01.** Every command in the Workspace flow-development scope is available through MCP. This includes working with Python source and dashboard code, validating, running and stopping flows, inspecting execution, and managing the flow's dependencies.
 
 **MCP-02.** The Phyzflow instance deployed on the host determines and enforces MCP permissions. Access is scoped to flow development within authorized Workspaces. Modification of the Phyzflow application's specification or implementation belongs outside that access boundary.
@@ -153,6 +155,8 @@ These scenarios describe observable expectations for release acceptance.
 | RUN-04 | Start one sheet and record its run ID. Use Run All and verify that the active sheet keeps that ID and that the remaining idle sheets start. |
 | FLOW-04 | Run two sheets with the default settings. Turn saving off on one sheet and change retention on the other. Verify that both still show live console output, that the disabled sheet stops creating saved log output, and that the other sheet removes expired daily segments even during a continuous run. |
 | FLOW-05 | Save a source change during a run. Verify that the active run completes with its original source behavior and that the next run uses the saved change. |
+| FLOW-05 | Save invalid Python while a sheet is ready. Verify that the graph and editor stay available after a browser refresh. Select Run, confirm that the sheet reports the source error, then repair the file from the node and run again. |
+| FLOW-05 | Open and run a sheet with invalid Python before its first successful load. Verify that the source preview opens and that Run reports the error. Repair it from a node and run successfully. Restart Phyzflow with the source broken again and verify that its last loaded graph opens before Run. |
 | DASH-01, DASH-02 | Ask an AI agent to author a panel for a flow metric. Open it in the Workspace and verify the values it displays and its conformance to the current application's theme and interaction conventions. |
 | MCP-01, MCP-02 | Verify that each flow-development command is available through MCP. Run representative commands against a Workspace allowed by the deployed instance and one it denies. Verify that the Phyzflow application specification is protected from edits through MCP. |
 | MCP-03 | Grant and revoke a Workspace permission in the web app. Verify that the MCP identity gains access after the grant and that its next request is denied after revocation. |
