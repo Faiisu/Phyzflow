@@ -82,6 +82,23 @@ def build_wheel(directory: Path, package_name: str, module_name: str, body: str)
 
 
 class ApplicationMcpCommandsTests(unittest.TestCase):
+    def test_installed_app_protects_checkout_when_started_outside_it(self):
+        checkout = Path(__file__).resolve().parents[2]
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state = parent / "state"
+            with application(state, cwd=parent) as url:
+                sign_in(page, url, state)
+                for protected in (checkout, checkout / "docs"):
+                    with self.subTest(protected=protected):
+                        response = page.request.post(
+                            f"{url}/workspaces",
+                            headers={"Origin": url},
+                            data={"path": str(protected), "action": "add"},
+                        )
+                        self.assertEqual(response.status, 400, response.text())
+                        self.assertIn("the Phyzflow source checkout", response.json()["error"])
+
     def test_mcp_tool_catalog_and_workspace_grant_enforcement(self):
         with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
             parent = Path(temp).resolve()
