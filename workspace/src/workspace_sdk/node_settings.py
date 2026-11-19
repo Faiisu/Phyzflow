@@ -65,7 +65,9 @@ def apply_node_settings() -> None:
         checkpoint()
 
 
-def parse_setting_defaults(source: str, definitions: dict[str, list[NodeSetting]]) -> dict[str, SettingValue]:
+def parse_setting_defaults(
+    source: str, definitions: dict[str, list[NodeSetting]] | None = None,
+) -> dict[str, SettingValue]:
     def unique(pairs):
         result = {}
         for name, value in pairs:
@@ -81,6 +83,11 @@ def parse_setting_defaults(source: str, definitions: dict[str, list[NodeSetting]
     if not isinstance(values, dict):
         raise ValueError("Settings defaults must be a JSON object.")
     for name, value in values.items():
+        if definitions is None:
+            if type(value) not in (bool, int, float, str):
+                raise ValueError(f"{name}: Expected a boolean, number, or string setting.")
+            NodeSetting(value)
+            continue
         if name not in definitions:
             raise ValueError(f"Unknown setting {name!r}. Declare it in Step.settings first.")
         try:

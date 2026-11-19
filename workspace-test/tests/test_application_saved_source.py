@@ -11,6 +11,12 @@ from test_application_lifecycle import create_workspace
 from workspace_sdk.sheets import create_sheet
 
 
+def open_node_files(graph, node="Start"):
+    graph.get_by_role("button", name=f"Inspect {node}").click()
+    graph.get_by_role("button", name="View files").click()
+    return graph.get_by_role("dialog", name=f"{node} files")
+
+
 class ApplicationSavedSourceTests(unittest.TestCase):
     def test_repair_a_broken_node_file_after_reopening_the_workspace(self):
         for failing_run in (False, True):
@@ -23,10 +29,11 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     outside = parent / "outside.py"
                     outside.write_text("value = 1\n")
                     (root / "nodes/start/alias.py").symlink_to(root / "flow.py")
-                    filename = "helper.py" if failing_run else "entrypoint.py"
+                    filename = "helpers/helper.py" if failing_run else "entrypoint.py"
                     relative = f"nodes/start/{filename}"
                     node = root / relative
                     if failing_run:
+                        node.parent.mkdir()
                         node.write_text("value = 1\n")
                     workspace.click()
                     flow = page.frame_locator('iframe[title="Main flow"]')
@@ -37,7 +44,9 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     page.on("request", lambda request: reloads.append(request.url) if "/reload/" in request.url else None)
                     flow.get_by_role("button", name="Inspect Start").dblclick()
                     dialog = flow.get_by_role("dialog", name="Start files")
-                    dialog.get_by_role("button", name=filename, exact=True).click()
+                    if failing_run:
+                        dialog.locator("summary").get_by_text("helpers", exact=True).click()
+                    dialog.get_by_role("button", name=Path(filename).name, exact=True).click()
                     editor = dialog.get_by_role("textbox", name="Source code")
                     original = node.read_text()
                     expect(editor).to_have_value(original)
@@ -69,46 +78,42 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     expect(page.locator("#recovery-hint")).to_contain_text("Last loaded graph")
                     expect(page.locator("#notice-message")).to_contain_text(relative)
                     graph = page.frame_locator('iframe[title="Main recovery graph"]')
-                    edit_node = graph.get_by_role("button", name="Edit Start source")
+                    edit_node = graph.get_by_role("button", name="Inspect Start")
                     expect(edit_node).to_be_visible(timeout=3000)
                     expect(run).to_be_enabled()
                     if failing_run:
                         page.set_viewport_size({"width": 390, "height": 844})
                     else:
-                        edit_node.click()
-                        page.get_by_role("dialog", name="Edit source").get_by_role("button", name="Close").click()
+                        open_node_files(graph).get_by_role("button", name="Close node files").click()
                     page.reload()
                     expect(page.locator("#notice-message")).to_contain_text(relative)
                     routes = page.request.get(f"{page.url}workspace").json()
                     revision = routes["flows"][0]["revision"]
                     view = f"revision/{revision}/" if revision else ""
                     self.assertEqual(page.request.get(f"{page.url}flows/0/{view}view/").status, 503)
-                    endpoint = f"{page.url}flows/0/source"
-                    self.assertEqual(page.request.get(endpoint).status, 200)
-                    files = page.request.get(f"{endpoint}?files").json()["files"]
-                    self.assertNotIn("nodes/start/alias.py", files)
-                    for path in ("../outside.py", "nodes/start/alias.py"):
-                        self.assertEqual(page.request.get(f"{endpoint}?path={path}").status, 404)
+                    endpoint = f"{page.url}flows/0/recovery/node-source/0"
+                    for path in ("../outside.py", "nodes/start/alias.py", "flow.py"):
+                        rejected = page.request.post(endpoint, headers={"Origin": url}, data={"path": path})
+                        self.assertEqual(rejected.status, 404)
                     rejected = page.request.post(
-                        f"{endpoint}?path={relative}",
+                        endpoint,
                         headers={"Origin": url},
-                        data={"source": original, "revision": "0" * 64},
+                        data={"path": relative, "source": original, "revision": "0" * 64},
                     )
                     self.assertEqual(rejected.status, 409)
                     self.assertEqual(node.read_text(), invalid)
-                    recovery = page.get_by_role("button", name="Edit source", exact=True)
-                    expect(recovery).to_be_enabled(timeout=2000)
-                    edit_node.click()
-                    source = page.get_by_role("dialog", name="Edit source")
-                    expect(source.locator("#flow-source-diagnostic")).to_contain_text(relative)
-                    expect(source.get_by_label("Python file")).to_have_value(relative)
+                    expect(page.get_by_role("button", name="Edit source", exact=True)).to_have_count(0)
+                    source = open_node_files(graph)
+                    expect(source.locator("#node-source-name")).to_have_text(relative)
+                    expect(source.locator("#node-files-tree").get_by_role("button", name="entrypoint.py")).to_be_visible()
+                    expect(source.locator("#node-files-tree").get_by_text("alias.py")).to_have_count(0)
                     editor = source.get_by_role("textbox", name="Source code")
                     expect(editor).to_have_value(invalid)
                     editor.fill(original)
                     source.get_by_role("button", name="Save", exact=True).click()
-                    expect(source.locator("#flow-source-message")).to_contain_text("Saved.")
+                    expect(source.locator("#node-source-message")).to_contain_text("Saved.")
                     self.assertEqual(node.read_text(), original)
-                    source.get_by_role("button", name="Close", exact=True).click()
+                    source.get_by_role("button", name="Close node files").click()
                     expect(run).to_be_enabled()
                     run.click()
                     expect(tab).to_contain_text("Succeeded")
@@ -123,7 +128,7 @@ class ApplicationSavedSourceTests(unittest.TestCase):
             run = page.get_by_role("button", name="Run flow", exact=True)
             tab = page.get_by_role("tab", name="Main")
             graph = page.frame_locator('iframe[title="Main recovery graph"]')
-            edit_node = graph.get_by_role("button", name="Edit Start source")
+            edit_node = graph.get_by_role("button", name="Inspect Start")
             with application(state) as url:
                 workspace = create_workspace(page, url, state, root)
                 flow = root / "flow.py"
@@ -137,30 +142,28 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                 node.write_text("def invalid(\n")
                 workspace.click()
                 expect(edit_node).to_be_visible()
-                expect(graph.get_by_role("button", name="Edit Finish source")).to_be_visible()
+                expect(graph.get_by_role("button", name="Inspect Finish")).to_be_visible()
                 expect(graph.get_by_text("Depends on Start", exact=True)).to_have_count(1)
-                expect(result).to_be_hidden()
+                expect(page.locator("#notice")).to_be_hidden()
                 expect(tab).to_contain_text("Ready")
                 run.click()
                 expect(tab).to_contain_text("Failed")
                 expect(result).to_contain_text("nodes/start/entrypoint.py:1")
-                edit_node.click()
-                source = page.get_by_role("dialog", name="Edit source")
-                expect(source.get_by_label("Python file")).to_have_value("nodes/start/entrypoint.py")
+                source = open_node_files(graph)
+                expect(source.locator("#node-source-name")).to_have_text("nodes/start/entrypoint.py")
                 source.get_by_role("textbox", name="Source code").fill(valid)
                 source.get_by_role("button", name="Save").click()
-                expect(source.locator("#flow-source-message")).to_contain_text("Saved.")
-                source.get_by_role("button", name="Close").click()
+                expect(source.locator("#node-source-message")).to_contain_text("Saved.")
+                source.get_by_role("button", name="Close node files").click()
                 run.click()
                 expect(tab).to_contain_text("Succeeded")
                 expect(page.frame_locator('iframe[title="Main flow"]').get_by_role("button", name="Inspect Start")).to_be_visible()
                 page.get_by_role("tab", name="Broken definition").click()
                 draft = page.frame_locator('iframe[title="Broken definition recovery graph"]')
-                draft.get_by_role("button", name="Edit flow.py source").click()
-                source = page.get_by_role("dialog", name="Edit source")
+                source = open_node_files(draft, "flow.py")
                 expect(source.get_by_role("textbox", name="Source code")).to_have_value("def invalid(\n")
                 expect(result).to_be_hidden()
-                source.get_by_role("button", name="Close").click()
+                source.get_by_role("button", name="Close node files").click()
 
             flow.write_text("def invalid(\n")
             with application(state) as url:

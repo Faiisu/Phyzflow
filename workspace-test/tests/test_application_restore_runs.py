@@ -12,12 +12,13 @@ import unittest
 
 from playwright.sync_api import expect
 
-from browser_support import browser_page
+from browser_support import browser_page, show_panel
 from test_application import read_application_line, sign_in
 from test_application_crash_restart import kill_worker
 from test_application_lifecycle import create_workspace, process_exited, wait_for
 from workspace_sdk.history import RunHistory
 from workspace_sdk.runner import Flow, Step, Output, run
+from workspace_sdk.sheet_locks import SheetEditLease
 from workspace_sdk.sheet_runs import RunStateStore
 from workspace_sdk.sheets import create_sheet, discover_flows, initialize_workspace
 from workspace_sdk.ui_settings import load_ui_settings
@@ -470,12 +471,35 @@ def start():
                     expect(page.locator("#recovery-hint")).to_be_hidden()
                     expect(page.locator("#notice-message")).to_have_text("Flow stopped.")
                     graph = page.frame_locator('iframe[title="Manual recovery graph"]')
-                    graph.get_by_role("button", name="Edit Start source").click()
-                    editor = page.get_by_role("dialog", name="Edit source")
-                    expect(editor.get_by_label("Python file")).to_have_value("nodes/start/entrypoint.py")
-                    editor.get_by_role("button", name="Close", exact=True).click()
+                    expect(graph.locator("#panel-switcher > summary")).to_be_visible()
+                    show_panel(graph, "Flow outline")
+                    show_panel(graph, "Inspector")
+                    graph.locator("#outline-list").get_by_role("button", name="Start").click()
+                    view_files = graph.get_by_role("button", name="View files")
+                    editor = graph.get_by_role("dialog", name="Start files")
+                    source = editor.get_by_role("textbox", name="Source code")
+                    lease = SheetEditLease(stopped_dir)
+                    lock = lease.acquire("test-editor", "mcp", "Test editor")
+                    try:
+                        view_files.click()
+                        expect(source).to_have_attribute("readonly", "")
+                        expect(editor.get_by_role("button", name="Save", exact=True)).to_be_disabled()
+                        editor.get_by_role("button", name="Close node files").click()
+                    finally:
+                        lease.release("test-editor", lock["session_id"])
+                    view_files.click()
+                    expect(editor.locator("#node-source-name")).to_have_text("nodes/start/entrypoint.py")
+                    expect(source).to_be_editable()
+                    replacement = 'def start():\n    return "Edited while stopped"\n'
+                    source.fill(replacement)
+                    editor.get_by_role("button", name="Save", exact=True).click()
+                    expect(editor.locator("#node-source-message")).to_contain_text("Saved.")
+                    self.assertEqual((stopped_dir / "nodes/start/entrypoint.py").read_text(), replacement)
+                    editor.get_by_role("button", name="Close node files").click()
                     expect(page.get_by_role("button", name="Run flow", exact=True)).to_be_enabled()
                     expect(page.get_by_role("tab", name="Manual").locator(".sheet-status")).to_have_text("Stopped")
+                    flows = page.request.get(page.url + "workspace").json()["flows"]
+                    self.assertFalse(next(flow for flow in flows if flow["name"] == "Manual")["worker_ready"])
                     self.assertEqual(len(read_lines(stopped_dir / "starts")), 1)
 
                     (root / "finish").touch()

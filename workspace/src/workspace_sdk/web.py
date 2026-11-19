@@ -108,6 +108,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             result = edit_fn()
         except SheetLockedError as error:
             self.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
+        except FlowBusy as error:
+            self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
         except FileNotFoundError:
             self.send_json({"error": not_found_error}, HTTPStatus.NOT_FOUND)
         except SourceChanged:

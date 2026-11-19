@@ -382,9 +382,12 @@ if (workspaceToolbar || recoveryView) {
   panelSwitcher.querySelector('[aria-controls="panel-toolbar"]').hidden = true;
 }
 if (recoveryView) {
-  for (const name of drawerPanels) setPanel(name, false);
-  panelSwitcher.hidden = true;
-  document.querySelector('[data-close-panel="zoom"]').hidden = true;
+  document.querySelector("#visualize-list").replaceChildren(
+    element("p", "Open or run the flow to load dashboards.", "muted"),
+  );
+  document.querySelector("#visualize-refresh").disabled = true;
+  document.querySelector("#visualize-node").disabled = true;
+  saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
 }
 if (compactPanelLayout.matches) syncPanelLayout();
 compactPanelLayout.addEventListener("change", syncPanelLayout);
@@ -527,7 +530,7 @@ function sourceIsDirty() {
 }
 
 function nodeSourceLocked() {
-  return stopPhase === "stopped" ||
+  return stopPhase === "stopping" ||
     Boolean(externalEditLockMessage()) ||
     (runInProgress && !(editRunningSource && currentSource?.path.endsWith(".py")));
 }
@@ -572,11 +575,15 @@ nodeFilesDialog.addEventListener("close", () => {
   }
 });
 
+function nodeFilesBase() {
+  return stopPhase === "stopped" ? window.parent.phyzflowRecoveryNodeBase?.(window) ?? "" : "";
+}
+
 async function requestSource(index, data, signal) {
   const headers = { "Content-Type": "application/json" };
   const sessionId = currentEditSessionId();
   if (sessionId) headers["X-Phyzflow-Edit-Session"] = sessionId;
-  const response = await fetch(`node-source/${index}`, {
+  const response = await fetch(`${nodeFilesBase()}node-source/${index}`, {
     method: "POST",
     headers,
     body: JSON.stringify(data),
@@ -593,7 +600,7 @@ async function requestSource(index, data, signal) {
 }
 
 async function openSource(index, path, line = null) {
-  if (stopPhase === "stopped" || !canLeaveSource()) return;
+  if (!canLeaveSource()) return;
   nodeSourceRequest?.abort();
   const request = new AbortController();
   nodeSourceRequest = request;
@@ -625,7 +632,13 @@ async function openSource(index, path, line = null) {
       }
     }
     for (const button of nodeFilesTree.querySelectorAll("[data-file]")) {
-      button.setAttribute("aria-current", String(button.dataset.file === path));
+      const selected = button.dataset.file === path;
+      button.setAttribute("aria-current", String(selected));
+      if (selected) {
+        for (let folder = button.closest("details"); folder; folder = folder.parentElement.closest("details")) {
+          folder.open = true;
+        }
+      }
     }
   } catch (error) {
     if (!request.signal.aborted) nodeSourceMessage.textContent = error.message;
@@ -702,10 +715,7 @@ function fileTree(entries, parent, source, index) {
 
 async function showNodeFiles(id, index, source, line = null, preferSettings = false) {
   if (!canLeaveSource()) return;
-  if (stopPhase === "stopped") {
-    window.parent.phyzflowEditNodeSource?.(window, source);
-    return;
-  }
+  source = source?.replaceAll("\\", "/");
   nodeFilesRequest?.abort();
   nodeSourceRequest?.abort();
   nodeSourceRequest = null;
@@ -729,7 +739,7 @@ async function showNodeFiles(id, index, source, line = null, preferSettings = fa
       }
       if (nodeFilesEditLock.editLock) sheetEditLock = nodeFilesEditLock.editLock;
     }
-    const response = await fetch(`node-files/${index}`, { signal: request.signal });
+    const response = await fetch(`${nodeFilesBase()}node-files/${index}`, { signal: request.signal });
     if (!response.ok) throw new Error();
     const { path, entries, truncated, settings } = await response.json();
     if (request.signal.aborted) return;
@@ -741,9 +751,14 @@ async function showNodeFiles(id, index, source, line = null, preferSettings = fa
     nodeFilesPath.hidden = false;
     nodeFilesTree.replaceChildren(fileTree(entries, path === "." ? "" : path, source, index));
     nodeFilesMessage.textContent = truncated ? "Showing part of this folder tree." : "";
-    const listed = [...nodeFilesTree.querySelectorAll("[data-file]")].some(button => button.dataset.file === source);
-    if (preferSettings && settings) await openSource(index, settings);
-    else if (listed || line !== null) await openSource(index, source, line);
+    const files = [...nodeFilesTree.querySelectorAll("[data-file]")].map(button => button.dataset.file);
+    const diagnostic = recoveryView ? window.parent.phyzflowRecoveryDiagnostic?.(window) ?? "" : "";
+    const errorFile = files.find(file => diagnostic.includes(`/${file}:`) || diagnostic.startsWith(`${file}:`));
+    if (errorFile) {
+      const location = diagnostic.slice(diagnostic.indexOf(`${errorFile}:`) + errorFile.length + 1);
+      await openSource(index, errorFile, Number.parseInt(location, 10));
+    } else if (preferSettings && settings) await openSource(index, settings);
+    else if (files.includes(source) || line !== null) await openSource(index, source, line);
   } catch (error) {
     if (!request.signal.aborted) nodeFilesMessage.textContent = "Could not load the node files. Close this view and try again.";
   }
@@ -994,24 +1009,21 @@ function positionGraph(project) {
     node.style.setProperty("--lane", row);
     node.classList.toggle("has-input", step.dependencies.length > 0);
     node.classList.toggle("has-output", producers.has(step.id));
-    const state = element("p", recoveryView ? "Edit source" : "Idle", "state badge");
+    const state = element("p", "Idle", "state badge");
     const duration = element("span", "", "node-duration");
     duration.hidden = true;
     const metrics = element("div", "", "node-metrics");
     metrics.append(state, duration);
     const number = String(index + 1).padStart(2, "0");
-    const select = element("button", "", recoveryView ? "inspect-node edit-source-node" : "inspect-node");
+    const select = element("button", "", "inspect-node");
     select.type = "button";
-    select.setAttribute("aria-label", recoveryView ? `Edit ${step.id} source` : `Inspect ${step.id}`);
+    select.setAttribute("aria-label", `Inspect ${step.id}`);
     select.setAttribute("aria-pressed", "false");
     select.addEventListener("click", () => {
       inspectNode(step, project);
-      if (recoveryView) window.parent.phyzflowEditNodeSource?.(window, step.source);
-      else if (compactPanelLayout.matches) setPanel("inspector", true).querySelector("[data-close-panel]").focus();
+      if (recoveryView || compactPanelLayout.matches) setPanel("inspector", true).querySelector("[data-close-panel]").focus();
     });
-    if (!recoveryView) {
-      node.addEventListener("dblclick", () => showNodeFiles(step.id, index, step.source, null, true));
-    }
+    node.addEventListener("dblclick", () => showNodeFiles(step.id, index, step.source, null, true));
     const outlineSelect = element("button", "", "outline-node");
     outlineSelect.type = "button";
     outlineSelect.setAttribute("aria-pressed", "false");
@@ -1307,6 +1319,7 @@ function showRunStreamError(message) {
 window.addEventListener("workspace-stop", event => {
   const { phase, discardUnsaved } = event.detail;
   stopPhase = phase;
+  if (phase === "stopped") runInProgress = false;
   updateRunControls();
   if (phase === "stopped") {
     setStatus("stopped", "Stopped");
@@ -1321,8 +1334,6 @@ window.addEventListener("workspace-stop", event => {
     result.querySelector(".run-stream-error")?.remove();
     resetInput.disabled = saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
     for (const control of document.querySelectorAll(".open-error-source")) control.disabled = true;
-    nodeSourceInput.readOnly = true;
-    saveNodeSource.disabled = true;
     if (discardUnsaved && nodeFilesDialog.open) nodeFilesDialog.close();
   } else if (!phase && deferredRunError) {
     showRunStreamError(deferredRunError);
@@ -1409,6 +1420,7 @@ async function reconnectRun() {
       if (response.status === 503 || response.status === 404 || response.status === 409) break;
       if (!response.ok) throw new Error("Could not reconnect to the running flow.");
       const snapshot = await response.json();
+      if (stopPhase === "stopped") return;
       // A POST stream already rendered this run; only attach to a different owner.
       const runId = snapshot.events.find(([, message]) => message.run_id)?.[1].run_id;
       const consoleOnly = snapshot.events.length > 0 && snapshot.events.every(([, item]) => item.kind === "console");

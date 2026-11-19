@@ -44,7 +44,7 @@ def node_settings_path(root: Path, filename: str | None) -> Path | None:
     return None
 
 
-def node_files(root: Path, filename: str | None) -> dict:
+def node_files(root: Path, filename: str | None, *, include_missing_settings: bool = True) -> dict:
     location = node_location(root, filename)
     if location is None:
         return {"path": None, "entries": [], "truncated": False}
@@ -78,7 +78,9 @@ def node_files(root: Path, filename: str | None) -> dict:
     entries = read_folder(folder, 0)
     settings = node_settings_path(root, filename)
     settings_path = None
-    if settings is not None and (settings.is_file() or not settings.exists()) and not settings.is_symlink():
+    if settings is not None and not settings.is_symlink() and (
+        settings.is_file() or (include_missing_settings and not settings.exists())
+    ):
         entries = [{"name": SETTINGS_FILENAME, "children": None}] + [
             entry for entry in entries if entry["name"] != SETTINGS_FILENAME
         ]

@@ -33,12 +33,9 @@
   </header>
   <main id="sheets" aria-label="Flow sheets">
     <div id="notice" class="notice">
-      <p id="recovery-hint" hidden>Last loaded graph. Select a node to edit its source.</p>
+      <p id="recovery-hint" hidden>Last loaded graph. Inspect a node to view its files.</p>
       <p id="notice-message" role="status">Loading flows…</p>
-      <div class="notice-actions">
-        <button type="button" id="recover-flow-source" hidden>Edit source</button>
-        <button type="button" id="open-flow" hidden>Open flow</button>
-      </div>
+      <button type="button" id="open-flow" hidden>Open flow</button>
     </div>
   </main>
   <footer class="sheet-bar">
@@ -48,11 +45,6 @@
   <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
     <form>
       <h1 id="flow-source-title">Edit flow.py</h1>
-      <p id="flow-source-diagnostic" class="dialog-hint" hidden></p>
-      <label id="flow-source-files" hidden>
-        Python file
-        <select id="flow-source-path"></select>
-      </label>
       <textarea id="flow-source-input" aria-label="Source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" disabled></textarea>
       <p id="flow-source-message" role="status"></p>
       <p id="source-change-message" aria-live="polite" hidden>Source changed. Reload pending.</p>

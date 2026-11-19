@@ -266,6 +266,15 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 left_frame = page.frame_locator('iframe[title="Left flow"]')
                 status = page.locator("#workspace-flow-status")
                 expect(left_frame.locator(".node .state")).to_have_text("Running")
+                flows = page.request.get(f"{page.url}workspace").json()["flows"]
+                left_index = next(index for index, flow in enumerate(flows) if flow["name"] == "Left")
+                rejected = page.request.post(
+                    f"{page.url}flows/{left_index}/recovery/node-source/0",
+                    headers={"Origin": url},
+                    data={"path": "nodes/start/entrypoint.py", "source": "def start(): pass", "revision": "0" * 64},
+                )
+                self.assertEqual(rejected.status, 409)
+                self.assertIn("while the flow is running", rejected.json()["error"])
                 stop_requests = []
                 page.route("**/flows/*/stop", lambda route: stop_requests.append(route))
                 with page.expect_request("**/flows/*/stop"):
@@ -283,12 +292,20 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
                 expect(page.get_by_role("button", name="Open flow", exact=True)).to_be_hidden()
                 left_frame.get_by_role("button", name="Inspect Start").dblclick()
-                editor = page.get_by_role("dialog", name="Edit source")
-                expect(editor.get_by_label("Python file")).to_have_value("nodes/start/entrypoint.py")
-                editor.locator("#flow-source-input").fill('def start():\n    return "Edited after stopping"\n')
+                editor = left_frame.get_by_role("dialog", name="Start files")
+                expect(editor.locator("#node-source-name")).to_have_text("nodes/start/settings.json")
+                source = editor.get_by_role("textbox", name="Source code")
+                original_settings = source.input_value()
+                source.fill("[]")
                 editor.get_by_role("button", name="Save", exact=True).click()
-                expect(editor.locator("#flow-source-message")).to_contain_text("Saved.")
-                editor.get_by_role("button", name="Close", exact=True).click()
+                expect(editor.locator("#node-source-message")).to_have_text("Settings defaults must be a JSON object.")
+                source.fill(original_settings)
+                editor.get_by_role("button", name="entrypoint.py", exact=True).click()
+                expect(editor.locator("#node-source-name")).to_have_text("nodes/start/entrypoint.py")
+                source.fill('def start():\n    return "Edited after stopping"\n')
+                editor.get_by_role("button", name="Save", exact=True).click()
+                expect(editor.locator("#node-source-message")).to_contain_text("Saved.")
+                editor.get_by_role("button", name="Close node files").click()
                 expect(status).to_have_text("Stopped")
                 state = page.request.get(f"{page.url}workspace").json()
                 self.assertFalse(next(flow for flow in state["flows"] if flow["name"] == "Left")["worker_ready"])

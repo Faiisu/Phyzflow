@@ -28,6 +28,8 @@ from uuid import uuid4
 from .agent_supervisor import spawn_supervised
 from .execution import FlowBusy, sheet_busy, sheet_lock
 from .history import RunHistory
+from .node_settings import parse_setting_defaults
+from .node_sources import edit_source_file, node_files, node_settings_path, node_source_path
 from .project import ValidationError, load_project
 from .sheet_locks import SheetEditLease, SheetLockedError
 from .sheet_runs import RunStateStore, SheetRun
@@ -43,7 +45,10 @@ from .sheets import (
     source_stamp,
 )
 from .ui_settings import UISettings, ZoomSettings
-from .web import FLOW_VIEW_ASSETS, FLOW_VIEW_SUBPATH_PATTERN, STATIC, UIRequestHandler, is_flow_view_route, sample_input, ui_address
+from .web import (
+    FLOW_VIEW_ASSETS, FLOW_VIEW_SUBPATH_PATTERN, NODE_FILES_ROUTE, NODE_SOURCE_ROUTE, STATIC,
+    UIRequestHandler, is_flow_view_route, sample_input, ui_address,
+)
 
 if TYPE_CHECKING:
     from .windows_worker import WindowsWorker
@@ -51,6 +56,8 @@ if TYPE_CHECKING:
 
 VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
 RECOVERY_PATH = re.compile(r"/flows/([0-9]{1,8})/recovery(/[^/]*)")
+RECOVERY_NODE_FILES = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_FILES_ROUTE}")
+RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE_ROUTE}")
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
 EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
 MAX_CRASH_RETRIES = 3
@@ -840,6 +847,65 @@ def workspace_routes(
             filename = "flow.py" if relative == "flow.py" else "source file"
             self.request.send_source_edit(perform_edit, not_found_error=f"This sheet's {filename} is unavailable.")
 
+        def recovery_node(self, index: int, node: int, *, edit: bool = False) -> None:
+            sheet = sheets[index] if index < len(sheets) else None
+            if sheet is None:
+                self.request.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if edit:
+                if self.request.headers.get_content_type() != "application/json":
+                    self.request.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                    return
+                try:
+                    data = self.request.read_json_dict()
+                    path, source, revision = data.get("path"), data.get("source"), data.get("revision")
+                    if not isinstance(path, str) or (
+                        "source" in data and (not isinstance(source, str) or not isinstance(revision, str))
+                    ):
+                        raise ValueError
+                except (ValueError, UnicodeError):
+                    self.request.send_json(
+                        {"error": "Send a file path and, to save, the source and revision."}, HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+            with sheet.lock:
+                if sheet.closing or sheet.workspace_closing():
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                graph = sheet.recovery_graph or sheet.source_graph()
+                if node >= len(graph["steps"]):
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                filename = graph["steps"][node]["source"]
+                if not edit:
+                    try:
+                        data = node_files(sheet.root, filename, include_missing_settings=False)
+                    except (OSError, RuntimeError):
+                        self.request.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not read the node folder.")
+                    else:
+                        self.request.send_json(data)
+                    return
+                def perform_edit() -> dict[str, str]:
+                    target = node_source_path(sheet.root, filename, path)
+                    if source is None:
+                        return edit_source_file(target, None, None)
+                    if sheet.status() in ("running", "stopping"):
+                        raise FlowBusy("Cannot edit node files while the flow is running.")
+                    if sheet.worker_ready():
+                        raise FlowBusy("The flow is open. Reopen the node files in the live sheet.")
+
+                    def save() -> dict[str, str]:
+                        if target == node_settings_path(sheet.root, filename):
+                            parse_setting_defaults(source)
+                        return edit_source_file(target, source, revision)
+
+                    with sheet_lock(sheet.root):
+                        return sheet.edit_lease.write_locked(
+                            "web", self.request.headers.get("X-Phyzflow-Edit-Session"), save, path=path,
+                        )
+
+                self.request.send_source_edit(perform_edit, not_found_error="This source file is unavailable in the node folder.")
+
         def edit_lock(self, index: int) -> None:
             sheet = sheets[index] if index < len(sheets) else None
             if closing or sheet is None or sheet.closing:
@@ -870,7 +936,7 @@ def workspace_routes(
                 else:
                     force_info = sheet.edit_lease.force_open()
                     reload_error = None
-                    if force_info["forced"] and sheet.status() not in ("running", "stopping"):
+                    if force_info["forced"] and sheet.worker_ready() and sheet.status() not in ("running", "stopping"):
                         try:
                             sheet.open(reload=True)
                         except ReloadConflict:
@@ -891,8 +957,7 @@ def workspace_routes(
                     }
                     if reload_error is not None:
                         result["reload_error"] = reload_error
-                    if interpreter is not None:
-                        result["worker_ready"] = sheet.worker_ready()
+                    result["worker_ready"] = sheet.worker_ready()
             except SheetLockedError as error:
                 self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
             except (ValueError, OSError) as error:
@@ -994,11 +1059,14 @@ def workspace_routes(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if node := RECOVERY_NODE_FILES.fullmatch(self.path):
+                self.recovery_node(int(node[1]), int(node[2]))
+                return
             if recovery := RECOVERY_PATH.fullmatch(self.path):
                 index = int(recovery[1])
                 sheet = sheets[index] if index < len(sheets) else None
                 graph = sheet.recovery_graph if sheet is not None else None
-                if sheet is None or (graph is None and interpreter is None):
+                if sheet is None:
                     self.request.send_error(HTTPStatus.NOT_FOUND)
                 elif recovery[2] == "/project":
                     self.request.send_json(graph if graph is not None else sheet.source_graph())
@@ -1059,6 +1127,9 @@ def workspace_routes(
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if node := RECOVERY_NODE_SOURCE.fullmatch(self.path):
+                self.recovery_node(int(node[1]), int(node[2]), edit=True)
                 return
             if interpreter is not None and (run := re.fullmatch(r"/flows/([0-9]{1,8})/run", self.path)):
                 index = int(run[1])
