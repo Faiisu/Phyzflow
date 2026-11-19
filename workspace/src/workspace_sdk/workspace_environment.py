@@ -31,6 +31,14 @@ def folders_overlap(left: Path, right: Path) -> bool:
     )
 
 
+def is_protected_path(path: Path, protected_folders: tuple[Path, ...]) -> bool:
+    resolved = path.resolve(strict=False)
+    return any(
+        folders_overlap(path, folder) or folders_overlap(resolved, folder)
+        for folder in protected_folders
+    )
+
+
 def _verify_python_312_venv(environment: Path, interpreter: Path) -> None:
     try:
         if environment.is_symlink():
@@ -109,10 +117,9 @@ def _resolve_package_spec(
     raw_path = Path(spec) if Path(spec).is_absolute() else (root / spec)
     if raw_path.is_symlink():
         raise ValueError("Package symbolic links are not allowed.")
+    if is_protected_path(raw_path, protected_folders):
+        raise ValueError("Protected application paths cannot be used as package sources.")
     resolved = raw_path.resolve(strict=False)
-    for folder in protected_folders:
-        if folders_overlap(raw_path, folder) or folders_overlap(resolved, folder):
-            raise ValueError("Protected application paths cannot be used as package sources.")
     for internal in (root / ".workspace", root / ".venv"):
         if folders_overlap(raw_path, internal) or folders_overlap(resolved, internal):
             raise ValueError("Workspace internal directories cannot be used as package sources.")

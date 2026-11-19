@@ -500,3 +500,20 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     )
                     self.assertTrue(rejected_after_restart.is_error)
                     self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
+
+    def test_invalidated_sessions_are_not_evicted_after_many_force_opens(self):
+        from workspace_sdk.sheet_locks import MAX_TRACKED_SESSIONS, SheetEditLease, SheetLockedError
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lease = SheetEditLease(root)
+            first = lease.acquire("author-0", "mcp", "Author 0")
+            first_id = first["session_id"]
+            for index in range(1, MAX_TRACKED_SESSIONS + 10):
+                lease.force_open()
+                lease.acquire(f"author-{index}", "mcp", f"Author {index}")
+
+            reloaded = SheetEditLease(root)
+            self.assertTrue(reloaded.is_invalidated(first_id))
+            with self.assertRaises(SheetLockedError):
+                reloaded.verify_write("author-0", first_id)

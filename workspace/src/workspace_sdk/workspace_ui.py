@@ -20,6 +20,7 @@ import traceback
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
+from .agent_supervisor import spawn_supervised
 from .execution import FlowBusy, sheet_busy, sheet_lock
 from .history import RunHistory
 from .project import ValidationError, load_project
@@ -354,18 +355,7 @@ class FlowSheet:
                 }
             lifeline = None
             if token is not None and os.name == "posix":
-                reader, lifeline = os.pipe()
-                supervisor = Path(__file__).with_name("agent_supervisor.py")
-                try:
-                    process = Popen(
-                        [sys.executable, "-I", supervisor, str(reader), "-1", "-1", *argv],
-                        cwd=self.root, start_new_session=True, pass_fds=(reader,), **options,
-                    )
-                except BaseException:
-                    os.close(lifeline)
-                    raise
-                finally:
-                    os.close(reader)
+                process, lifeline = spawn_supervised(argv, cwd=self.root, **options)
             else:
                 process = Popen(argv, cwd=self.root, **options)
             worker = self.worker = OpenFlow(process, run_token=token, lifeline=lifeline)
