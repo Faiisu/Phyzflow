@@ -30,7 +30,7 @@ class AgentEditUITests(unittest.TestCase):
                 self.save(client, 'helper.py', 'def value(): return "agent recovered"\n')
                 expect(frame).to_have_attribute('src', '/flows/0/revision/3/view/')
                 expect(view.get_by_role('button', name='Inspect Updated')).to_be_visible()
-                view.get_by_role('button', name='Run flow').click()
+                page.get_by_role('button', name='Run flow').click()
                 expect(view.locator('#result pre')).to_have_text('"agent recovered"')
                 view.get_by_role('button', name='Inspect Updated').click()
                 from browser_support import show_panel
@@ -66,7 +66,7 @@ class AgentEditUITests(unittest.TestCase):
             with local_ui(project) as (url, _):
                 page.goto(url)
                 frame, view = sheet_view(page)
-                view.get_by_role('button', name='Run flow').click()
+                page.get_by_role('button', name='Run flow').click()
                 expect(page.get_by_role('tab', name='Main')).to_contain_text('Running')
                 self.save(client, 'helper.py', 'def value(): return "next run"\n')
                 expect(page.locator('#reload-flow')).to_be_disabled()
@@ -75,5 +75,5 @@ class AgentEditUITests(unittest.TestCase):
                 expect(frame).to_have_attribute('src', '/flows/0/revision/1/view/')
                 runs = page.request.get(url + '/flows/0/revision/1/view/history').json()
                 self.assertEqual([run['status'] for run in runs], ['succeeded'])
-                view.get_by_role('button', name='Run flow').click()
+                page.get_by_role('button', name='Run flow').click()
                 expect(view.locator('#result pre')).to_have_text('"next run"')

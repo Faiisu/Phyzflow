@@ -144,12 +144,12 @@ class AgentJobTests(unittest.TestCase):
                 page.goto(url)
                 frame = page.locator('iframe[title="Main flow"]')
                 view = frame.content_frame
-                expect(view.get_by_role('button', name='Run flow')).to_be_enabled()
+                expect(page.get_by_role('button', name='Run flow')).to_be_enabled()
                 started = client.request('agent-run', 'demo', 'run_flow')['result']
                 expect(page.get_by_role('tab', name='Main')).to_contain_text('Running')
-                expect(view.get_by_role('button', name='Run flow')).to_be_disabled()
+                expect(page.get_by_role('button', name='Run flow')).to_be_disabled()
                 page.reload()
-                expect(view.get_by_role('button', name='Run flow')).to_be_disabled()
+                expect(page.get_by_role('button', name='Run flow')).to_be_disabled()
                 expect(view.locator('#status')).to_have_text('Running')
                 conflict = page.request.post(url + '/flows/0/view/run', data={})
                 self.assertEqual(conflict.status, 409)
@@ -164,7 +164,7 @@ class AgentJobTests(unittest.TestCase):
                 expect(frame).to_have_attribute('src', '/flows/0/revision/1/view/')
                 history = page.request.get(url + '/flows/0/revision/1/view/history/' + job['result']['run_id']).json()
                 self.assertEqual(history['source_version'], job['result']['source_version'])
-                expect(view.get_by_role('button', name='Run flow')).to_be_enabled()
+                expect(page.get_by_role('button', name='Run flow')).to_be_enabled()
 
     def test_frontend_blocks_editing_while_running_and_hides_history_panel(self):
         from browser_support import local_ui, browser_page
@@ -187,7 +187,7 @@ class AgentJobTests(unittest.TestCase):
                 view = frame.content_frame
                 expect(view.locator('#panel-history')).to_have_count(0)
                 expect(view.locator('#dashboard-run')).to_have_count(0)
-                view.get_by_role('button', name='Run flow').click()
+                page.get_by_role('button', name='Run flow').click()
                 expect(page.get_by_role('tab', name='Main')).to_contain_text('Running')
 
                 page.get_by_role('button', name='Edit flow.py').click()
@@ -204,7 +204,7 @@ class AgentJobTests(unittest.TestCase):
                 self.assertEqual(blocked.status, 409)
 
                 (root / 'release').touch()
-                expect(view.get_by_role('button', name='Run flow')).to_be_enabled()
+                expect(page.get_by_role('button', name='Run flow')).to_be_enabled()
                 page.get_by_role('button', name='Edit flow.py').click()
                 expect(dialog.get_by_role('textbox', name='Source code')).to_be_editable()
                 dialog.get_by_role('button', name='Close', exact=True).click()

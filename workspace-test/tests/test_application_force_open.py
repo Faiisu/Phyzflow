@@ -484,7 +484,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
 
                     flow_dialog.get_by_role("button", name="Close").click()
                     expect(flow.get_by_role("button", name="Inspect Saved Node")).to_be_visible()
-                    flow.get_by_role("button", name="Run flow").click()
+                    page.get_by_role("button", name="Run flow").click()
                     result = flow.locator("#result pre")
                     expect(result).to_be_visible()
                     self.assertEqual(json.loads(result.inner_text()), {"message": "Saved output"})

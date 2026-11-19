@@ -42,6 +42,7 @@ To try the dashboard examples, run `.venv/bin/workspace --project workspace-test
 
 ## Documentation
 
+- [Application specification](docs/application-spec.md)
 - [macOS launcher and CLI commands for AI agents](workspace/README.md)
 - [Sample flows, configuration, and tests](workspace-test/README.md)
 - [Deploy the sample flow to Docker on Linux ARM64](workspace-test/deployment-trial/README.md#deploy-and-verify)

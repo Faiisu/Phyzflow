@@ -121,7 +121,7 @@ def start():
 
                 (root / "finish").unlink()
                 (root / "fail").touch()
-                frame.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(frame.get_by_role("heading", name="Start failed")).to_be_visible()
                 expect(main).to_contain_text("Failed")
                 failed_id = states()["Main"]["run_id"]
@@ -130,7 +130,7 @@ def start():
                 self.assertEqual(states()["Main"]["run_id"], failed_id)
 
                 (root / "fail").unlink()
-                frame.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 wait_for(lambda: len(starts()) == 7)
                 running_id = states()["Main"]["run_id"]
                 self.assertNotEqual(running_id, failed_id)

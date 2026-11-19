@@ -11,19 +11,21 @@
     <div class="brand-header">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="brand-title">Phyzflow</span>
-      <span class="brand-tag">Administrator</span>
     </div>
     <h1>Sign in to Phyzflow</h1>
-    <p class="sign-in-subtitle">Use the installation password from your state directory to manage Workspaces and MCP access.</p>
+    <p class="sign-in-subtitle">Sign in with the administrator account for this installation.</p>
     <form method="post" action="/login">
-      <label for="username">Username</label>
-      <input id="username" name="username" autocomplete="username" value="admin" required>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-      <p class="dialog-error" role="alert" hidden>Incorrect username or password.</p>
-      <div class="dialog-actions">
-        <button type="submit" class="primary-action">Sign in</button>
+      <p class="dialog-error" tabindex="-1" role="alert" hidden>Incorrect username or password.</p>
+      <div class="sign-in-field">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" value="admin" required>
       </div>
+      <div class="sign-in-field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" aria-describedby="password-hint" required>
+        <p id="password-hint" class="dialog-hint">Find the initial password in <code>admin/initial-password</code> inside this installation’s state directory on the host.</p>
+      </div>
+      <button type="submit" class="primary-action">Sign in</button>
     </form>
   </main>
 </body>

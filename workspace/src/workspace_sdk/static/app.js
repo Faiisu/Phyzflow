@@ -22,6 +22,11 @@ const centerGraph = document.querySelector("#center-graph");
 const fitGraph = document.querySelector("#fit-graph");
 const fitSelection = document.querySelector("#fit-selection");
 const narrowGraph = window.matchMedia("(max-width: 600px)");
+const compactPanelLayout = window.matchMedia("(max-width: 720px)");
+const drawerPanels = ["outline", "visualize", "inspector", "run"];
+let wideDrawers = [];
+const workspaceToolbar = window.parent !== window && window.parent.phyzflowSyncToolbar;
+const recoveryView = window.location.pathname.endsWith("/recovery/");
 const form = document.querySelector("#run-form");
 const input = document.querySelector("#input");
 const button = document.querySelector("#run-flow");
@@ -194,7 +199,10 @@ function graphAreas() {
   const panelMenu = rect("#panel-switcher > summary");
   const width = viewport.width;
   const top = toolbar.height ? toolbar.bottom - viewport.top : 0;
-  const bottom = Math.min(controls.height ? controls.top : viewport.bottom, panelMenu.top) - viewport.top;
+  const bottom = Math.min(
+    controls.height ? controls.top : viewport.bottom,
+    panelMenu.height ? panelMenu.top : viewport.bottom,
+  ) - viewport.top;
   return [
     { left: 0, right: width, top: Math.max(top, outlinePanel.bottom - viewport.top, sidebar.bottom - viewport.top), bottom },
     { left: outlinePanel.width ? outlinePanel.right - viewport.left : 0,
@@ -318,6 +326,11 @@ canvasLayout = createCanvasLayout({
 });
 
 function setPanel(name, visible) {
+  if (visible && compactPanelLayout.matches && drawerPanels.includes(name)) {
+    for (const other of drawerPanels) {
+      if (other !== name) setPanel(other, false);
+    }
+  }
   const id = `panel-${name}`;
   const panel = document.getElementById(id);
   panel.hidden = !visible;
@@ -326,11 +339,25 @@ function setPanel(name, visible) {
   return panel;
 }
 
+function syncPanelLayout() {
+  if (compactPanelLayout.matches) {
+    wideDrawers = drawerPanels.filter(name => !document.getElementById(`panel-${name}`).hidden);
+    for (const name of drawerPanels) setPanel(name, false);
+  } else {
+    for (const name of drawerPanels) setPanel(name, wideDrawers.includes(name));
+  }
+}
+
 for (const toggle of panelToggles) {
   toggle.addEventListener("click", () => {
     const visible = toggle.getAttribute("aria-pressed") === "false";
-    const panel = setPanel(toggle.getAttribute("aria-controls").slice(6), visible);
+    const name = toggle.getAttribute("aria-controls").slice(6);
+    const panel = setPanel(name, visible);
     if (visible) panel.scrollIntoView({ block: "nearest" });
+    if (visible && compactPanelLayout.matches && drawerPanels.includes(name)) {
+      panelSwitcher.open = false;
+      panel.querySelector("[data-close-panel]").focus();
+    }
   });
 }
 
@@ -351,8 +378,17 @@ for (const button of document.querySelectorAll("[data-close-panel]")) {
   });
 }
 
-if (window.matchMedia("(max-width: 720px)").matches) setPanel("outline", false);
-if (narrowGraph.matches) setPanel("inspector", false);
+if (workspaceToolbar || recoveryView) {
+  setPanel("toolbar", false);
+  panelSwitcher.querySelector('[aria-controls="panel-toolbar"]').hidden = true;
+}
+if (recoveryView) {
+  for (const name of drawerPanels) setPanel(name, false);
+  panelSwitcher.hidden = true;
+  document.querySelector('[data-close-panel="zoom"]').hidden = true;
+}
+if (compactPanelLayout.matches) syncPanelLayout();
+compactPanelLayout.addEventListener("change", syncPanelLayout);
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -956,18 +992,24 @@ function positionGraph(project) {
     node.style.setProperty("--lane", row);
     node.classList.toggle("has-input", step.dependencies.length > 0);
     node.classList.toggle("has-output", producers.has(step.id));
-    const state = element("p", "Idle", "state badge");
+    const state = element("p", recoveryView ? "Edit source" : "Idle", "state badge");
     const duration = element("span", "", "node-duration");
     duration.hidden = true;
     const metrics = element("div", "", "node-metrics");
     metrics.append(state, duration);
     const number = String(index + 1).padStart(2, "0");
-    const select = element("button", "", "inspect-node");
+    const select = element("button", "", recoveryView ? "inspect-node edit-source-node" : "inspect-node");
     select.type = "button";
-    select.setAttribute("aria-label", `Inspect ${step.id}`);
+    select.setAttribute("aria-label", recoveryView ? `Edit ${step.id} source` : `Inspect ${step.id}`);
     select.setAttribute("aria-pressed", "false");
-    select.addEventListener("click", () => inspectNode(step, project));
-    node.addEventListener("dblclick", () => showNodeFiles(step.id, index, step.source, null, true));
+    select.addEventListener("click", () => {
+      inspectNode(step, project);
+      if (recoveryView) window.parent.phyzflowEditRecoveryNode?.(window, step.source);
+      else if (compactPanelLayout.matches) setPanel("inspector", true).querySelector("[data-close-panel]").focus();
+    });
+    if (!recoveryView) {
+      node.addEventListener("dblclick", () => showNodeFiles(step.id, index, step.source, null, true));
+    }
     const outlineSelect = element("button", "", "outline-node");
     outlineSelect.type = "button";
     outlineSelect.setAttribute("aria-pressed", "false");
@@ -996,7 +1038,7 @@ function positionGraph(project) {
     `${steps.length} ${steps.length === 1 ? "node" : "nodes"} / ${count} ${count === 1 ? "edge" : "edges"}`;
   layoutGraph(graphZoom, true);
   if (steps.length) inspectNode(steps[0], project);
-  enableNodeDragging(steps);
+  if (!recoveryView) enableNodeDragging(steps);
   const graphObserver = new ResizeObserver(() => {
     layoutGraph();
     drawEdges(steps);
@@ -1144,6 +1186,7 @@ function drawEdges(steps) {
 function setStatus(value, label = labels[value]) {
   status.textContent = label;
   status.dataset.state = value;
+  if (workspaceToolbar) workspaceToolbar(window);
 }
 
 function clearConsole() {
@@ -1263,6 +1306,7 @@ button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ bl
 
 function updateRunControls() {
   button.disabled = runInput.disabled = !projectReady || runInProgress || Boolean(stopPhase);
+  if (workspaceToolbar) workspaceToolbar(window);
   if (currentSource && !savingSource && !nodeSourceRequest) {
     nodeSourceInput.readOnly = nodeSourceLocked();
     updateSourceDirty();
@@ -1492,7 +1536,7 @@ consoleRetentionDays.addEventListener("input", () => {
 try {
   const [response, consoleResponse] = await Promise.all([
     fetch("project"),
-    fetch("console-logs").catch(() => null),
+    recoveryView ? null : fetch("console-logs").catch(() => null),
   ]);
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
@@ -1505,28 +1549,32 @@ try {
   editRunningSource = project.edit_running_source;
   sheetEditLock = (window.parent !== window ? window.parent.phyzflowSheetEditLock?.(window) : null) ?? project.edit_lock ?? null;
   syncEditLockUI();
-  dashboards = initDashboards(
-    project,
-    canvasLayout.revealDashboard,
-    canvasLayout.releaseDashboard,
-    canvasLayout.setVisualizeModeLayout,
-  );
+  if (!recoveryView) {
+    dashboards = initDashboards(
+      project,
+      canvasLayout.revealDashboard,
+      canvasLayout.releaseDashboard,
+      canvasLayout.setVisualizeModeLayout,
+    );
+  }
   zoomSettings = project.zoom;
   const name = document.querySelector("#project-name");
   name.textContent = project.name;
   name.title = project.name;
   name.hidden = false;
   positionGraph(project);
-  const sample = JSON.stringify(project.input, null, 2);
-  input.value = sample;
-  resetInput.addEventListener("click", () => {
+  if (!recoveryView) {
+    const sample = JSON.stringify(project.input, null, 2);
     input.value = sample;
-    input.focus();
-  });
-  resetInput.disabled = stopPhase === "stopped";
-  projectReady = true;
-  updateRunControls();
-  reconnectRun();
+    resetInput.addEventListener("click", () => {
+      input.value = sample;
+      input.focus();
+    });
+    resetInput.disabled = stopPhase === "stopped";
+    projectReady = true;
+    updateRunControls();
+    reconnectRun();
+  }
 } catch (error) {
   setPanel("run", true);
   result.replaceChildren();

@@ -7,28 +7,52 @@
   <link rel="stylesheet" href="./workspace.css">
   <script type="module" src="./workspace.js"></script>
 </head>
-<body>
+<body class="workspace-page">
+  <header class="workspace-header">
+    <div class="workspace-heading">
+      <a id="workspace-home" href="../../" aria-label="Workspaces" title="Workspaces" hidden>
+        <span class="workspace-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      </a>
+      <span id="workspace-brand" class="workspace-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <h1 id="workspace-name" class="workspace-name">Workspace</h1>
+    </div>
+    <div class="workspace-actions" role="group" aria-label="Workspace actions">
+      <button type="button" id="run-all" class="secondary-action" hidden>Run All</button>
+      <button type="button" id="edit-flow-source" class="secondary-action" aria-haspopup="dialog" disabled>Edit flow.py</button>
+      <button type="button" id="reload-flow" class="secondary-action" disabled>Reload flow</button>
+    </div>
+    <div class="workspace-run">
+      <span id="workspace-flow-status" class="workspace-flow-status" role="status" hidden></span>
+      <button type="button" id="run-sheet" disabled><span class="play-mark" aria-hidden="true"></span>Run flow</button>
+    </div>
+    <div class="workspace-feedback">
+      <p id="reload-message" role="status" hidden></p>
+      <p id="edit-lock-message" aria-live="polite" hidden></p>
+      <button type="button" id="force-open-flow" hidden>Force Open</button>
+    </div>
+  </header>
   <main id="sheets" aria-label="Flow sheets">
     <div id="notice" class="notice">
+      <p id="recovery-hint" hidden>Last loaded graph. Select a node to edit its source.</p>
       <p id="notice-message" role="status">Loading flows…</p>
-      <button type="button" id="open-flow" hidden>Open flow</button>
+      <div class="notice-actions">
+        <button type="button" id="recover-flow-source" hidden>Edit source</button>
+        <button type="button" id="open-flow" hidden>Open flow</button>
+      </div>
     </div>
   </main>
   <footer class="sheet-bar">
-    <a id="workspace-home" href="../../" hidden>Workspaces</a>
-    <span id="workspace-name" class="workspace-name">Workspace</span>
     <div id="sheet-tabs" class="sheet-tabs" role="tablist" aria-label="Flows"></div>
     <button type="button" id="new-sheet" aria-label="New sheet" title="New sheet" disabled>+</button>
-    <button type="button" id="edit-flow-source" aria-haspopup="dialog" disabled>Edit flow.py</button>
-    <button type="button" id="run-all" hidden>Run All</button>
-    <button type="button" id="reload-flow" disabled>Reload flow</button>
-    <span id="reload-message" role="status" hidden></span>
-    <span id="edit-lock-message" class="edit-lock-message" aria-live="polite" hidden></span>
-    <button type="button" id="force-open-flow" hidden>Force Open</button>
   </footer>
   <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
     <form>
       <h1 id="flow-source-title">Edit flow.py</h1>
+      <p id="flow-source-diagnostic" class="dialog-hint" hidden></p>
+      <label id="flow-source-files" hidden>
+        Python file
+        <select id="flow-source-path"></select>
+      </label>
       <textarea id="flow-source-input" aria-label="Source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" disabled></textarea>
       <p id="flow-source-message" role="status"></p>
       <p id="source-change-message" aria-live="polite" hidden>Source changed. Reload pending.</p>

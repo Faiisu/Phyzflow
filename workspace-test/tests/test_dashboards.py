@@ -99,7 +99,7 @@ class DashboardTests(unittest.TestCase):
                     sheet.locator("#input").fill(json.dumps({
                         "config": {"events": events, "score_rounds": 320, "simulate": failure},
                     }))
-                    sheet.locator("#run-flow").click()
+                    page.get_by_role("button", name="Run flow", exact=True).click()
 
                 start(55, "score")
                 expect(dashboard.locator("#run-state")).to_contain_text("failed")

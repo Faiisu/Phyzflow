@@ -546,6 +546,7 @@ canvas { position: absolute; inset: 0; pointer-events: none; }
 .node-duration { color: var(--muted); font: .69rem/1.3 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .node .node-duration { color: #9ea3b2; font-size: .65rem; }
 .inspect-node { position: absolute; inset: 0; width: 100%; border: 0; border-radius: inherit; background: transparent; cursor: grab; }
+.inspect-node.edit-source-node { cursor: pointer; }
 .graph-scroll.is-dragging-node .inspect-node { cursor: grabbing; }
 .inspect-node:hover { background: rgba(255, 255, 255, 0.03); }
 
@@ -787,14 +788,21 @@ body.is-visualize-mode .dashboard-panel :is(.dashboard-controls, .dashboard-acti
   display: none !important;
 }
 
+@media (max-width: 720px) {
+  :is(.outline-stack, .overlay-stack) { width: calc(100vw - 2 * var(--edge)); }
+  .panel-switcher summary, .panel-menu button { min-height: 2.75rem; }
+  .panel-menu { max-height: calc(100dvh - 4rem); overflow: auto; }
+  :is(.outline-stack, .overlay-stack) .close-panel { width: 2.75rem; height: 2.75rem; }
+}
+
 @media (max-width: 600px) {
   :root { --edge: .5rem; --panel-top: 4.2rem; }
   .toolbar { gap: .4rem; padding-inline: .55rem; }
   .toolbar-actions, .toolbar-project { gap: .35rem; }
   .project-name, .document-name, #graph-summary { display: none; }
-  .canvas-controls { max-width: calc(100vw - 6rem); flex-wrap: wrap; justify-content: flex-end; }
-  .outline-stack { width: min(11.5rem, calc(100vw - 2 * var(--edge))); }
-  .overlay-stack { width: min(18rem, calc(100vw - 2 * var(--edge))); }
+  .canvas-controls { max-width: calc(100vw - 6rem); flex-wrap: wrap; justify-content: flex-end; gap: .2rem .35rem; }
+  .canvas-controls button { min-height: 2rem; }
+  :is(.outline-stack, .overlay-stack) { max-height: calc(100dvh - var(--panel-top) - 5.5rem); }
   #graph { grid-auto-columns: 200px; gap: 3.3rem 4.2rem; padding: 1.6rem 3rem 1.6rem 1.6rem; }
   .node { grid-column: var(--lane); grid-row: var(--level); grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .22rem .44rem; }
   .node-metrics { grid-column: 2 / -1; }

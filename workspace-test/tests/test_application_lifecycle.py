@@ -16,6 +16,7 @@ from workspace_sdk.sheets import create_sheet
 def create_workspace(page, url, state, root):
     sign_in(page, url, state)
     page.get_by_role("button", name="Create Workspace").click()
+    page.get_by_role("button", name="Enter a folder path").click()
     page.get_by_label("New folder path").fill(str(root))
     page.get_by_role("button", name="Create", exact=True).click()
     workspace = page.get_by_role("link", name=root.name)
@@ -74,6 +75,63 @@ with Path("units").open("w", buffering=1) as output:
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
+    def test_narrow_workspace_keeps_sheet_tabs_actions_and_flow_panels_reachable(self):
+        with TemporaryDirectory() as temporary, browser_page() as page:
+            parent = Path(temporary).resolve()
+            root = parent / ("Engineering Workspace " * 4).strip()
+            with application(parent / "state") as url:
+                workspace = create_workspace(page, url, parent / "state", root)
+                for name in ("Quality checks", "Results dashboard", "Telemetry pipeline"):
+                    create_sheet(root, name)
+                page.set_viewport_size({"width": 320, "height": 620})
+                workspace.click()
+
+                main = page.get_by_role("tab", name="Main")
+                expect(main).to_contain_text("Ready")
+                for width, height in ((320, 620), (390, 844), (768, 1024), (1440, 900), (320, 620)):
+                    page.set_viewport_size({"width": width, "height": height})
+                    with self.subTest(width=width):
+                        self.assertTrue(page.locator("html").evaluate("root => root.scrollWidth === root.clientWidth"))
+                        self.assertGreater(page.get_by_role("tablist", name="Flows").bounding_box()["width"], 200)
+                        for action in ("Run flow", "Run All", "Edit flow.py", "Reload flow", "New sheet"):
+                            button = page.get_by_role("button", name=action, exact=True).bounding_box()
+                            self.assertLessEqual(button["x"] + button["width"], width)
+
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                inspector = flow.get_by_role("region", name="Node inspector")
+                run = flow.get_by_role("region", name="Run", exact=True)
+                expect(flow.locator("#panel-toolbar")).to_be_hidden()
+                expect(inspector).to_be_hidden()
+                expect(run).to_be_hidden()
+                flow.get_by_role("button", name="Inspect Start").click()
+                expect(inspector).to_be_visible()
+                flow.locator("#panel-switcher summary").click()
+                flow.get_by_role("button", name="Run", exact=True).click()
+                expect(inspector).to_be_hidden()
+                expect(run).to_be_visible()
+                run_flow = page.get_by_role("button", name="Run flow", exact=True)
+                status = page.locator("#workspace-flow-status")
+                run_input = run.get_by_role("textbox", name="Run input JSON")
+                run_input.fill("[]")
+                run_flow.click()
+                expect(status).to_have_text("Failed")
+                run_input.fill("{}")
+                run_flow.click()
+                expect(main).to_contain_text("Succeeded")
+                expect(status).to_have_text("Succeeded")
+
+                main.focus()
+                main.press("End")
+                telemetry = page.get_by_role("tab", name="Telemetry pipeline")
+                expect(telemetry).to_be_focused()
+                expect(telemetry).to_have_attribute("aria-selected", "true")
+                expect(telemetry).to_be_in_viewport(ratio=1)
+                page.get_by_role("button", name="New sheet").click()
+                sheet = page.get_by_role("dialog", name="New sheet")
+                sheet.get_by_label("Sheet name").fill("Mobile follow-up")
+                sheet.get_by_role("button", name="Create sheet").click()
+                expect(page.get_by_role("tab", name="Mobile follow-up")).to_be_focused()
+
     def test_run_all_preserves_the_active_run_and_starts_an_unopened_sheet(self):
         with TemporaryDirectory() as temporary, browser_page() as page:
             parent = Path(temporary).resolve()
@@ -105,7 +163,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 workspace.click()
                 workspace_url = page.url
                 main = page.frame_locator('iframe[title="Main flow"]')
-                main.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(main.get_by_label("stdout")).to_contain_text("Main is waiting")
                 first_id = page.request.get(workspace_url + "workspace").json()["flows"][0].get("run_id")
                 app_frame = page.locator('iframe[title="Main flow"]').get_attribute("src")

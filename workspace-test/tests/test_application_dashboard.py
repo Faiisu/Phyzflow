@@ -512,7 +512,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 panel = flow.frame_locator("#dashboard-preview iframe")
                 expect(panel.locator("#state-badge")).to_have_text("Idle")
 
-                flow.get_by_role("button", name="Run flow", exact=True).click()
+                page.get_by_role("button", name="Run flow", exact=True).click()
                 expect(flow.locator("#status")).to_have_text("Running")
                 expect(panel.locator("#state-badge")).to_have_text("Live")
                 expect(panel.locator("#state-badge")).to_have_attribute("data-state", "live")
@@ -559,7 +559,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 self.assertEqual(panel_succeeded_color, host_succeeded_color)
 
                 flow.get_by_role("textbox", name="Run input JSON").fill('{"fail": true}')
-                flow.get_by_role("button", name="Run flow", exact=True).click()
+                page.get_by_role("button", name="Run flow", exact=True).click()
                 expect(flow.locator("#status")).to_have_text("Failed", timeout=10_000)
                 expect(panel.locator("#state-badge")).to_have_text("Error")
                 expect(panel.locator("#state-badge")).to_have_attribute("data-state", "error")
@@ -720,7 +720,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 expect(panel.get_by_role("heading", name="Live Counter")).to_be_visible()
                 expect(panel.locator("#chart-status")).to_have_text("Run the flow to start counting.")
 
-                flow.get_by_role("button", name="Run flow", exact=True).click()
+                page.get_by_role("button", name="Run flow", exact=True).click()
                 expect(panel.locator("#count")).to_have_text("2", timeout=10_000)
                 expect(panel.locator("#scaled")).to_have_text("20")
                 has_series = panel.locator("#chart").evaluate("""canvas => {

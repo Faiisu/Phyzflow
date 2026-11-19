@@ -72,7 +72,7 @@ def start(secret_input):
                 expect(save_logs).to_be_checked()
                 expect(retention).to_have_value("7")
 
-                flow.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
                 console = flow.get_by_role("region", name="Run console")
                 expect(console.get_by_label("stdout")).to_contain_text("alpha ก beta")
@@ -193,7 +193,7 @@ def start():
                 expect(main_save).to_be_checked()
                 expect(main_retention).to_have_value("7")
 
-                main.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 main_console = main.get_by_role("region", name="Run console")
                 expect(main_console.get_by_label("stdout")).to_contain_text("Main before toggle")
                 expect(main_console.get_by_label("stderr")).to_contain_text("Main stderr before toggle")
@@ -216,7 +216,7 @@ def start():
                 self.assertNotIn("Main after toggle", combined_stream(first_entries, "stdout"))
                 self.assertNotIn("Main stderr after toggle", combined_stream(first_entries, "stderr"))
 
-                main.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
                 expect(main_console.get_by_label("stdout")).to_contain_text("Main after toggle")
                 expect(main_console.get_by_label("stderr")).to_contain_text("Main stderr after toggle")
@@ -248,7 +248,7 @@ def start():
                 secondary = page.frame_locator('iframe[title="Secondary flow"]')
                 expect(secondary.get_by_label("Save console logs")).to_be_checked()
                 expect(secondary.get_by_label("Retention (days)")).to_have_value("7")
-                secondary.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Secondary")).to_contain_text("Succeeded")
                 sec_console = secondary.get_by_role("region", name="Run console")
                 expect(sec_console.get_by_label("stdout")).to_contain_text("Secondary stdout")
@@ -278,7 +278,7 @@ def start():
                 (root / ".workspace" / "logs").write_text("not a directory", encoding="utf-8")
                 workspace.click()
                 flow = page.frame_locator('iframe[title="Main flow"]')
-                flow.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
                 expect(flow.get_by_role("region", name="Run console").get_by_label("stdout")).to_contain_text(
                     "Live despite disk failure"
@@ -343,7 +343,7 @@ def start(mode):
                 workspace.click()
                 workspace_url = page.url
                 main = page.frame_locator('iframe[title="Main flow"]')
-                main.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
                 prior_run_id = page.request.get(workspace_url + "workspace").json()["flows"][0]["run_id"]
                 prior_segment = root / ".workspace" / "logs" / prior_run_id / "2026-11-18.ndjson"
@@ -351,7 +351,7 @@ def start(mode):
 
                 page.get_by_role("tab", name="Secondary").click()
                 secondary = page.frame_locator('iframe[title="Secondary flow"]')
-                secondary.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Secondary")).to_contain_text("Succeeded")
                 sec_run_id = page.request.get(workspace_url + "workspace").json()["flows"][1]["run_id"]
                 sec_segment = secondary_root / ".workspace" / "logs" / sec_run_id / "2026-11-18.ndjson"

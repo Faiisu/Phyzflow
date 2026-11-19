@@ -19,6 +19,7 @@ class ApplicationFlowStepTests(unittest.TestCase):
             with application(state) as url:
                 sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
+                page.get_by_role("button", name="Enter a folder path").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
                 workspace = page.get_by_role("link", name="Diagnostics")
@@ -85,7 +86,7 @@ def report(count):
                 inspector.get_by_role("button", name="Prepare", exact=True).click()
                 expect(prepare).to_have_attribute("aria-pressed", "true")
                 inspector.get_by_role("tab", name="Execution").click()
-                flow.get_by_role("button", name="Run flow", exact=True).click()
+                page.get_by_role("button", name="Run flow", exact=True).click()
                 execution = inspector.get_by_role("tabpanel", name="Execution")
                 expect(execution.locator("#execution-status")).to_have_text("Running")
                 expect(execution.locator("#execution-finished")).to_have_text("Running")
@@ -118,7 +119,7 @@ def report(count):
                 validate.press("Enter")
 
                 flow.get_by_role("textbox", name="Run input JSON").fill('{"fail": true}')
-                flow.get_by_role("button", name="Run flow", exact=True).click()
+                page.get_by_role("button", name="Run flow", exact=True).click()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Failed")
                 expect(execution.locator("#execution-status")).to_have_text("Failed")
                 error = flow.get_by_role("region", name="Run", exact=True)

@@ -7,9 +7,95 @@ from playwright.sync_api import expect
 
 from browser_support import browser_page
 from test_application import application, sign_in
+from test_application_lifecycle import create_workspace
 
 
 class ApplicationSavedSourceTests(unittest.TestCase):
+    def test_repair_a_broken_node_file_after_reopening_the_workspace(self):
+        for failing_run in (False, True):
+            with self.subTest(failing_run=failing_run), TemporaryDirectory() as temp, browser_page() as page:
+                parent = Path(temp).resolve()
+                root = parent / "Recoverable"
+                state = parent / "state"
+                with application(state) as url:
+                    workspace = create_workspace(page, url, state, root)
+                    outside = parent / "outside.py"
+                    outside.write_text("value = 1\n")
+                    (root / "nodes/start/alias.py").symlink_to(root / "flow.py")
+                    filename = "helper.py" if failing_run else "entrypoint.py"
+                    relative = f"nodes/start/{filename}"
+                    node = root / relative
+                    if failing_run:
+                        node.write_text("value = 1\n")
+                    workspace.click()
+                    flow = page.frame_locator('iframe[title="Main flow"]')
+                    tab = page.get_by_role("tab", name="Main")
+                    run = page.get_by_role("button", name="Run flow", exact=True)
+                    if failing_run:
+                        run.click()
+                        expect(tab).to_contain_text("Succeeded")
+                    flow.get_by_role("button", name="Inspect Start").dblclick()
+                    dialog = flow.get_by_role("dialog", name="Start files")
+                    dialog.get_by_role("button", name=filename, exact=True).click()
+                    editor = dialog.get_by_role("textbox", name="Source code")
+                    original = node.read_text()
+                    expect(editor).to_have_value(original)
+                    invalid = "def broken(\n"
+                    editor.fill(invalid)
+                    dialog.get_by_role("button", name="Save", exact=True).click()
+                    expect(dialog.locator("#node-source-message")).to_contain_text("Saved.")
+                    dialog.get_by_role("button", name="Close node files").click()
+                    if failing_run:
+                        run.click()
+                        expect(tab).to_contain_text("Failed")
+                    else:
+                        expect(tab).to_contain_text("Unavailable")
+                    graph = page.frame_locator('iframe[title="Main recovery graph"]')
+                    edit_node = graph.get_by_role("button", name="Edit Start source")
+                    expect(edit_node).to_be_visible(timeout=3000)
+                    expect(run).to_be_disabled()
+                    if failing_run:
+                        page.set_viewport_size({"width": 390, "height": 844})
+                    else:
+                        edit_node.click()
+                        page.get_by_role("dialog", name="Edit source").get_by_role("button", name="Close").click()
+                    page.reload()
+                    expect(page.locator("#notice-message")).to_contain_text(relative)
+                    routes = page.request.get(f"{page.url}workspace").json()
+                    revision = routes["flows"][0]["revision"]
+                    view = f"revision/{revision}/" if revision else ""
+                    self.assertEqual(page.request.get(f"{page.url}flows/0/{view}view/").status, 503)
+                    endpoint = f"{page.url}flows/0/source"
+                    self.assertEqual(page.request.get(endpoint).status, 200)
+                    files = page.request.get(f"{endpoint}?files").json()["files"]
+                    self.assertNotIn("nodes/start/alias.py", files)
+                    for path in ("../outside.py", "nodes/start/alias.py"):
+                        self.assertEqual(page.request.get(f"{endpoint}?path={path}").status, 404)
+                    rejected = page.request.post(
+                        f"{endpoint}?path={relative}",
+                        headers={"Origin": url},
+                        data={"source": original, "revision": "0" * 64},
+                    )
+                    self.assertEqual(rejected.status, 409)
+                    self.assertEqual(node.read_text(), invalid)
+                    recovery = page.get_by_role("button", name="Edit source", exact=True)
+                    expect(recovery).to_be_enabled(timeout=2000)
+                    edit_node.click()
+                    source = page.get_by_role("dialog", name="Edit source")
+                    expect(source.locator("#flow-source-diagnostic")).to_contain_text(relative)
+                    expect(source.get_by_label("Python file")).to_have_value(relative)
+                    editor = source.get_by_role("textbox", name="Source code")
+                    expect(editor).to_have_value(invalid)
+                    editor.fill(original)
+                    source.get_by_role("button", name="Save", exact=True).click()
+                    expect(source.locator("#flow-source-message")).to_contain_text("Saved.")
+                    self.assertEqual(node.read_text(), original)
+                    source.get_by_role("button", name="Close", exact=True).click()
+                    expect(run).to_be_enabled()
+                    expect(page.locator('iframe[title="Main recovery graph"]')).to_have_count(0)
+                    run.click()
+                    expect(tab).to_contain_text("Succeeded")
+
     def test_saved_source_takes_effect_only_on_the_next_run(self):
         for editor in ("browser", "filesystem"):
             with self.subTest(editor=editor), TemporaryDirectory() as temp, browser_page() as page:
@@ -19,6 +105,7 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                 with application(state) as url:
                     sign_in(page, url, state)
                     page.get_by_role("button", name="Create Workspace").click()
+                    page.get_by_role("button", name="Enter a folder path").click()
                     page.get_by_label("New folder path").fill(str(root))
                     page.get_by_role("button", name="Create", exact=True).click()
                     workspace = page.get_by_role("link", name="Source updates")
@@ -62,7 +149,7 @@ flow = Flow((), (Step("Start", start, {}), Step("Finish", finish, {"detail": Out
                     workspace.click()
 
                     flow = page.frame_locator('iframe[title="Main flow"]')
-                    run = flow.get_by_role("button", name="Run flow")
+                    run = page.get_by_role("button", name="Run flow")
                     tab = page.get_by_role("tab", name="Main")
                     run.click()
                     console = flow.get_by_role("region", name="Run console")

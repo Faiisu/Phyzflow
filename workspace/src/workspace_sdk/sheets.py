@@ -66,6 +66,12 @@ def sheet_source_files(root: Path, *, main: bool) -> Iterator[Path]:
                 yield path / name
 
 
+def editable_sheet_python_files(root: Path, *, main: bool) -> Iterator[Path]:
+    for path in sheet_source_files(root, main=main):
+        if path.suffix == ".py" and not path.name.startswith(".") and not path.is_symlink() and path.is_file():
+            yield path
+
+
 def source_stamp(root: Path, *, main: bool = False) -> str:
     """Compute a working-tree stamp across the sheet's Python files and pyproject.toml."""
     entries = []

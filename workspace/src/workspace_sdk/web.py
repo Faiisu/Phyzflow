@@ -136,7 +136,7 @@ def sample_input(root: Path) -> dict:
 
 def serve(
     flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
-    *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str], None] | None = None,
+    *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str, list[dict]], None] | None = None,
     run_token: str | None = None,
 ) -> None:
     graph = []
@@ -557,7 +557,7 @@ def serve(
         if on_ready is None:
             print(f"Workspace UI: {address}", flush=True)
         else:
-            on_ready(address)
+            on_ready(address, graph)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

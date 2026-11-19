@@ -15,41 +15,73 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <span class="brand-title">Phyzflow</span>
       </div>
-      <div class="instance-meta">
-        <span id="workspace-count" class="meta-pill" hidden></span>
-        <span class="meta-pill">Python 3.12 · Streamable MCP</span>
-      </div>
+      <button type="button" id="open-mcp-access" class="utility-action">MCP access</button>
     </div>
     <header class="workspace-list-heading">
       <div class="heading-copy">
-        <h1>Workspaces</h1>
-        <p class="landing-subtitle">Isolated Python 3.12 environments for building, running, and inspecting flows.</p>
+        <h1 id="workspace-list-title" tabindex="-1">Workspaces</h1>
+        <p class="landing-subtitle">Create a project or add an existing folder to run its Python flows.</p>
       </div>
       <div class="workspace-list-actions">
         <button type="button" id="new-workspace" class="primary-action">Create Workspace</button>
         <button type="button" id="add-workspace" class="secondary-action">Add Workspace</button>
-        <button type="button" id="open-mcp-access" class="utility-action">MCP access</button>
       </div>
     </header>
     <div id="workspace-filter-bar" class="workspace-filter-bar" hidden>
       <label for="workspace-filter" class="sr-only">Filter Workspaces</label>
-      <input id="workspace-filter" type="search" placeholder="Filter Workspaces by name or path…" autocomplete="off">
+      <input id="workspace-filter" type="search" placeholder="Filter by name or path…" autocomplete="off">
     </div>
     <p id="workspace-list-message" role="status">Loading Workspaces…</p>
-    <p id="workspace-list-error" class="dialog-error" role="alert" hidden></p>
+    <p id="workspace-list-error" class="dialog-error" role="alert" tabindex="-1" hidden></p>
     <ul id="registered-workspaces" aria-label="Registered Workspaces"></ul>
   </main>
   <dialog id="create-workspace" class="sheet-dialog" aria-labelledby="create-workspace-title">
     <form>
-      <h2 id="create-workspace-title">Create Workspace</h2>
-      <label for="workspace-path">New folder path</label>
-      <input id="workspace-path" name="path" required autofocus>
-      <p id="workspace-path-hint" class="dialog-hint">Enter an absolute path on the Phyzflow host. The parent folder must already exist.</p>
+      <h2 id="create-workspace-title" tabindex="-1">Create Workspace</h2>
+      <p id="workspace-path-hint" class="dialog-hint"></p>
+      <fieldset id="workspace-folder-browser" aria-label="Browse folders">
+        <div class="folder-location">
+          <div>
+            <span id="workspace-location-label">Parent folder</span>
+            <code id="workspace-location" tabindex="-1"></code>
+          </div>
+          <div class="folder-navigation">
+            <button type="button" id="workspace-folder-home" class="secondary-action">Home</button>
+            <button type="button" id="workspace-folder-up" class="secondary-action">Up</button>
+          </div>
+        </div>
+        <p id="workspace-folder-empty" class="dialog-hint" hidden>No subfolders to show.</p>
+        <ul id="workspace-folders" aria-label="Subfolders"></ul>
+      </fieldset>
+      <div id="workspace-folder-name-field" class="workspace-folder-field">
+        <label for="workspace-folder-name">New folder name</label>
+        <input id="workspace-folder-name" name="name" autocomplete="off" spellcheck="false" required>
+      </div>
+      <div id="workspace-manual-path-field" class="workspace-folder-field" hidden>
+        <label for="workspace-path">New folder path</label>
+        <input id="workspace-path" name="path" aria-describedby="workspace-path-hint" autocomplete="off" autocapitalize="none" spellcheck="false" required disabled>
+      </div>
+      <button type="button" id="workspace-path-mode" class="folder-mode">Enter a folder path</button>
       <p id="create-workspace-status" role="status"></p>
-      <p id="create-workspace-error" class="dialog-error" role="alert" hidden></p>
+      <p id="create-workspace-error" class="dialog-error" role="alert" tabindex="-1" hidden></p>
       <div class="dialog-actions">
         <button type="button" id="cancel-workspace">Cancel</button>
         <button type="submit" class="primary-action">Create</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="delete-workspace" class="sheet-dialog" aria-labelledby="delete-workspace-title" aria-describedby="delete-workspace-effect">
+    <form>
+      <h2 id="delete-workspace-title">Delete Workspace?</h2>
+      <div class="workspace-delete-target">
+        <strong id="delete-workspace-name"></strong>
+        <code id="delete-workspace-path"></code>
+      </div>
+      <p id="delete-workspace-effect">Phyzflow will stop any running flows and move this folder to the host’s Trash or Recycle Bin.</p>
+      <p id="delete-workspace-status" role="status"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-delete-workspace" autofocus>Cancel</button>
+        <button type="submit">Move to Trash</button>
       </div>
     </form>
   </dialog>

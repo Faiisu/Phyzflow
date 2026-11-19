@@ -1,12 +1,17 @@
 const workspacePath = window.location.pathname;
 document.querySelector("#workspace-home").hidden = workspacePath === "/";
+document.querySelector("#workspace-brand").hidden = workspacePath !== "/";
 const views = document.querySelector("#sheets");
 const tabs = document.querySelector("#sheet-tabs");
 const notice = document.querySelector("#notice");
 const noticeMessage = document.querySelector("#notice-message");
+const recoveryHint = document.querySelector("#recovery-hint");
 const reopen = document.querySelector("#open-flow");
+const recoverSource = document.querySelector("#recover-flow-source");
 const newSheet = document.querySelector("#new-sheet");
 const runAll = document.querySelector("#run-all");
+const runSheet = document.querySelector("#run-sheet");
+const flowStatus = document.querySelector("#workspace-flow-status");
 const reloadFlow = document.querySelector("#reload-flow");
 const reloadMessage = document.querySelector("#reload-message");
 const editLockMessage = document.querySelector("#edit-lock-message");
@@ -16,6 +21,10 @@ const editFlowSource = document.querySelector("#edit-flow-source");
 const sourceDialog = document.querySelector("#flow-source");
 const sourceForm = sourceDialog.querySelector("form");
 const sourceInput = sourceForm.querySelector("#flow-source-input");
+const sourceTitle = sourceForm.querySelector("#flow-source-title");
+const sourceDiagnostic = sourceForm.querySelector("#flow-source-diagnostic");
+const sourceFiles = sourceForm.querySelector("#flow-source-files");
+const sourcePath = sourceForm.querySelector("#flow-source-path");
 const sourceMessage = sourceForm.querySelector("#flow-source-message");
 const forceOpenSource = sourceForm.querySelector("#force-open-source");
 const saveSource = sourceForm.querySelector('button[type="submit"]');
@@ -257,15 +266,63 @@ function syncFlowSourceLock() {
   }
 }
 
+function needsRecovery(sheet) {
+  return sheet && (sheet.status === "unavailable" || Boolean(sheet.runError));
+}
+
 function updateStatus(sheet, status) {
   sheet.status = status;
+  sheet.view.classList.toggle("is-unavailable", needsRecovery(sheet));
   sheet.indicator.textContent = labels[status] ?? status;
   sheet.indicator.dataset.state = status;
   sheet.stop.disabled = sheet.pending || !["running", "stopping"].includes(status);
   if (sheet === active) syncFlowSourceLock();
 }
 
+function activeRunButton() {
+  if (!active || active.pending || active.frameStopped || needsRecovery(active) ||
+      ["opening", "running", "stopping", "stopped", "unavailable"].includes(active.status)) return null;
+  return active.frame?.contentDocument?.getElementById("run-flow");
+}
+
+function syncToolbar() {
+  const button = activeRunButton();
+  runSheet.disabled = button?.disabled !== false;
+  const frameStatus = button?.ownerDocument.getElementById("status");
+  const frameState = frameStatus?.dataset.state;
+  const state = frameState || active?.status || "";
+  const label = frameState ? frameStatus.textContent : labels[state] ?? state;
+  flowStatus.hidden = !active;
+  if (flowStatus.textContent !== label) flowStatus.textContent = label;
+  flowStatus.dataset.state = state;
+}
+
+window.phyzflowSyncToolbar = frameWindow => {
+  if (active?.frame?.contentWindow === frameWindow) syncToolbar();
+};
+
+runSheet.addEventListener("click", () => activeRunButton()?.click());
+
+function showRecoveryGraph(sheet, visible) {
+  if (!sheet) return;
+  if (visible && !sheet.recoveryFrame) {
+    const frame = element("iframe", "", "sheet-recovery");
+    frame.title = `${sheet.name} recovery graph`;
+    frame.src = `./flows/${sheet.index}/recovery/`;
+    sheet.recoveryFrame = frame;
+    sheet.view.append(frame);
+  }
+  if (sheet.recoveryFrame) sheet.recoveryFrame.hidden = !visible;
+}
+
 function showNotice() {
+  syncToolbar();
+  const recovering = Boolean(needsRecovery(active) && !active.pending);
+  const hasRecoveryGraph = recovering && active.recoverable;
+  recoverSource.hidden = !recovering;
+  recoveryHint.hidden = !hasRecoveryGraph;
+  notice.classList.toggle("is-recovery", hasRecoveryGraph);
+  showRecoveryGraph(active, hasRecoveryGraph);
   reloadFlow.disabled = !active || active.pending || active.status === "running";
   editFlowSource.disabled = !active || active.pending;
   const change = active?.sourceChange && active?.status !== "running" ? "Source changed." : "";
@@ -275,10 +332,9 @@ function showNotice() {
   const lockText = lockNoticeText(active?.editLock);
   editLockMessage.hidden = !lockText;
   if (editLockMessage.textContent !== lockText) editLockMessage.textContent = lockText;
-  editLockMessage.title = lockText;
   forceOpenFlow.hidden = !lockText || Boolean(active?.pending);
   sourceChangeMessage.hidden = !change;
-  const snapshot = Boolean(active?.frameStopped);
+  const snapshot = Boolean(active?.frameStopped) && !hasRecoveryGraph;
   notice.classList.toggle("is-snapshot", snapshot);
   if (!active) {
     notice.hidden = false;
@@ -361,16 +417,7 @@ forceOpenForm.addEventListener("submit", async event => {
     forceOpenDialog.close();
     if (editingFlowSource) {
       try {
-        const { source, revision } = await requestFlowSource(sheet);
-        sourceDraft = {
-          sheet,
-          source,
-          revision,
-          readOnlyLock: false,
-          lockMessage: "",
-        };
-        sourceInput.value = source;
-        sourceInput.disabled = false;
+        await loadFlowSource(sheet, sourceDraft?.path ?? "flow.py", { ok: true });
         sourceMessage.textContent = "Force opened. Loaded latest saved source.";
         syncFlowSourceLock();
         sourceInput.focus();
@@ -390,7 +437,7 @@ forceOpenForm.addEventListener("submit", async event => {
   }
 });
 
-async function requestFlowSource(sheet, changes) {
+async function requestFlowSource(sheet, changes, query = "") {
   const headers = {};
   if (sheet.editSessionId) headers["X-Phyzflow-Edit-Session"] = sheet.editSessionId;
   const options = changes
@@ -402,10 +449,23 @@ async function requestFlowSource(sheet, changes) {
     : Object.keys(headers).length
       ? { headers }
       : undefined;
-  const response = await fetch(`./flows/${sheet.index}/source`, options);
+  const response = await fetch(`./flows/${sheet.index}/source${query}`, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? "Could not access flow.py.");
+  if (!response.ok) throw new Error(data.error ?? "Could not access the source file.");
   return data;
+}
+
+function sourceQuery(path) {
+  return path === "flow.py" ? "" : `?path=${encodeURIComponent(path)}`;
+}
+
+async function loadFlowSource(sheet, path, lock) {
+  const { source, revision } = await requestFlowSource(sheet, null, sourceQuery(path));
+  if (!sourceDialog.open) return;
+  sourceDraft = { sheet, path, source, revision, readOnlyLock: !lock.ok, lockMessage: lock.error ?? "" };
+  sourceInput.value = source;
+  sourceInput.disabled = false;
+  sourceMessage.textContent = lock.ok ? "" : `Read-only · ${lock.error}`;
 }
 
 function flowSourceIsDirty() {
@@ -413,15 +473,32 @@ function flowSourceIsDirty() {
 }
 
 function mayCloseSource() {
-  return !closeSource.disabled && (!flowSourceIsDirty() || window.confirm("Discard unsaved changes to flow.py?"));
+  return !closeSource.disabled && (!flowSourceIsDirty() || window.confirm("Discard unsaved source changes?"));
 }
 
-editFlowSource.addEventListener("click", async () => {
+function recoverySourcePath(files, preferred) {
+  const path = preferred?.replaceAll("\\", "/");
+  if (files.includes(path)) {
+    const parts = path.split("/");
+    const folder = parts[0] === "nodes" && parts.length >= 3
+      ? parts.slice(0, 2).join("/")
+      : parts.slice(0, -1).join("/");
+    const diagnostic = noticeMessage.textContent.replaceAll("\\", "/");
+    return files.find(file => folder && file.startsWith(`${folder}/`) && diagnostic.includes(`/${file}:`)) ?? path;
+  }
+  return files.includes("flow.py") ? "flow.py" : files[0];
+}
+
+async function openSourceEditor(recovering, preferred) {
   const sheet = active;
   pendingSourceSheet = sheet;
   sourceDraft = null;
   sourceInput.value = "";
-  sourceInput.disabled = saveSource.disabled = closeSource.disabled = true;
+  sourceInput.disabled = sourcePath.disabled = saveSource.disabled = closeSource.disabled = true;
+  sourceFiles.hidden = !recovering;
+  sourceTitle.textContent = recovering ? "Edit source" : "Edit flow.py";
+  sourceDiagnostic.hidden = !recovering;
+  sourceDiagnostic.textContent = recovering ? noticeMessage.textContent : "";
   forceOpenSource.hidden = true;
   sourceMessage.textContent = "Loading source…";
   sourceDialog.showModal();
@@ -432,20 +509,23 @@ editFlowSource.addEventListener("click", async () => {
       if (lock.ok) void releaseSheetEdit(sheet, "flow-source");
       return;
     }
-    const { source, revision } = await requestFlowSource(sheet);
+    let path = "flow.py";
+    if (recovering) {
+      const { files } = await requestFlowSource(sheet, null, "?files");
+      if (!files.length) throw new Error("No editable Python files were found.");
+      sourcePath.replaceChildren(...files.map(filename => new Option(filename, filename)));
+      path = recoverySourcePath(files, preferred);
+      sourcePath.value = path;
+      sheet.watching = true;
+    }
+    await loadFlowSource(sheet, path, lock);
     if (!sourceDialog.open) {
       if (lock.ok) void releaseSheetEdit(sheet, "flow-source");
       return;
     }
-    sourceDraft = {
-      sheet, source, revision,
-      readOnlyLock: !lock.ok,
-      lockMessage: lock.ok ? "" : lock.error,
-    };
-    sourceInput.value = source;
-    sourceInput.disabled = false;
-    sourceMessage.textContent = lock.ok ? "" : `Read-only · ${lock.error}`;
-    if (lock.ok) sourceInput.focus();
+    if (recovering) sourcePath.disabled = false;
+    if (recovering) sourcePath.focus();
+    else if (lock.ok) sourceInput.focus();
   } catch (error) {
     if (lock?.ok) void releaseSheetEdit(sheet, "flow-source");
     sourceMessage.textContent = error.message;
@@ -453,6 +533,33 @@ editFlowSource.addEventListener("click", async () => {
     closeSource.disabled = false;
     syncFlowSourceLock();
     if (sourceInput.disabled) closeSource.focus();
+  }
+}
+
+editFlowSource.addEventListener("click", () => openSourceEditor(false));
+recoverSource.addEventListener("click", () => openSourceEditor(true));
+window.phyzflowEditRecoveryNode = (frameWindow, path) => {
+  if (active?.recoveryFrame?.contentWindow === frameWindow && needsRecovery(active) &&
+      !active.pending && !sourceDialog.open) void openSourceEditor(true, path);
+};
+
+sourcePath.addEventListener("change", async () => {
+  const draft = sourceDraft;
+  if (!draft || !mayCloseSource()) {
+    if (draft) sourcePath.value = draft.path;
+    return;
+  }
+  const path = sourcePath.value;
+  sourcePath.disabled = sourceInput.disabled = closeSource.disabled = saveSource.disabled = true;
+  sourceMessage.textContent = "Loading source…";
+  try {
+    await loadFlowSource(draft.sheet, path, { ok: !draft.readOnlyLock, error: draft.lockMessage });
+  } catch (error) {
+    sourcePath.value = draft.path;
+    sourceMessage.textContent = error.message;
+  } finally {
+    sourcePath.disabled = sourceInput.disabled = closeSource.disabled = false;
+    syncFlowSourceLock();
   }
 });
 
@@ -464,11 +571,11 @@ sourceForm.addEventListener("submit", async event => {
   event.preventDefault();
   if (!flowSourceIsDirty() || saveSource.disabled) return;
   const source = sourceInput.value;
-  const { sheet, revision } = sourceDraft;
-  sourceInput.readOnly = saveSource.disabled = closeSource.disabled = true;
+  const { sheet, path, revision } = sourceDraft;
+  sourceInput.readOnly = sourcePath.disabled = saveSource.disabled = closeSource.disabled = true;
   sourceMessage.textContent = "Saving…";
   try {
-    const saved = await requestFlowSource(sheet, { source, revision });
+    const saved = await requestFlowSource(sheet, { source, revision }, sourceQuery(path));
     sourceDraft = { ...sourceDraft, sheet, source, revision: saved.revision };
     sourceMessage.textContent = editRunningSource
       ? "Saved. The next run will use this source."
@@ -476,7 +583,7 @@ sourceForm.addEventListener("submit", async event => {
   } catch (error) {
     sourceMessage.textContent = error.message;
   } finally {
-    closeSource.disabled = false;
+    sourcePath.disabled = closeSource.disabled = false;
     syncFlowSourceLock();
   }
 });
@@ -539,8 +646,12 @@ function showFrame(sheet, revision) {
     const frame = document.createElement("iframe");
     frame.title = `${sheet.name} flow`;
     frame.src = url;
-    frame.addEventListener("load", () => notifyFrameEditLock(sheet));
+    frame.addEventListener("load", () => {
+      notifyFrameEditLock(sheet);
+      if (sheet === active) syncToolbar();
+    });
     sheet.frame = frame;
+    sheet.recoveryFrame = null;
     sheet.frameStopped = false;
     sheet.view.replaceChildren(frame);
   }
@@ -591,7 +702,7 @@ function checkSourceChange(sheet, source) {
     sheet.sourceChangedAt = performance.now();
   }
   if (!source || performance.now() - sheet.sourceChangedAt < 500 ||
-      (editRunningSource && ["succeeded", "failed"].includes(sheet.status)) ||
+      (editRunningSource && !sheet.runError && ["succeeded", "failed"].includes(sheet.status)) ||
       ["running", "opening"].includes(sheet.status) || hasUnsavedSource(sheet) ||
       sheet.frame?.contentDocument?.querySelector("#node-files")?.open ||
       (sheet === active && sourceDialog.open && (flowSourceIsDirty() || closeSource.disabled))) return;
@@ -642,6 +753,7 @@ function selectSheet(sheet) {
     item.view.classList.toggle("is-active", selected);
     item.view.inert = !selected;
   }
+  sheet.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
   if (!sheet.frame && sheet.status !== "stopped" && !sheet.error && !sheet.runError) {
     openFlow(sheet);
   }
@@ -684,7 +796,7 @@ function makeSheet(flow, index) {
 
   const sheet = {
     index, name: flow.name, tab, indicator, stop, group, view,
-    frame: null, frameStopped: false, pending: false, version: 0,
+    frame: null, frameStopped: false, recoveryFrame: null, recoverable: flow.recoverable, pending: false, version: 0,
     revision: flow.revision, runError: flow.error,
     editLock: flow.edit_lock ?? null, editSessionId: null, activeEditors: new Set(), heartbeatTimer: null,
   };
@@ -854,7 +966,8 @@ async function pollStatus() {
         }
       }
       if (flows[sheet.index] && (!sheet.frameStopped || !runAll.hidden) && !sheet.pending && sheet.version === versions[sheet.index]) {
-        const { status, revision, changed_source, error } = flows[sheet.index];
+        const { status, revision, changed_source, error, recoverable } = flows[sheet.index];
+        sheet.recoverable = recoverable;
         if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0)) && !["opening", "unavailable", "stopped"].includes(status) && !hasUnsavedSource(sheet)) {
           sheet.revision = revision;
           sheet.error = null;

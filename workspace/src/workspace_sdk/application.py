@@ -125,10 +125,10 @@ class WorkspaceRegistry:
         return workspace_id
 
 
-def requested_root(value: object) -> Path:
+def requested_root(value: object, *, preserve_whitespace: bool = False) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Enter a folder path on the Phyzflow host.")
-    path = Path(value.strip()).expanduser()
+    path = Path(value if preserve_whitespace else value.strip()).expanduser()
     if not path.is_absolute():
         raise ValueError("Enter an absolute folder path on the Phyzflow host.")
     return path.resolve()
@@ -268,7 +268,7 @@ def serve_application(state_dir: Path, port: int) -> None:
         def sign_in_page(self, *, invalid: bool = False) -> None:
             page = (STATIC / "sign-in.html").read_bytes()
             if invalid:
-                page = page.replace(b'role="alert" hidden', b'role="alert"')
+                page = page.replace(b'role="alert" hidden', b'role="alert" autofocus')
             self.send_response(HTTPStatus.UNAUTHORIZED if invalid else HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
@@ -450,6 +450,9 @@ def serve_application(state_dir: Path, port: int) -> None:
             if route := TOKEN_PATH.fullmatch(self.path):
                 self.change_token(route[1])
                 return
+            if self.path == "/workspace-folders":
+                self.browse_workspace_folders()
+                return
             if self.path != "/workspaces":
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -457,14 +460,55 @@ def serve_application(state_dir: Path, port: int) -> None:
                 if self.headers.get_content_type() != "application/json":
                     raise ValueError("Send a JSON object with the folder path.")
                 body = self.read_json_dict(8192)
-                root = requested_root(body.get("path"))
-                workspace_id = registry.register(root, body.get("action", "create"))
+                action = body.get("action", "create")
+                if action == "create" and "parent" in body:
+                    name = body.get("name")
+                    name = name.strip() if isinstance(name, str) else ""
+                    if name in ("", ".", "..") or Path(name).name != name or "\\" in name or "\0" in name:
+                        raise ValueError("Enter a single folder name.")
+                    root = requested_root(body["parent"], preserve_whitespace=True) / name
+                elif action == "add" and "folder" in body:
+                    root = requested_root(body["folder"], preserve_whitespace=True)
+                else:
+                    root = requested_root(body.get("path"))
+                workspace_id = registry.register(root, action)
             except FileExistsError as error:
                 self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
             except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, sqlite3.Error) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             else:
                 self.send_json({"id": workspace_id}, HTTPStatus.CREATED)
+
+        def browse_workspace_folders(self) -> None:
+            try:
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError
+                body = self.read_json_dict(8192)
+                folder = (
+                    requested_root(body["path"], preserve_whitespace=True)
+                    if "path" in body else Path.home().resolve()
+                )
+                protected = [path for path, _ in registry.protected_folders]
+                if any(same_folder(parent, path) for parent in (folder, *folder.parents) for path in protected):
+                    raise PermissionError
+                with os.scandir(folder) as entries:
+                    folders = [
+                        {"name": entry.name, "path": entry.path}
+                        for entry in entries
+                        if not entry.name.startswith(".")
+                        and entry.is_dir(follow_symlinks=False)
+                        and not any(same_folder(Path(entry.path), path) for path in protected)
+                    ]
+            except ValueError:
+                self.send_json({"error": "Choose an absolute folder path on the Phyzflow host."}, HTTPStatus.BAD_REQUEST)
+            except (OSError, RuntimeError):
+                self.send_json({"error": "Could not open this folder on the Phyzflow host."}, HTTPStatus.BAD_REQUEST)
+            else:
+                self.send_json({
+                    "path": str(folder),
+                    "parent": str(folder.parent) if folder != folder.parent else None,
+                    "folders": sorted(folders, key=lambda entry: (entry["name"].casefold(), entry["name"])),
+                })
 
         def delete_workspace(self, workspace_id: str) -> None:
             try:

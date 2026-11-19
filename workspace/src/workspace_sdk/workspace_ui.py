@@ -17,12 +17,14 @@ from time import monotonic, sleep
 import sys
 from threading import Lock, RLock, Thread
 import traceback
+from urllib.parse import unquote
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
 from .agent_supervisor import spawn_supervised
 from .execution import FlowBusy, sheet_busy, sheet_lock
 from .history import RunHistory
+from .node_sources import edit_source_file
 from .project import ValidationError, load_project
 from .sheet_locks import SheetEditLease, SheetLockedError
 from .sheet_runs import RunStateStore, SheetRun
@@ -32,15 +34,17 @@ from .sheets import (
     create_sheet,
     discover_flows,
     edit_sheet_flow_source,
+    editable_sheet_python_files,
     sheet_source_files,
     source_stamp,
 )
 from .ui_settings import UISettings, ZoomSettings
-from .web import FLOW_VIEW_SUBPATH_PATTERN, STATIC, UIRequestHandler, is_flow_view_route, sample_input, ui_address
+from .web import FLOW_VIEW_ASSETS, FLOW_VIEW_SUBPATH_PATTERN, STATIC, UIRequestHandler, is_flow_view_route, sample_input, ui_address
 
 
 VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
-FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source")
+RECOVERY_PATH = re.compile(r"/flows/([0-9]{1,8})/recovery(/[^/]*)")
+FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
 EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
 MAX_CRASH_RETRIES = 3
 
@@ -57,7 +61,7 @@ def serve_flow(
         with load_project(root, sources, snapshot_sources=snapshot_sources) as flow:
             serve(
                 flow, root, 0, sources, zoom=zoom, run_token=run_token,
-                on_ready=lambda address: publish({"url": address}),
+                on_ready=lambda address, graph: publish({"url": address, "steps": graph, "output": flow.output.step_id}),
             )
     except ValidationError as error:
         publish({"error": str(error)})
@@ -198,6 +202,7 @@ class FlowSheet:
         self.root = root
         self.zoom = zoom
         self.worker: OpenFlow | None = None
+        self.recovery_graph: dict | None = None
         self.inactive_status = "ready"
         self.revision = 0
         self.closing = False
@@ -371,6 +376,9 @@ class FlowSheet:
                 if "error" in reply:
                     raise RuntimeError(reply["error"])
                 worker.url = reply["url"]
+                self.recovery_graph = {
+                    "name": self.root.name, "steps": reply["steps"], "output": reply["output"], "zoom": self.zoom,
+                }
             except BaseException:
                 self.stop_worker(status="unavailable")
                 raise
@@ -743,11 +751,12 @@ def workspace_routes(
             sheet = sheets[index]
             return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
 
-        def flow_source(self, index: int) -> None:
+        def flow_source(self, index: int, query: str | None, path: str | None) -> None:
             source = revision = None
+            relative = unquote(path) if path is not None else "flow.py"
             if self.request.command == "POST":
                 try:
-                    if self.request.headers.get_content_type() != "application/json":
+                    if query == "files" or self.request.headers.get_content_type() != "application/json":
                         raise ValueError
                     data = self.request.read_json_dict()
                     source, revision = data.get("source"), data.get("revision")
@@ -759,26 +768,35 @@ def workspace_routes(
 
             sheet = sheets[index] if index < len(sheets) else None
             if source is not None and interpreter is None and sheet is not None and sheet.status() == "running":
-                self.request.send_json({"error": "Cannot edit flow.py while the flow is running."}, HTTPStatus.CONFLICT)
+                message = f"Cannot edit {'flow.py' if relative == 'flow.py' else 'source'} while the flow is running."
+                self.request.send_json({"error": message}, HTTPStatus.CONFLICT)
                 return
 
-            def perform_edit() -> dict[str, str]:
+            def perform_edit() -> dict:
                 if sheet is None:
                     raise FileNotFoundError
                 with sheet.lock:
                     if sheet.closing or sheet.workspace_closing():
                         raise FileNotFoundError
-                    if source is None:
-                        return edit_sheet_flow_source(sheet.root, None, None)
-                    session_id = self.request.headers.get("X-Phyzflow-Edit-Session")
-                    return sheet.edit_lease.write_locked(
-                        "web",
-                        session_id,
-                        lambda: edit_sheet_flow_source(sheet.root, source, revision),
-                        path="flow.py",
-                    )
+                    if query == "files":
+                        files = editable_sheet_python_files(sheet.root, main=sheet.main)
+                        return {"files": sorted(path.relative_to(sheet.root).as_posix() for path in files)}
 
-            self.request.send_source_edit(perform_edit, not_found_error="This sheet's flow.py is unavailable.")
+                    def edit() -> dict[str, str]:
+                        if relative == "flow.py":
+                            return edit_sheet_flow_source(sheet.root, source, revision)
+                        for file in editable_sheet_python_files(sheet.root, main=sheet.main):
+                            if file.relative_to(sheet.root).as_posix() == relative and file.resolve() == file:
+                                return edit_source_file(file, source, revision)
+                        raise FileNotFoundError
+
+                    if source is None:
+                        return edit()
+                    session_id = self.request.headers.get("X-Phyzflow-Edit-Session")
+                    return sheet.edit_lease.write_locked("web", session_id, edit, path=relative)
+
+            filename = "flow.py" if relative == "flow.py" else "source file"
+            self.request.send_source_edit(perform_edit, not_found_error=f"This sheet's {filename} is unavailable.")
 
         def edit_lock(self, index: int) -> None:
             sheet = sheets[index] if index < len(sheets) else None
@@ -931,8 +949,22 @@ def workspace_routes(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if recovery := RECOVERY_PATH.fullmatch(self.path):
+                index = int(recovery[1])
+                sheet = sheets[index] if index < len(sheets) else None
+                graph = sheet.recovery_graph if sheet is not None else None
+                if graph is None:
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                elif recovery[2] == "/project":
+                    self.request.send_json(graph)
+                elif asset := FLOW_VIEW_ASSETS.get(recovery[2]):
+                    name, content_type = asset
+                    self.request.send_bytes((STATIC / name).read_bytes(), content_type)
+                else:
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                return
             if source := FLOW_SOURCE_PATH.fullmatch(self.path):
-                self.flow_source(int(source[1]))
+                self.flow_source(int(source[1]), source[2], source[3])
                 return
             if self.path == "/workspace":
                 viewer_sessions = {
@@ -951,6 +983,7 @@ def workspace_routes(
                         "name": sheet.title, "status": status, "deletable": can_delete_sheet(root, sheet.root),
                         "revision": sheet.revision, "changed_source": sheet.changed_source(status),
                         "edit_lock": sheet.edit_lease.status(viewer_sessions),
+                        "recoverable": sheet.recovery_graph is not None,
                     }
                     if interpreter is not None:
                         attempt = sheet.attempt
@@ -982,7 +1015,7 @@ def workspace_routes(
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
             if source := FLOW_SOURCE_PATH.fullmatch(self.path):
-                self.flow_source(int(source[1]))
+                self.flow_source(int(source[1]), source[2], source[3])
                 return
             if lock_route := EDIT_LOCK_PATH.fullmatch(self.path):
                 self.edit_lock(int(lock_route[1]))

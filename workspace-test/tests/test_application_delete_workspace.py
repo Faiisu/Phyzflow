@@ -54,6 +54,11 @@ def application_in_trash(state: Path, trash_dir: Path | None = None):
                 process.wait()
 
 
+def confirm_workspace_deletion(page, workspace_name):
+    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+    page.get_by_role("dialog", name="Delete Workspace?").get_by_role("button", name="Move to Trash").click()
+
+
 def find_supervisor_pid(root: Path) -> int:
     output_text = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
     interpreter = str(root / ".venv" / "bin" / "python")
@@ -154,6 +159,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
 
                     workspace.click()
                     workspace_url = page.url
+                    expect(page.get_by_role("tab", name="Main")).to_contain_text("Ready")
                     page.get_by_role("button", name="Run All").click()
                     expect(page.get_by_role("tab", name="Main")).to_contain_text("Running")
                     expect(page.get_by_role("tab", name="Secondary")).to_contain_text("Running")
@@ -171,9 +177,22 @@ class DeleteWorkspaceTests(unittest.TestCase):
 
                     page.get_by_role("link", name="Workspaces").click()
                     expect(page.get_by_role("heading", name="Workspaces")).to_be_visible()
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    delete = page.get_by_role("button", name=f"Delete {workspace_name}")
+                    delete.click()
+                    dialog = page.get_by_role("dialog", name="Delete Workspace?")
+                    expect(dialog).to_contain_text(str(root))
+                    cancel = dialog.get_by_role("button", name="Cancel")
+                    expect(cancel).to_be_focused()
+                    page.keyboard.press("Escape")
+                    expect(dialog).to_be_hidden()
+                    expect(delete).to_be_focused()
+                    self.assertTrue((root / "flow.py").is_file())
+                    for pid in pids:
+                        self.assertFalse(process_exited(pid))
+
+                    confirm_workspace_deletion(page, workspace_name)
                     expect(page.get_by_role("link", name=workspace_name)).to_have_count(0, timeout=15_000)
-                    expect(page.get_by_role("status")).to_contain_text("Create or add a Workspace to get started.")
+                    expect(page.get_by_role("status")).to_contain_text("No Workspaces yet.")
 
                     for pid in pids:
                         self.assertTrue(process_exited(pid))
@@ -247,6 +266,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
 
                     workspace.click()
                     workspace_url = page.url
+                    expect(page.get_by_role("tab", name="Main")).to_contain_text("Ready")
                     page.get_by_role("button", name="Run All").click()
                     expect(page.get_by_role("tab", name="Main")).to_contain_text("Running")
                     expect(page.get_by_role("tab", name="Secondary")).to_contain_text("Running")
@@ -263,7 +283,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
                         self.assertEqual(output(call(portal, client, "list_workspaces")), {
                             "workspaces": [{"id": workspace_id, "name": workspace_name}],
                         })
-                        page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                        confirm_workspace_deletion(page, workspace_name)
                         sleep(.5)
                         fenced_http = page.request.get(f"{workspace_url}workspace")
                         self.assertEqual(fenced_http.status, 409)
@@ -272,7 +292,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
                         self.assertIn("being deleted", fenced_mcp.content[0].text)
 
                     alert = page.get_by_role("alert")
-                    expect(alert).to_be_visible(timeout=10_000)
+                    expect(alert).to_be_visible(timeout=20_000)
                     expect(alert).to_contain_text("still running")
                     expect(alert).to_contain_text(str(supervisor_pid))
                     expect(alert).to_contain_text("operating system")
@@ -291,7 +311,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
                     wait_for(lambda: process_exited(supervisor_pid))
                     supervisor_pid = None
 
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
                     expect(page.get_by_role("link", name=workspace_name)).to_have_count(0, timeout=10_000)
                     expect(alert).to_be_hidden()
                     self.assertFalse(root.exists())
@@ -338,15 +358,14 @@ class DeleteWorkspaceTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     workspace.click()
-                    frame = page.frame_locator('iframe[title="Main flow"]')
-                    frame.get_by_role("button", name="Run flow").click()
+                    page.get_by_role("button", name="Run flow").click()
                     expect(page.get_by_role("tab", name="Main")).to_contain_text("Running")
                     wait_for(lambda: (root / "detached-pid").is_file())
                     detached_pid = int((root / "detached-pid").read_text(encoding="utf-8"))
                     self.assertFalse(process_exited(detached_pid))
 
                     page.get_by_role("link", name="Workspaces").click()
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
                     alert = page.get_by_role("alert")
                     expect(alert).to_be_visible(timeout=10_000)
                     expect(alert).to_contain_text("still running")
@@ -357,7 +376,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
 
                 with application_in_trash(state, trash_dir) as url:
                     sign_in(page, url, state)
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
                     alert = page.get_by_role("alert")
                     expect(alert).to_be_visible(timeout=10_000)
                     expect(alert).to_contain_text(str(detached_pid))
@@ -368,7 +387,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
                     wait_for(lambda: process_exited(detached_pid))
                     detached_pid = None
 
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
                     expect(page.get_by_role("link", name=workspace_name)).to_have_count(0, timeout=10_000)
                     self.assertFalse(root.exists())
                     self.assertTrue((trash_dir / workspace_name / "flow.py").is_file())
@@ -391,7 +410,7 @@ class DeleteWorkspaceTests(unittest.TestCase):
                 with application_in_trash(state, trash_dir) as url:
                     create_workspace(page, url, state, root)
                     trash_dir.chmod(0o500)
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
 
                     alert = page.get_by_role("alert")
                     expect(alert).to_be_visible(timeout=10_000)
@@ -404,13 +423,13 @@ class DeleteWorkspaceTests(unittest.TestCase):
                     expect(page.get_by_role("link", name=workspace_name)).to_be_visible()
 
                     trash_dir.chmod(0o700)
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
                     expect(page.get_by_role("link", name=workspace_name)).to_have_count(0, timeout=10_000)
                     self.assertFalse(root.exists())
                     self.assertTrue((trash_dir / workspace_name / "flow.py").is_file())
 
                     create_workspace(page, url, state, root)
-                    page.get_by_role("button", name=f"Delete {workspace_name}").click()
+                    confirm_workspace_deletion(page, workspace_name)
                     expect(page.get_by_role("link", name=workspace_name)).to_have_count(0, timeout=10_000)
                     self.assertFalse(root.exists())
                     self.assertTrue((trash_dir / f"{workspace_name} 2" / "flow.py").is_file())

@@ -55,10 +55,12 @@ class ApplicationTests(unittest.TestCase):
             with application(state) as url:
                 page.goto(url)
                 expect(page.get_by_role("heading", name="Sign in to Phyzflow")).to_be_visible()
+                expect(page.get_by_label("Password")).not_to_be_focused()
                 page.get_by_label("Username").fill("admin")
                 page.get_by_label("Password").fill("incorrect")
                 page.get_by_role("button", name="Sign in").click()
                 expect(page.get_by_role("alert")).to_contain_text("Incorrect username or password.")
+                expect(page.get_by_role("alert")).to_be_focused()
                 self.assertFalse(bool(page.context.cookies(url)))
 
                 page.get_by_label("Username").fill("admin")
@@ -112,6 +114,7 @@ class ApplicationTests(unittest.TestCase):
             with application(state) as url:
                 sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
+                page.get_by_role("button", name="Enter a folder path").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
                 page.get_by_role("link", name="Diagnostics").click(timeout=20_000)
@@ -147,6 +150,7 @@ class ApplicationTests(unittest.TestCase):
             with application(state) as url:
                 sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
+                page.get_by_role("button", name="Enter a folder path").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
                 workspace = page.get_by_role("link", name="Diagnostics")
@@ -173,6 +177,7 @@ class ApplicationTests(unittest.TestCase):
             with application(state) as url:
                 sign_in(page, url, state)
                 page.get_by_role("button", name="Create Workspace").click()
+                page.get_by_role("button", name="Enter a folder path").click()
                 page.get_by_label("New folder path").fill(str(root))
                 page.get_by_role("button", name="Create", exact=True).click()
                 workspace = page.get_by_role("link", name="Diagnostics")
@@ -209,7 +214,7 @@ def finish(interpreter):
                 flow = page.frame_locator('iframe[title="Main flow"]')
                 expect(flow.get_by_role("button", name="Inspect Prepare")).to_be_visible()
                 expect(flow.get_by_role("button", name="Inspect Finish")).to_be_visible()
-                flow.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 console = flow.get_by_role("region", name="Run console")
                 expect(console.get_by_label("stdout")).to_contain_text("Preparing the sample")
                 expect(console.get_by_label("stderr")).to_contain_text("Child diagnostics")
@@ -225,7 +230,7 @@ def finish(interpreter):
                 sign_in(page, url, state)
                 page.get_by_role("link", name="Diagnostics").click()
                 flow = page.frame_locator('iframe[title="Main flow"]')
-                flow.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
                 self.assertEqual(
                     json.loads(flow.locator("#result pre").inner_text()),

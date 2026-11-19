@@ -13,6 +13,7 @@ from test_application import application, sign_in
 
 def add_workspace(page, root):
     page.get_by_role("button", name="Add Workspace").click()
+    page.get_by_role("button", name="Enter a folder path").click()
     page.get_by_label("Existing folder path").fill(str(root))
     page.get_by_role("button", name="Add", exact=True).click()
 
@@ -35,12 +36,97 @@ def run_sheet(page, name):
     sheet = page.get_by_role("tab", name=name)
     sheet.click()
     flow = page.frame_locator(f'iframe[title="{name} flow"]')
-    flow.get_by_role("button", name="Run flow").click()
+    page.get_by_role("button", name="Run flow").click()
     expect(sheet).to_contain_text("Succeeded")
     return json.loads(flow.locator("#result pre").inner_text())
 
 
 class AddWorkspaceTests(unittest.TestCase):
+    def test_browse_host_folders_to_create_and_add_workspaces(self):
+        with TemporaryDirectory(prefix="Phyzflow projects ", dir=Path.home()) as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state = parent / "State"
+            project = parent / "Existing project "
+            new_root = parent / "New project"
+            write_flow(project, "return 72")
+            (parent / "notes.txt").touch()
+            page.set_viewport_size({"width": 320, "height": 620})
+
+            with application(state) as url:
+                headers = {"Origin": url}
+                guest = page.request.post(f"{url}/workspace-folders", data={}, headers=headers)
+                self.assertEqual(guest.status, 401)
+                sign_in(page, url, state)
+                self.assertEqual(page.request.post(f"{url}/workspace-folders", data={}).status, 403)
+                blocked = page.request.post(f"{url}/workspace-folders", data={"path": str(state)}, headers=headers)
+                self.assertEqual(blocked.status, 400)
+
+                page.get_by_role("button", name="Create Workspace").click()
+                dialog = page.get_by_role("dialog", name="Create Workspace")
+                dialog.get_by_role("button", name=parent.name, exact=True).click()
+                expect(dialog.get_by_role("button", name=project.name.strip(), exact=True)).to_be_visible()
+                expect(dialog.get_by_role("button", name=state.name, exact=True)).to_have_count(0)
+                expect(dialog.get_by_role("button", name="notes.txt")).to_have_count(0)
+                self.assertTrue(dialog.evaluate("element => element.scrollWidth === element.clientWidth"))
+                name = dialog.get_by_label("New folder name")
+                name.fill("../outside")
+                dialog.get_by_role("button", name="Create", exact=True).click()
+                expect(dialog.get_by_role("alert")).to_contain_text("Enter a single folder name.")
+                name.fill(new_root.name)
+                dialog.get_by_role("button", name="Create", exact=True).click()
+                expect(page.get_by_role("link", name=new_root.name)).to_be_focused(timeout=20_000)
+                self.assertTrue((new_root / "flow.py").is_file())
+
+                page.get_by_role("button", name="Add Workspace").click()
+                dialog = page.get_by_role("dialog", name="Add Workspace")
+                dialog.get_by_role("button", name=parent.name, exact=True).click()
+                dialog.get_by_role("button", name=new_root.name, exact=True).click()
+                expect(dialog.locator("#workspace-location")).to_have_text(str(new_root))
+                dialog.get_by_role("button", name="Up").click()
+                dialog.get_by_role("button", name=project.name.strip(), exact=True).click()
+                expect(dialog.locator("#workspace-location")).to_have_text(str(project))
+                dialog.get_by_role("button", name="Add", exact=True).click()
+                expect(page.get_by_role("link", name=project.name.strip())).to_be_focused(timeout=20_000)
+                self.assertTrue((project / ".venv").is_dir())
+
+    def test_narrow_workspace_list_wraps_long_paths_and_reveals_new_entries_after_filtering(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            long_root = parent / ("LongWorkspace" * 12)
+            second = parent / "Second"
+            new_root = parent / "New project"
+            long_root.mkdir()
+            second.mkdir()
+            page.set_viewport_size({"width": 320, "height": 620})
+
+            with application(parent / "state") as url:
+                sign_in(page, url, parent / "state")
+                add_workspace(page, long_root)
+                expect(page.get_by_role("link", name=long_root.name)).to_be_visible(timeout=20_000)
+                add_workspace(page, second)
+                expect(page.get_by_role("link", name=second.name)).to_be_visible(timeout=20_000)
+
+                viewport_fits = "root => root.scrollWidth === root.clientWidth"
+                self.assertTrue(page.locator("html").evaluate(viewport_fits))
+                workspace_filter = page.get_by_role("searchbox", name="Filter Workspaces")
+                workspace_filter.fill(long_root.name)
+                expect(page.get_by_role("link", name=second.name)).to_have_count(0)
+                delete = page.get_by_role("button", name=f"Delete {long_root.name}")
+                self.assertGreaterEqual(delete.bounding_box()["height"], 44)
+                delete.click()
+                dialog = page.get_by_role("dialog", name="Delete Workspace?")
+                expect(dialog).to_contain_text(str(long_root))
+                self.assertTrue(dialog.evaluate(viewport_fits))
+                dialog.get_by_role("button", name="Cancel").click()
+
+                page.get_by_role("button", name="Create Workspace").click()
+                page.get_by_role("button", name="Enter a folder path").click()
+                page.get_by_label("New folder path").fill(str(new_root))
+                page.get_by_role("button", name="Create", exact=True).click()
+                expect(page.get_by_role("link", name=new_root.name)).to_be_focused(timeout=20_000)
+                expect(workspace_filter).to_have_value("")
+                self.assertTrue(page.locator("html").evaluate(viewport_fits))
+
     def test_add_an_existing_project_and_create_its_python_312_environment(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             parent = Path(temp).resolve()

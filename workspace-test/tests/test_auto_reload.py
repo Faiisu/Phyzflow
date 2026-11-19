@@ -53,7 +53,7 @@ class AutoReloadTests(unittest.TestCase):
                 expect(frame).to_have_attribute("src", "/flows/0/revision/1/view/")
                 expect(other).to_have_attribute("src", "/flows/1/view/")
                 expect(view.locator("#status")).to_have_text("Ready")
-                view.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect_result(view, "updated!")
 
     def test_running_sheet_reloads_the_latest_save_after_recording_the_original_run(self):
@@ -71,7 +71,7 @@ class AutoReloadTests(unittest.TestCase):
             with local_ui(root) as (url, _):
                 page.goto(url)
                 frame, view = sheet_view(page)
-                view.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 tab = page.get_by_role("tab", name="Main")
                 expect(tab).to_contain_text("Running")
                 helper.write_text("def value(): return 'intermediate'\n")
@@ -83,7 +83,7 @@ class AutoReloadTests(unittest.TestCase):
                 self.assertEqual((root / "finished").read_text(), "original")
                 history = page.request.get(f"{url}/flows/0/revision/1/view/history").json()
                 self.assertEqual([run["status"] for run in history], ["succeeded"])
-                view.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect_result(view, "latest")
 
     def test_source_drafts_survive_external_saves_until_resolved(self):
@@ -146,6 +146,6 @@ class AutoReloadTests(unittest.TestCase):
                 helper.write_text("def value(): return 'recovered'\n")
                 expect(frame).to_have_attribute("src", "/flows/0/revision/2/view/")
                 expect(view.get_by_role("button", name="Inspect Original")).to_be_visible()
-                view.get_by_role("button", name="Run flow").click()
+                page.get_by_role("button", name="Run flow").click()
                 expect_result(view, "recovered")
                 self.assertEqual(len(attempts), 2)
