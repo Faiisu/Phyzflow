@@ -4,9 +4,13 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Install from a clean Windows checkout with Python 3.12. Verify that the shipped launcher starts the installed application and that a browser on another machine reaches the sign-in page.
-- [ ] Verify that an incorrect password is rejected and that the initial administrator password opens the Workspaces page. Restart the application with the same state and verify that the credential still works.
-- [ ] Verify that a separate unprivileged Windows account cannot read the initial password or modify authentication state, and that the application rejects existing credential state with unsafe permissions.
-- [ ] Verify that the existing administrator sign-in and credential protection tests pass on macOS.
+- [x] Install from a clean Windows checkout with Python 3.12. Verify that the shipped launcher starts the installed application and that a browser on another machine reaches the sign-in page.
+- [x] Verify that an incorrect password is rejected and that the initial administrator password opens the Workspaces page. Restart the application with the same state and verify that the credential still works.
+- [x] Verify that a separate unprivileged Windows account cannot read the initial password or modify authentication state, and that the application rejects existing credential state with unsafe permissions.
+- [x] Verify that the existing administrator sign-in and credential protection tests pass on macOS.
+
+## Verification
+
+Commit `5aa7b39` passed the shipped launcher and remote Chrome sign-in on Windows 11 IoT Enterprise build `26200.9974` with Python 3.12.10, including password rejection and sign-in after restarting the backend. A temporary unprivileged local account could neither read the initial password nor read or modify the verifier and MCP database. The application refused state writable by Everyone. Both existing macOS administrator authentication tests passed.
