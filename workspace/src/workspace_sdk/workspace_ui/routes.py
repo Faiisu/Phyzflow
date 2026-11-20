@@ -11,6 +11,7 @@ from urllib.parse import unquote
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
 from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
+from ..project import ValidationError, workspace_format_notice
 from ..sheet_locks import SheetLockedError
 from ..sheets import (
     can_delete_sheet,
@@ -69,7 +70,7 @@ def validate_visualize_layout(panels: object) -> dict:
 
 
 def workspace_dispatch(
-    root, sheets, sheets_lock, *, format_notice, interpreter, is_closing, discovered_sheets,
+    root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
     create_workspace_sheet, delete_workspace_sheet, run_all_sheets,
 ):
     class Routes:
@@ -355,7 +356,12 @@ def workspace_dispatch(
                 pass
 
         def run_all(self) -> None:
-            self.request.send_json(run_all_sheets(by_index=True), HTTPStatus.ACCEPTED)
+            try:
+                result = run_all_sheets(by_index=True)
+            except ValidationError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.request.send_json(result, HTTPStatus.ACCEPTED)
 
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}
@@ -450,7 +456,13 @@ def workspace_dispatch(
                     for part in (self.request.headers.get("X-Phyzflow-Edit-Session") or "").split(",")
                     if part.strip()
                 } or None
-                current = discovered_sheets()
+                try:
+                    format_notice = workspace_format_notice(root)
+                    current = discovered_sheets()
+                except ValidationError as error:
+                    format_notice = str(error)
+                    with sheets_lock:
+                        current = list(sheets)
                 flows = []
                 for sheet in current:
                     if sheet is None:
@@ -559,6 +571,8 @@ def workspace_dispatch(
                 self.request.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
             except ReloadDeferred:
                 self.request.send_json({"deferred": True}, HTTPStatus.CONFLICT)
+            except ValidationError as error:
+                self.request.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.BAD_REQUEST)
             except (OSError, RuntimeError, EOFError) as error:
                 if interpreter is not None and not sheet.worker_ready() and not sheet.workspace_closing():
                     self.request.send_json({

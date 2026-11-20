@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+import tomllib
 import unittest
 
 
@@ -56,7 +57,8 @@ class ValidationTests(unittest.TestCase):
             ("format_version = true", "found True"),
             ("format_version = 1.0", "found 1.0"),
         ):
-            with self.subTest(declaration=declaration), TemporaryDirectory() as temp:
+            combination = tomllib.loads(declaration)["format_version"]
+            with self.subTest(combination=combination), TemporaryDirectory() as temp:
                 root = Path(temp).resolve()
                 config = root / "pyproject.toml"
                 config.write_text(f"[tool.workspace]\n{declaration}\n")

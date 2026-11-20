@@ -80,12 +80,14 @@ if __name__ == "__main__":
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--check":
         from contextlib import redirect_stdout
-        from workspace_sdk.project import ValidationError, load_project
+        from workspace_sdk.project import ValidationError, load_project, workspace_format_notice
+        from workspace_sdk.sheets import workspace_root_for_sheet
 
         target = Path(sys.argv[2])
         pending = target.with_suffix(".tmp")
         root = Path.cwd()
         try:
+            workspace_format_notice(Path(sys.argv[3]) if len(sys.argv) > 3 else workspace_root_for_sheet(root))
             with redirect_stdout(sys.stderr), load_project(root, None) as flow:
                 payload = {"valid": True, "steps": [step.id for step in flow.steps]}
         except ValidationError as error:
@@ -132,6 +134,7 @@ if __name__ == "__main__":
 
     serve_flow(
         Path.cwd(), json.loads(sys.argv[3]), publish,
-        run_token=sys.argv[4] if len(sys.argv) > 4 else None,
+        run_token=(sys.argv[4] or None) if len(sys.argv) > 4 else None,
         main=len(sys.argv) > 5 and sys.argv[5] == "1",
+        workspace_root=Path(sys.argv[6]) if len(sys.argv) > 6 else None,
     )
