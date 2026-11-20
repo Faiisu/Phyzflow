@@ -11,7 +11,9 @@ from threading import Lock
 from typing import Any
 
 from .console import ConsoleLogStore, capture_console
-from .dashboard import ASSET_ROUTE, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels
+from .dashboard import (
+    ASSET_ROUTE, DASHBOARD_BRIDGE_VERSION, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels,
+)
 from .flow import Flow, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
@@ -246,7 +248,7 @@ def serve(
                 except (OSError, RuntimeError, ValueError):
                     self.send_json({"error": "Dashboard assets must be UTF-8 files up to 256 KiB each."}, HTTPStatus.BAD_REQUEST)
                 else:
-                    self.send_json(assets)
+                    self.send_json({"bridge_version": DASHBOARD_BRIDGE_VERSION, **assets})
             elif match := re.fullmatch(f"/{SETTINGS_ROUTE}", self.path):
                 try:
                     scoped = self.scoped_steps(match[1])

@@ -82,6 +82,8 @@ The administrator signs in to manage Workspaces and issues or revokes MCP tokens
 
 Keep the existing panel structure with `index.html`, `style.css`, and `dashboard.js`. The application supplies a shared base stylesheet derived from the current UI palette, typography, spacing, and state styles. The panel author adds only the styles needed for the visualization. JavaScript receives the run snapshot and reported metrics through the existing [dashboard subscription bridge](../workspace/src/workspace_sdk/static/dashboard-ui.js). Keep panel code in the existing sandbox.
 
+To declare Dashboard Bridge compatibility, add an optional `bridge.json` next to the panel's `index.html`. Set `versions` to a non-empty list of the positive integer versions the panel accepts, for example `{"versions": [1]}`. The Workspace provides version 1 and exposes it as `window.workspaceDashboard.version`. Panels without `bridge.json` use version 1. When the provided version is outside the panel's list, the Workspace displays both versions in that panel and leaves the flow and neighboring panels available. Use `inspect_dashboards` to discover the current bridge version and declaration format.
+
 Use the Live Counter dashboard as the first template. Review a generated panel beside the host UI in idle, live, error, and narrow-panel states. Use the shared theme and the displayed data as the review criteria.
 
 ## Run types and lifecycle

@@ -88,12 +88,13 @@ function pick(record, keys) {
   return Object.fromEntries(keys.filter(key => Object.hasOwn(record, key)).map(key => [key, record[key]]));
 }
 
-function childBridge() {
+function childBridge(version) {
   let snapshot;
   let request = 0;
   const listeners = new Set();
   const pending = new Map();
   window.workspaceDashboard = Object.freeze({
+    version,
     subscribe(listener) {
       listeners.add(listener);
       if (snapshot) listener(snapshot);
@@ -125,6 +126,20 @@ function childBridge() {
   });
 }
 
+function supportedBridgeVersions(assets) {
+  if (!Object.hasOwn(assets, "bridge.json")) return [1];
+  let versions;
+  try {
+    versions = JSON.parse(assets["bridge.json"])?.versions;
+  } catch {
+    throw new Error("Invalid bridge.json. Declare Dashboard Bridge versions as a non-empty list of positive integers.");
+  }
+  if (!Array.isArray(versions) || !versions.length || !versions.every(version => Number.isSafeInteger(version) && version > 0)) {
+    throw new Error("Invalid bridge.json. Declare Dashboard Bridge versions as a non-empty list of positive integers.");
+  }
+  return versions;
+}
+
 function frameDocument(assets) {
   const themeCss = JSON.stringify(SHARED_DASHBOARD_THEME_CSS).replaceAll("<", "\\u003c");
   const css = JSON.stringify(assets["style.css"] ?? "").replaceAll("<", "\\u003c");
@@ -135,7 +150,7 @@ function frameDocument(assets) {
     <meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; base-uri 'none'; form-action 'none'">
     <script>
-    (${childBridge})();
+    (${childBridge})(${assets.bridge_version});
     (() => {
       const themeStyle = document.createElement("style");
       themeStyle.dataset.phyzflowTheme = "true";
@@ -277,6 +292,10 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
           : `dashboard-assets/${key}`;
         const assets = await fetchJSON(assetPath, "Could not load the dashboard.");
         if (version !== panel.loadVersion || element.hidden) return;
+        const supported = supportedBridgeVersions(assets);
+        if (!supported.includes(assets.bridge_version)) {
+          throw new Error(`Incompatible Dashboard Bridge. Observed version ${assets.bridge_version}. Supported versions ${supported.join(", ")}.`);
+        }
         const frame = document.createElement("iframe");
         frame.title = heading.textContent;
         // The CSP blocks native submissions. The sandbox permits submit handlers to run.
@@ -286,12 +305,14 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
         panel.frame = frame;
         preview.replaceChildren(frame);
         message.textContent = "";
+        panel.loadSettings(version);
       } catch (error) {
         if (version === panel.loadVersion) message.textContent = error.message;
       }
     };
 
     panel.loadSettings = async function loadSettings(version) {
+      if (!panel.frame) return;
       try {
         const current = await fetchJSON(`dashboard-settings/${scopeKey(panel.scope)}`, "Could not load dashboard settings.");
         if (version !== panel.loadVersion) return;
@@ -345,7 +366,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       activePanels.add(panel);
       revealBoard(element, layoutKey(nodeId, panelId));
       panel.loadDashboard();
-      panel.loadSettings(panel.loadVersion);
       panel.sendSnapshot();
     };
 
@@ -394,7 +414,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
 
     reload.addEventListener("click", () => {
       panel.loadDashboard();
-      panel.loadSettings(panel.loadVersion);
       refreshVisualizeList();
     });
 
