@@ -1,3 +1,5 @@
+import { createLiveSync, fetchConditionalJSON } from "./live-sync.js";
+
 const primaryBoard = document.querySelector("#dashboard");
 
 export const SHARED_DASHBOARD_THEME_CSS = `:root {
@@ -208,7 +210,74 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   const metrics = new Map();
   const settingChanges = new Map();
   const activePanels = new Set();
+  const readyWorkspacePanels = new Set();
   let availablePanels = [];
+  let workspaceLiveActive = false;
+  let workspacePanelKey = "";
+  let workspaceFeed = null;
+
+  function syncWorkspaceFeed(forceWake = false) {
+    if (!workspaceFeed) return;
+    const ids = [...new Set([...readyWorkspacePanels].map(item => item.panelId))].sort();
+    const key = ids.join(",");
+    const changed = key !== workspacePanelKey;
+    workspacePanelKey = key;
+    if (!ids.length) {
+      workspaceFeed.setActive(false);
+      workspaceFeed.resetEtag();
+      return;
+    }
+    if (changed || forceWake) workspaceFeed.resetEtag();
+    workspaceFeed.setActive(true);
+    if (changed || forceWake) workspaceFeed.wake();
+  }
+
+  if (workspace) {
+    workspaceFeed = createLiveSync({
+      errorDelayMs: 1000,
+      fetchUpdate: async ({ signal, etag }) => {
+        const ids = [...new Set([...readyWorkspacePanels].map(item => item.panelId))].sort();
+        if (!ids.length) return { status: "unchanged", nextDelayMs: 2000 };
+        const query = ids.map(id => encodeURIComponent(id)).join(",");
+        const result = await fetchConditionalJSON(`../workspace-dashboard/data?panels=${query}`, {
+          signal,
+          etag,
+          errorMessage: "Could not read dashboard data.",
+        });
+        return {
+          status: result.status,
+          etag: result.etag,
+          data: result.data,
+          nextDelayMs: () => (workspaceLiveActive ? 500 : 2000),
+        };
+      },
+      onUpdate: payload => {
+        workspaceLiveActive = Boolean(payload?.live_active);
+        for (const panel of readyWorkspacePanels) {
+          const panelError = payload?.errors?.[panel.panelId];
+          if (panelError) {
+            panel.setMessage(panelError);
+            continue;
+          }
+          const snapshot = payload?.panels?.[panel.panelId];
+          if (!snapshot) continue;
+          panel.setMessage("");
+          const serialized = JSON.stringify(snapshot);
+          if (serialized !== panel.lastWorkspaceSnapshot) {
+            panel.frame?.contentWindow?.postMessage({ type: "dashboard-data", snapshot }, "*");
+            panel.lastWorkspaceSnapshot = serialized;
+          }
+        }
+      },
+      onError: error => {
+        for (const panel of readyWorkspacePanels) {
+          panel.setMessage(error.message);
+        }
+      },
+    });
+    workspaceFeed.setActive(false);
+    workspaceFeed.start();
+  }
 
   function layoutKey(scope, panelId) {
     return JSON.stringify([scope, panelId || "default"]);
@@ -262,6 +331,10 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       following: true,
       settings: {},
       opener: null,
+      lastWorkspaceSnapshot: null,
+      setMessage(text) {
+        message.textContent = text;
+      },
     };
     if (isPrimary) primaryBoard._panelInstance = panel;
 
@@ -303,8 +376,9 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
 
     panel.loadDashboard = async function loadDashboard() {
       const version = ++panel.loadVersion;
-      panel.workspaceData?.abort();
-      panel.workspaceData = null;
+      readyWorkspacePanels.delete(panel);
+      panel.lastWorkspaceSnapshot = null;
+      syncWorkspaceFeed();
       panel.ready = false;
       panel.frame = null;
       preview.replaceChildren();
@@ -324,34 +398,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       } catch (error) {
         if (version === panel.loadVersion) message.textContent = error.message;
       }
-    };
-
-    panel.followWorkspace = function followWorkspace() {
-      const controller = new AbortController();
-      panel.workspaceData = controller;
-      const { signal } = controller;
-      const frame = panel.frame;
-      const path = `../workspace-dashboard/${encodeURIComponent(panel.panelId)}/data`;
-      let previous;
-      let timer;
-      async function poll() {
-        try {
-          const snapshot = await fetchJSON(path, "Could not read dashboard data.", { signal });
-          if (signal.aborted) return;
-          message.textContent = "";
-          const serialized = JSON.stringify(snapshot);
-          if (serialized !== previous) {
-            frame.contentWindow.postMessage({ type: "dashboard-data", snapshot }, "*");
-            previous = serialized;
-          }
-        } catch (error) {
-          if (!signal.aborted) message.textContent = error.message;
-        } finally {
-          if (!signal.aborted) timer = setTimeout(poll, 500);
-        }
-      }
-      signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
-      void poll();
     };
 
     panel.loadSettings = async function loadSettings(version) {
@@ -417,7 +463,9 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       releaseBoard(element, layoutKey(panel.scope, panel.panelId));
       if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
       panel.loadVersion++;
-      panel.workspaceData?.abort();
+      readyWorkspacePanels.delete(panel);
+      panel.lastWorkspaceSnapshot = null;
+      syncWorkspaceFeed();
       panel.runVersion++;
       panel.ready = false;
       panel.frame = null;
@@ -688,7 +736,11 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     if (!panel || panel.element.hidden) return;
     const data = event.data;
     if (workspace) {
-      if (data?.type === "dashboard-ready" && !panel.workspaceData) panel.followWorkspace();
+      if (data?.type === "dashboard-ready" && !readyWorkspacePanels.has(panel)) {
+        readyWorkspacePanels.add(panel);
+        panel.lastWorkspaceSnapshot = null;
+        syncWorkspaceFeed(true);
+      }
       return;
     }
     if (data?.type === "dashboard-ready") {

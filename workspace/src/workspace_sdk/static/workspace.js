@@ -1,3 +1,4 @@
+import { createLiveSync, fetchConditionalJSON } from "./live-sync.js";
 import { initSourceEditing } from "./workspace/source-editing.js";
 import { initSheetDialogs } from "./workspace/sheet-dialogs.js";
 
@@ -29,6 +30,43 @@ const editFlowSource = document.querySelector("#edit-flow-source");
 const sheets = [];
 let active = null;
 let editRunningSource = false;
+let dashboardModalOpen = false;
+let workspaceSync = null;
+
+function sheetActivityDetail(sheet) {
+  return {
+    active: Boolean(sheet && sheet === active && !dashboardModalOpen && !sheet.frameStopped),
+    running: sheet?.status === "running",
+    runId: sheet?.runId ?? null,
+  };
+}
+
+function notifySheetActivity(sheet) {
+  if (!sheet?.frame?.contentWindow) return;
+  try {
+    sheet.frame.contentWindow.dispatchEvent(new CustomEvent("workspace-sheet-activity", {
+      detail: sheetActivityDetail(sheet),
+    }));
+  } catch {
+  }
+}
+
+function syncAllSheetActivity() {
+  for (const sheet of sheets) {
+    if (sheet) notifySheetActivity(sheet);
+  }
+}
+
+window.phyzflowSheetState = frameWindow => {
+  const sheet = sheets.find(item => item?.frame?.contentWindow === frameWindow);
+  return sheet ? sheetActivityDetail(sheet) : { active: true, running: false, runId: null };
+};
+
+window.addEventListener("workspace-dashboard-modal", event => {
+  dashboardModalOpen = Boolean(event.detail?.open);
+  workspaceSync?.setActive(!dashboardModalOpen);
+  syncAllSheetActivity();
+});
 
 const labels = {
   ready: "Ready", opening: "Opening…", running: "Running", succeeded: "Succeeded",
@@ -65,6 +103,7 @@ function usesSourceGraph(sheet) {
 }
 
 function updateStatus(sheet, status) {
+  const runningChanged = (sheet.status === "running") !== (status === "running");
   sheet.status = status;
   sheet.view.classList.toggle("is-unavailable", needsRecovery(sheet) || usesSourceGraph(sheet));
   sheet.indicator.textContent = labels[status] ?? status;
@@ -72,6 +111,7 @@ function updateStatus(sheet, status) {
   sheet.stop.hidden = !["running", "stopping"].includes(status);
   sheet.stop.disabled = sheet.pending || sheet.stop.hidden;
   if (sheet === active) syncFlowSourceLock();
+  if (runningChanged) notifySheetActivity(sheet);
 }
 
 function activeRunControls() {
@@ -97,7 +137,13 @@ function syncToolbar() {
 }
 
 window.phyzflowRunChanged = frameWindow => {
-  if (active?.frame?.contentWindow === frameWindow) syncToolbar();
+  if (active?.frame?.contentWindow !== frameWindow) return;
+  syncToolbar();
+  const state = activeRunControls()?.snapshot?.status?.state ?? null;
+  if (state !== active.lastFrameRunState) {
+    active.lastFrameRunState = state;
+    workspaceSync?.wake();
+  }
 };
 
 runSheet.addEventListener("click", async () => {
@@ -119,7 +165,10 @@ runSheet.addEventListener("click", async () => {
   } finally {
     sheet.pending = false;
     sheet.version++;
+    updateStatus(sheet, sheet.status);
     showNotice();
+    workspaceSync?.resetEtag();
+    workspaceSync?.wake();
   }
 });
 
@@ -239,6 +288,7 @@ function showFrame(sheet, revision) {
     frame.src = url;
     frame.addEventListener("load", () => {
       notifyFrameEditLock(sheet);
+      notifySheetActivity(sheet);
       if (sheet === active) syncToolbar();
     });
     sheet.frame = frame;
@@ -285,7 +335,10 @@ async function openFlow(sheet, action = "open", automaticSource = null) {
     if (frozen) frozen.inert = false;
     sheet.pending = false;
     sheet.version++;
+    updateStatus(sheet, sheet.status);
     showNotice();
+    workspaceSync?.resetEtag();
+    workspaceSync?.wake();
   }
 }
 
@@ -334,7 +387,10 @@ async function stopFlow(sheet) {
   } finally {
     sheet.pending = false;
     sheet.version++;
+    updateStatus(sheet, sheet.status);
     showNotice();
+    workspaceSync?.resetEtag();
+    workspaceSync?.wake();
   }
 }
 
@@ -348,6 +404,7 @@ function selectSheet(sheet) {
     item.view.classList.toggle("is-active", selected);
     item.view.inert = !selected;
   }
+  syncAllSheetActivity();
   sheet.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
   if (!sheet.frame && sheet.status !== "stopped" && !sheet.error && !sheet.runError) {
     openFlow(sheet);
@@ -401,7 +458,7 @@ function makeSheet(flow, index) {
     index, tab, title, indicator, stop, remove, group, view,
     frame: null, frameStopped: false, recoveryFrame: null, recoverable: flow.recoverable, pending: false, version: 0,
     workerReady: flow.worker_ready,
-    revision: flow.revision, runError: flow.error,
+    revision: flow.revision, runId: flow.run_id ?? null, runError: flow.error, lastFrameRunState: null,
     editLock: flow.edit_lock ?? null, editSessionId: null, activeEditors: new Set(), heartbeatTimer: null,
   };
   updateSheetName(sheet, flow.name);
@@ -443,17 +500,28 @@ runAll.addEventListener("click", async () => {
     }
   } finally {
     runAll.disabled = false;
+    workspaceSync?.resetEtag();
+    workspaceSync?.wake();
   }
 });
 
-async function getWorkspace() {
+function workspaceSessionHeaders() {
   const sessionIds = sheets.filter(Boolean).map(sheet => sheet.editSessionId).filter(Boolean);
-  const options = sessionIds.length
-    ? { headers: { "X-Phyzflow-Edit-Session": sessionIds.join(",") } }
-    : undefined;
-  const response = await fetch("./workspace", options);
-  if (!response.ok) throw new Error("Could not load the Workspace.");
-  return response.json();
+  return sessionIds.length ? { "X-Phyzflow-Edit-Session": sessionIds.join(",") } : {};
+}
+
+async function fetchWorkspaceState({ signal, etag } = {}) {
+  return fetchConditionalJSON("./workspace", {
+    signal,
+    etag,
+    headers: workspaceSessionHeaders(),
+    errorMessage: "Could not load the Workspace.",
+  });
+}
+
+async function getWorkspace() {
+  const { data } = await fetchWorkspaceState();
+  return data;
 }
 
 function removeSheet(index) {
@@ -489,45 +557,82 @@ function showFormatNotice(notice) {
   formatNotice.hidden = !notice;
 }
 
-async function pollStatus() {
-  const versions = sheets.map(sheet => sheet?.version);
-  const sentSessions = sheets.map(sheet => sheet?.editSessionId ?? null);
-  try {
-    const { flows, format_notice } = await getWorkspace();
-    showFormatNotice(format_notice);
-    syncSheets(flows);
-    for (const sheet of sheets.filter(Boolean)) {
-      const { index } = sheet;
-      const flow = flows[index];
-      if (!flow || sheet.version !== versions[index]) continue;
-      syncPolledLock(sheet, flow.edit_lock ?? null, sentSessions[index]);
-      if (sheet.pending || (sheet.frameStopped && runAll.hidden)) continue;
-      const { status, revision, changed_source, error, recoverable, worker_ready } = flow;
-      sheet.recoverable = recoverable;
-      sheet.workerReady = worker_ready;
-      if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0) ||
-          (sheet === active && worker_ready && sheet.recoveryFrame)) &&
-          !["opening", "unavailable", "stopped"].includes(status) && worker_ready !== false &&
-          !error && !hasUnsavedSource(sheet)) {
-        sheet.revision = revision;
-        sheet.error = null;
-        sheet.reloadError = null;
-        if (sheet.frame || (sheet === active && (status === "running" || worker_ready))) showFrame(sheet, revision);
-      }
-      if (status === "stopped") retainStoppedFrame(sheet, false);
-      sheet.runError = error;
-      if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
-      updateStatus(sheet, status);
-      if (sheet.watching) checkSourceChange(sheet, changed_source);
+function workspaceNextDelayMs() {
+  for (const sheet of sheets) {
+    if (!sheet) continue;
+    if (sheet.pending || ["opening", "running", "stopping"].includes(sheet.status)) return 400;
+    if (sheet.watching && sheet.sourceChange && !editRunningSource) return 400;
+  }
+  return 1000;
+}
+
+function checkPendingSourceReloads() {
+  for (const sheet of sheets) {
+    if (sheet?.watching && sheet.sourceChange) {
+      checkSourceChange(sheet, sheet.sourceChange);
     }
-    showNotice();
-  } finally {
-    setTimeout(() => pollStatus().catch(() => {}), 250);
   }
 }
 
+function startWorkspaceSync(initialEtag) {
+  let pendingVersions = [];
+  let pendingSessions = [];
+  workspaceSync = createLiveSync({
+    initialEtag,
+    fetchUpdate: async ({ signal, etag }) => {
+      pendingVersions = sheets.map(sheet => sheet?.version);
+      pendingSessions = sheets.map(sheet => sheet?.editSessionId ?? null);
+      const result = await fetchWorkspaceState({ signal, etag });
+      return {
+        status: result.status,
+        etag: result.etag,
+        data: result.data,
+        nextDelayMs: workspaceNextDelayMs,
+      };
+    },
+    onUnchanged: () => {
+      checkPendingSourceReloads();
+    },
+    onUpdate: ({ flows, format_notice }) => {
+      showFormatNotice(format_notice);
+      syncSheets(flows);
+      for (const sheet of sheets.filter(Boolean)) {
+        const { index } = sheet;
+        const flow = flows[index];
+        if (!flow || sheet.version !== pendingVersions[index]) continue;
+        syncPolledLock(sheet, flow.edit_lock ?? null, pendingSessions[index]);
+        if (sheet.pending || (sheet.frameStopped && runAll.hidden)) continue;
+        const { status, revision, changed_source, error, recoverable, worker_ready } = flow;
+        const nextRunId = flow.run_id ?? null;
+        const runIdChanged = nextRunId !== sheet.runId;
+        sheet.runId = nextRunId;
+        sheet.recoverable = recoverable;
+        sheet.workerReady = worker_ready;
+        if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0) ||
+            (sheet === active && worker_ready && sheet.recoveryFrame)) &&
+            !["opening", "unavailable", "stopped"].includes(status) && worker_ready !== false &&
+            !error && !hasUnsavedSource(sheet)) {
+          sheet.revision = revision;
+          sheet.error = null;
+          sheet.reloadError = null;
+          if (sheet.frame || (sheet === active && (status === "running" || worker_ready))) showFrame(sheet, revision);
+        }
+        if (status === "stopped") retainStoppedFrame(sheet, false);
+        sheet.runError = error;
+        if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
+        updateStatus(sheet, status);
+        if (runIdChanged) notifySheetActivity(sheet);
+        if (sheet.watching) checkSourceChange(sheet, changed_source);
+      }
+      showNotice();
+    },
+  });
+  workspaceSync.start({ immediate: false, delayMs: workspaceNextDelayMs() });
+}
+
 try {
-  const workspace = await getWorkspace();
+  const initial = await fetchWorkspaceState();
+  const workspace = initial.data;
   const name = document.querySelector("#workspace-name");
   name.textContent = workspace.name;
   name.title = workspace.name;
@@ -536,7 +641,7 @@ try {
   editRunningSource = workspace.edit_running_source;
   syncSheets(workspace.flows);
   newSheet.disabled = false;
-  pollStatus().catch(() => {});
+  startWorkspaceSync(initial.etag);
 } catch (error) {
   noticeMessage.textContent = error.message;
 }

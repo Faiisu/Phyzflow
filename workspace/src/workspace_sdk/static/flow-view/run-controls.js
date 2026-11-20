@@ -1,3 +1,4 @@
+import { createLiveSync, fetchConditionalJSON } from "../live-sync.js";
 import { blockedByText, element, formatDuration, jsonOutput, labels, locationText } from "./display.js";
 
 export function initRunControls({
@@ -27,6 +28,36 @@ export function initRunControls({
   let runStatus = null;
   let deferredRunError = null;
   let liveOutput = null;
+  const embeddedInWorkspace = window.parent !== window && typeof window.parent.phyzflowSheetState === "function";
+  const initialSheetState = embeddedInWorkspace
+    ? window.parent.phyzflowSheetState(window)
+    : { active: true, running: false, runId: null };
+  let sheetActive = Boolean(initialSheetState.active);
+  let parentRunning = Boolean(initialSheetState.running);
+  let parentRunId = initialSheetState.runId ?? null;
+  let cursor = 0;
+  let observedRun = null;
+  let runSync = null;
+
+  function syncRunActivity() {
+    runSync?.setActive(sheetActive && !streamingOwnRun && stopPhase !== "stopped");
+  }
+
+  window.addEventListener("workspace-sheet-activity", event => {
+    const detail = event.detail ?? {};
+    const prevRunning = parentRunning;
+    const prevRunId = parentRunId;
+    sheetActive = Boolean(detail.active);
+    parentRunning = Boolean(detail.running);
+    parentRunId = detail.runId ?? null;
+    syncRunActivity();
+    if (
+      sheetActive && !streamingOwnRun && stopPhase !== "stopped" &&
+      ((!prevRunning && parentRunning) || (parentRunId && parentRunId !== prevRunId))
+    ) {
+      runSync?.wake();
+    }
+  });
 
   function setStatus(value, label = labels[value]) {
     runStatus = { state: value, label };
@@ -161,7 +192,10 @@ export function initRunControls({
   window.addEventListener("workspace-stop", event => {
     const { phase, discardUnsaved } = event.detail;
     stopPhase = phase;
-    if (phase === "stopped") runInProgress = false;
+    if (phase === "stopped") {
+      runInProgress = false;
+      runSync?.stop();
+    }
     updateRunControls();
     if (phase === "stopped") {
       setStatus("stopped", "Stopped");
@@ -202,12 +236,15 @@ export function initRunControls({
     if (!canRun()) return;
     runInProgress = true;
     streamingOwnRun = true;
+    syncRunActivity();
     consoleRunId = null;
     clearConsole();
     updateRunControls();
     setPanel("run", true);
     resetRunResult();
     setStatus("running");
+    let receivedResult = false;
+    let ownRunId = null;
     try {
       const payload = JSON.parse(input.value);
       if (payload === null || Array.isArray(payload) || typeof payload !== "object") {
@@ -221,7 +258,6 @@ export function initRunControls({
       if (!response.ok) throw new Error(`The flow could not start (${response.status}).`);
       const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = "";
-      let receivedResult = false;
       while (true) {
         const chunk = await reader.read();
         if (chunk.done) break;
@@ -230,6 +266,7 @@ export function initRunControls({
         buffer = lines.pop();
         for (const line of lines) {
           const message = JSON.parse(line);
+          if (message.run_id) ownRunId = message.run_id;
           getDashboards().track(message);
           showMessage(message);
           if (message.result || message.error) receivedResult = true;
@@ -242,38 +279,70 @@ export function initRunControls({
     } finally {
       streamingOwnRun = false;
       runInProgress = false;
+      const finishedRunId = ownRunId ?? inspector.currentRunId ?? consoleRunId;
+      if (receivedResult && finishedRunId) {
+        observedRun = finishedRunId;
+        cursor = Number.MAX_SAFE_INTEGER;
+      }
+      runSync?.resetEtag();
       updateRunControls();
+      syncRunActivity();
     }
   });
 
-  async function reconnectRun() {
-    let cursor = 0;
-    let observedRun = null;
-    while (!stopPhase) {
-      try {
-        if (streamingOwnRun) {
-          await new Promise(resolve => setTimeout(resolve, 250));
-          continue;
+  function liveRunUrl() {
+    if (observedRun && Number.isSafeInteger(cursor) && cursor >= 0) {
+      return `live-run?after=${cursor}&run_id=${encodeURIComponent(observedRun)}`;
+    }
+    return "live-run";
+  }
+
+  function liveRunNextDelayMs() {
+    if (runInProgress || parentRunning) return 250;
+    return embeddedInWorkspace ? 1500 : 1000;
+  }
+
+  function startRunSync() {
+    runSync = createLiveSync({
+      errorDelayMs: 500,
+      fetchUpdate: async ({ signal, etag }) => {
+        try {
+          const result = await fetchConditionalJSON(liveRunUrl(), {
+            signal,
+            etag,
+            errorMessage: "Could not reconnect to the running flow.",
+          });
+          return {
+            status: result.status,
+            etag: result.etag,
+            data: result.data,
+            nextDelayMs: liveRunNextDelayMs,
+          };
+        } catch (error) {
+          if (error.httpStatus === 503 || error.httpStatus === 404 || error.httpStatus === 409) {
+            return { stop: true };
+          }
+          throw error;
         }
-        const response = await fetch("live-run");
-        if (response.status === 503 || response.status === 404 || response.status === 409) break;
-        if (!response.ok) throw new Error("Could not reconnect to the running flow.");
-        const snapshot = await response.json();
+      },
+      onUpdate: snapshot => {
         if (stopPhase === "stopped") return;
-        // A POST stream already rendered this run; only attach to a different owner.
-        const runId = snapshot.events.find(([, message]) => message.run_id)?.[1].run_id;
+        const eventRunId = snapshot.events.find(([, message]) => message.run_id)?.[1].run_id ?? null;
+        const runId = snapshot.run_id ?? eventRunId;
         const consoleOnly = snapshot.events.length > 0 && snapshot.events.every(([, item]) => item.kind === "console");
-        if (runId && runId !== observedRun) {
+        if (!snapshot.incremental && runId && runId !== observedRun) {
           const hadObserved = observedRun !== null;
           observedRun = runId;
           if (runId === inspector.currentRunId || (runId === consoleRunId && consoleOnly)) {
-            cursor = Infinity;
+            cursor = Number.isSafeInteger(snapshot.cursor) ? snapshot.cursor : Infinity;
           } else {
             cursor = 0;
             if (hadObserved || !consoleOnly) resetRunResult();
           }
+        } else if (runId && !observedRun) {
+          observedRun = runId;
         }
-        runInProgress = snapshot.running;
+        runInProgress = Boolean(snapshot.running);
         updateRunControls();
         for (const [sequence, message] of snapshot.events) {
           if (sequence <= cursor) continue;
@@ -282,12 +351,14 @@ export function initRunControls({
           showMessage(message);
           cursor = sequence;
         }
+        if (Number.isSafeInteger(snapshot.cursor) && (snapshot.incremental || cursor === Infinity)) {
+          cursor = snapshot.cursor;
+        }
         if (snapshot.status === "stopped") setStatus("stopped");
-      } catch (error) {
-        // A temporary disconnect must not mark the server-owned run as failed.
-      }
-      await new Promise(resolve => setTimeout(resolve, 250));
-    }
+      },
+    });
+    runSync.setActive(sheetActive && !streamingOwnRun && stopPhase !== "stopped");
+    runSync.start();
   }
 
   let consoleSettingsSequence = 0;
@@ -385,7 +456,7 @@ export function initRunControls({
     resetInput.disabled = stopPhase === "stopped";
     projectReady = true;
     updateRunControls();
-    reconnectRun();
+    startRunSync();
   }
 
   function showLoadError(error) {

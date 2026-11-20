@@ -6,9 +6,15 @@ from http.client import HTTPConnection, HTTPException
 import json
 import re
 import sqlite3
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from ..dashboard import DASHBOARD_BRIDGE_VERSION, WORKSPACE_DASHBOARD_DIRECTORY, dashboard_assets, dashboard_panels
+from ..dashboard import (
+    DASHBOARD_BRIDGE_VERSION,
+    PANEL_ID_PATTERN,
+    WORKSPACE_DASHBOARD_DIRECTORY,
+    dashboard_assets,
+    dashboard_panels,
+)
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
 from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
@@ -29,7 +35,7 @@ from ..web import (
     UIRequestHandler,
     is_flow_view_route,
 )
-from .dashboard_data import dashboard_snapshot, dashboard_sources
+from .dashboard_data import dashboard_snapshot, dashboard_sources, workspace_dashboard_batch
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
 
@@ -41,11 +47,13 @@ RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
 EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
 WORKSPACE_DASHBOARD_PATH = re.compile(r"/workspace-dashboard/([A-Za-z0-9._-]+)(/data)?")
+WORKSPACE_DASHBOARD_BATCH_PATH = "/workspace-dashboard/data"
 WORKSPACE_VISUALIZE_LAYOUT = "/dashboard/visualize-layout"
 WORKSPACE_ASSETS = {
     "/": ("workspace.html", "text/html"),
     "/workspace.css": ("workspace.css", "text/css"),
     "/workspace.js": ("workspace.js", "text/javascript"),
+    "/live-sync.js": ("live-sync.js", "text/javascript"),
     "/workspace/source-editing.js": ("workspace/source-editing.js", "text/javascript"),
     "/workspace/sheet-dialogs.js": ("workspace/sheet-dialogs.js", "text/javascript"),
     "/workspace/dashboard.js": ("workspace/dashboard.js", "text/javascript"),
@@ -54,6 +62,7 @@ WORKSPACE_ASSETS = {
     "/dashboard/app.js": ("workspace/dashboard-view.js", "text/javascript"),
     "/dashboard/canvas-layout.js": FLOW_VIEW_ASSETS["/canvas-layout.js"],
     "/dashboard/dashboard-ui.js": FLOW_VIEW_ASSETS["/dashboard-ui.js"],
+    "/dashboard/live-sync.js": FLOW_VIEW_ASSETS["/live-sync.js"],
     "/dashboard/prism-syntax.js": FLOW_VIEW_ASSETS["/prism-syntax.js"],
 }
 
@@ -104,7 +113,37 @@ def workspace_dispatch(
                 message = str(error) if isinstance(error, ValueError) else "Could not load the Workspace dashboard."
                 self.request.send_json({"error": message}, HTTPStatus.BAD_REQUEST)
             else:
-                self.request.send_json(result)
+                if data:
+                    self.request.send_conditional_json(result)
+                else:
+                    self.request.send_json(result)
+
+        def workspace_dashboard_batch_data(self, query: str) -> None:
+            params = parse_qs(query, keep_blank_values=False)
+            if set(params) != {"panels"}:
+                self.request.send_json({"error": "Specify dashboard panels to read."}, HTTPStatus.BAD_REQUEST)
+                return
+            raw_panels = [part.strip() for item in params["panels"] for part in item.split(",") if part.strip()]
+            panel_ids = list(dict.fromkeys(raw_panels))
+            if not panel_ids or len(panel_ids) > 64 or any(PANEL_ID_PATTERN.fullmatch(panel_id) is None for panel_id in panel_ids):
+                self.request.send_json({"error": "Use valid dashboard panel IDs."}, HTTPStatus.BAD_REQUEST)
+                return
+            panel_sources: dict[str, list[dict]] = {}
+            panel_errors: dict[str, str] = {}
+            for panel_id in panel_ids:
+                try:
+                    assets = dashboard_assets(root, None, panel_id, workspace=True, manifest_only=True)
+                    panel_sources[panel_id] = dashboard_sources(assets.get("bridge.json", "{}"))
+                except FileNotFoundError:
+                    panel_errors[panel_id] = "Workspace dashboard not found."
+                except PermissionError:
+                    panel_errors[panel_id] = "Workspace dashboard files must be inside the dashboard folder."
+                except (OSError, RuntimeError, ValueError, RecursionError) as error:
+                    panel_errors[panel_id] = (
+                        str(error) if isinstance(error, ValueError) else "Could not load the Workspace dashboard."
+                    )
+            result = workspace_dashboard_batch(root, discovered_sheets(), panel_sources, panel_errors)
+            self.request.send_conditional_json(result)
 
         def create_sheet(self) -> None:
             try:
@@ -419,9 +458,10 @@ def workspace_dispatch(
 
         def forward_view(self, sheet: FlowSheet, revision: int, path: str) -> None:
             headers = {}
-            edit_session = self.request.headers.get("X-Phyzflow-Edit-Session")
-            if edit_session is not None:
-                headers["X-Phyzflow-Edit-Session"] = edit_session
+            for header_name in ("X-Phyzflow-Edit-Session", "If-None-Match", "Accept-Encoding"):
+                header_value = self.request.headers.get(header_name)
+                if header_value is not None:
+                    headers[header_name] = header_value
             body = None
             if self.request.command == "POST":
                 try:
@@ -437,7 +477,6 @@ def workspace_dispatch(
             upstream = None
             try:
                 try:
-                    # A reload can begin after the worker accepts a run, while its response streams.
                     with sheet.lock if self.request.command == "POST" else nullcontext():
                         if sheet.closing or sheet.workspace_closing():
                             self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Workspace is shutting down.")
@@ -454,7 +493,6 @@ def workspace_dispatch(
                         connection = upstream.sock
                         upstream.request(self.request.command, path, body=body, headers=headers)
                         response = upstream.getresponse()
-                        # HTTP/1.0 can detach the socket from HTTPConnection after the headers.
                         if connection is not None:
                             connection.settimeout(None)
                 except (OSError, HTTPException):
@@ -464,13 +502,14 @@ def workspace_dispatch(
                 with response:
                     try:
                         self.request.send_response(response.status)
-                        for name in ("Content-Type", "Content-Length", "Cache-Control"):
+                        for name in ("Content-Type", "Content-Length", "Cache-Control", "ETag", "Content-Encoding", "Vary"):
                             value = response.getheader(name)
                             if value is not None:
                                 self.request.send_header(name, value)
                         self.request.end_headers()
-                        while chunk := response.read1(65536):
-                            self.request.wfile.write(chunk)
+                        if response.status != HTTPStatus.NOT_MODIFIED:
+                            while chunk := response.read1(65536):
+                                self.request.wfile.write(chunk)
                     except (OSError, HTTPException):
                         return
             finally:
@@ -481,11 +520,15 @@ def workspace_dispatch(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
+            parsed = urlsplit(self.path)
             if self.path == WORKSPACE_VISUALIZE_LAYOUT:
                 self.visualize_layout()
                 return
             if self.path == "/workspace-dashboard":
                 self.request.send_json({"panels": dashboard_panels(root, None, workspace=True)})
+                return
+            if parsed.path == WORKSPACE_DASHBOARD_BATCH_PATH and parsed.query:
+                self.workspace_dashboard_batch_data(parsed.query)
                 return
             if dashboard := WORKSPACE_DASHBOARD_PATH.fullmatch(self.path):
                 self.workspace_dashboard(dashboard[1], dashboard[2] is not None)
@@ -506,7 +549,7 @@ def workspace_dispatch(
                     self.request.send_json(graph if graph is not None else sheet.source_graph())
                 elif asset := FLOW_VIEW_ASSETS.get(recovery[2]):
                     name, content_type = asset
-                    self.request.send_bytes((STATIC / name).read_bytes(), content_type)
+                    self.request.send_static_asset(STATIC / name, content_type)
                 else:
                     self.request.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -545,11 +588,11 @@ def workspace_dispatch(
                         entry["error"] = attempt.start_error if attempt is not None else None
                         entry["startup"] = sheet.startup
                     flows.append(entry)
-                self.request.send_json({
+                self.request.send_conditional_json({
                     "name": root.name, "flows": flows, "run_all": interpreter is not None,
                     "edit_running_source": interpreter is not None,
                     "format_notice": format_notice,
-                })
+                }, vary="X-Phyzflow-Edit-Session")
                 return
             view = self.view_route()
             if view is not None and is_flow_view_route("GET", view[2]):
@@ -561,7 +604,7 @@ def workspace_dispatch(
                 return
             filename, content_type = asset
             content_type = content_type if ";" in content_type else f"{content_type}; charset=utf-8"
-            self.request.send_bytes((STATIC / filename).read_bytes(), content_type)
+            self.request.send_static_asset(STATIC / filename, content_type)
 
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():

@@ -77,16 +77,19 @@ def sheet_dashboard_run(sheet, mode: str) -> dict | None:
         connection.close()
 
 
-def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
-    available = {
+def _available_sheets(root: Path, sheets) -> dict[str, object]:
+    return {
         sheet.root.relative_to(root).as_posix(): sheet
         for sheet in sheets
         if sheet is not None and not sheet.closing and sheet.root.is_relative_to(root)
         and (sheet.root / "flow.py").is_file() and not (sheet.root / "flow.py").is_symlink()
         and sheet.root.resolve() == sheet.root
     }
-    runs = {}
+
+
+def _resolve_sources(available: dict[str, object], runs: dict, sources: list[dict]) -> tuple[list[dict], bool]:
     results = []
+    live_active = False
     for source in sources:
         reference = source["sheet"]
         result = {"id": source["id"], "sheet": reference, "state": "sheet_unavailable", "value": None}
@@ -101,6 +104,8 @@ def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
             if key not in runs:
                 runs[key] = sheet_dashboard_run(sheet, mode)
             run = runs[key]
+            if mode == "live" and run is not None:
+                live_active = True
             result["state"] = "no_data"
             if run is None:
                 continue
@@ -118,4 +123,30 @@ def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
                 result["state"] = "available"
         except (OSError, HTTPException, KeyError, TypeError, ValueError):
             result["state"] = "source_unavailable"
+    return results, live_active
+
+
+def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
+    available = _available_sheets(root, sheets)
+    results, _ = _resolve_sources(available, {}, sources)
     return {"scope": "workspace", "sources": results}
+
+
+def workspace_dashboard_batch(
+    root: Path,
+    sheets,
+    panel_sources: dict[str, list[dict]],
+    panel_errors: dict[str, str] | None = None,
+) -> dict:
+    available = _available_sheets(root, sheets)
+    runs = {}
+    panels = {}
+    live_active = False
+    for panel_id, sources in panel_sources.items():
+        results, panel_live = _resolve_sources(available, runs, sources)
+        live_active = live_active or panel_live
+        panels[panel_id] = {"scope": "workspace", "sources": results}
+    payload = {"scope": "workspace", "live_active": live_active, "panels": panels}
+    if panel_errors:
+        payload["errors"] = panel_errors
+    return payload
