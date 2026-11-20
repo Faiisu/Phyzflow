@@ -29,6 +29,7 @@ from .processes import OpenFlow
 
 
 MAX_CRASH_RETRIES = 3
+SUPPORTED_SHEET_WORKER_PROTOCOL_VERSIONS = (1,)
 
 
 class ReloadConflict(RuntimeError):
@@ -37,6 +38,17 @@ class ReloadConflict(RuntimeError):
 
 class ReloadDeferred(RuntimeError):
     pass
+
+
+def _worker_reply(path: Path, worker: OpenFlow, deadline: float) -> dict:
+    while not path.is_file():
+        if worker.process.poll() is not None and not path.is_file():
+            raise RuntimeError("The flow process exited during startup.")
+        if monotonic() >= deadline:
+            raise RuntimeError("The flow did not start within ten seconds.")
+        sleep(.02)
+    reply = json.loads(path.read_text(encoding="utf-8"))
+    return reply if isinstance(reply, dict) else {}
 
 
 class FlowSheet:
@@ -52,6 +64,7 @@ class FlowSheet:
         self.root = root
         self.zoom = zoom
         self.worker: OpenFlow | None = None
+        self.startup: dict | None = None
         self.recovery_graph: dict | None = None
         self.inactive_status = "ready"
         self.revision = 0
@@ -195,10 +208,11 @@ class FlowSheet:
                 )
 
     def start_worker(self) -> None:
+        self.startup = None
         with TemporaryDirectory(prefix="phyzflow-sheet-") as directory:
-            ready = Path(directory) / "ready.json"
+            startup = Path(directory) / "startup.json"
             worker = Path(__file__).parent.parent / "sheet_worker.py"
-            argv = [self.interpreter or sys.executable, "-Pu", worker, ready, json.dumps(self.zoom)]
+            argv = [self.interpreter or sys.executable, "-Pu", worker, "--start", startup, json.dumps(self.zoom)]
             options = {}
             token = None
             if self.interpreter is not None:
@@ -222,13 +236,27 @@ class FlowSheet:
             worker = self.worker = OpenFlow(process, run_token=token, lifeline=lifeline)
             try:
                 deadline = monotonic() + 10
-                while not ready.is_file():
-                    if process.poll() is not None and not ready.is_file():
-                        raise RuntimeError("The flow process exited during startup.")
-                    if monotonic() >= deadline:
-                        raise RuntimeError("The flow did not start within ten seconds.")
-                    sleep(.02)
-                reply = json.loads(ready.read_text(encoding="utf-8"))
+                try:
+                    reply = _worker_reply(startup, worker, deadline)
+                except (RuntimeError, ValueError):
+                    reply = {}
+                protocol = reply.get("protocol_version")
+                supported = SUPPORTED_SHEET_WORKER_PROTOCOL_VERSIONS
+                self.startup = {
+                    "stage": "startup",
+                    "protocol_version": protocol,
+                    "supported_protocol_versions": supported,
+                    "loaded_sdk_version": reply.get("loaded_sdk_version"),
+                    "installed_sdk_version": reply.get("installed_sdk_version"),
+                }
+                if type(protocol) is not int or protocol not in supported:
+                    problem = "Sheet Worker protocol is missing" if protocol is None else f"Unsupported Sheet Worker protocol {protocol!r}"
+                    versions = ", ".join(map(str, supported))
+                    error = f"{problem}. Supported versions: {versions}."
+                    self.startup["error"] = error
+                    raise RuntimeError(error)
+                startup.with_name("approved").touch()
+                reply = _worker_reply(startup.with_name("ready.json"), worker, deadline)
                 if "error" in reply:
                     raise RuntimeError(reply["error"])
                 worker.url = reply["url"]

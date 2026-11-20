@@ -254,10 +254,11 @@ async function openFlow(sheet, action = "open", automaticSource = null) {
   updateStatus(sheet, "opening");
   showNotice();
   try {
-    const { revision, status, editor } = await command(sheet, automaticSource ? `reload/${automaticSource}` : action);
+    const { revision, status, editor, startup } = await command(sheet, automaticSource ? `reload/${automaticSource}` : action);
     sheet.revision = revision;
     sheet.sourceChange = null;
     sheet.workerReady = !editor;
+    sheet.error = startup?.error ?? null;
     if (!editor) showFrame(sheet, revision);
     updateStatus(sheet, status ?? "ready");
   } catch (error) {

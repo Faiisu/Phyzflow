@@ -468,6 +468,7 @@ def workspace_dispatch(
                         entry["worker_ready"] = sheet.worker_ready()
                         entry["run_id"] = attempt.run_id if attempt is not None else None
                         entry["error"] = attempt.start_error if attempt is not None else None
+                        entry["startup"] = sheet.startup
                     flows.append(entry)
                 self.request.send_json({
                     "name": root.name, "flows": flows, "run_all": interpreter is not None,
@@ -550,14 +551,19 @@ def workspace_dispatch(
             try:
                 revision = sheet.open(reload=command[2].startswith("reload"), automatic_source=command[3])
                 prefix = f"/revision/{revision}" if revision else ""
-                self.request.send_json({"url": f"/flows/{index}{prefix}/view/", "revision": revision, "status": sheet.status()})
+                self.request.send_json({
+                    "url": f"/flows/{index}{prefix}/view/", "revision": revision, "status": sheet.status(),
+                    "startup": sheet.startup,
+                })
             except ReloadConflict as error:
                 self.request.send_json({"error": str(error), "status": sheet.status()}, HTTPStatus.CONFLICT)
             except ReloadDeferred:
                 self.request.send_json({"deferred": True}, HTTPStatus.CONFLICT)
             except (OSError, RuntimeError, EOFError) as error:
                 if interpreter is not None and not sheet.worker_ready() and not sheet.workspace_closing():
-                    self.request.send_json({"editor": True, "revision": sheet.revision, "status": sheet.status()})
+                    self.request.send_json({
+                        "editor": True, "revision": sheet.revision, "status": sheet.status(), "startup": sheet.startup,
+                    })
                 else:
                     self.request.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
 
