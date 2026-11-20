@@ -12,6 +12,33 @@ TELEMETRY = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Tel
 
 
 class GraphFitTests(unittest.TestCase):
+    def test_opening_a_sheet_fits_its_graph_at_the_current_viewport_size(self):
+        with TemporaryDirectory() as temporary, browser_page() as page:
+            root = Path(temporary).resolve()
+            (root / "flow.py").write_text(
+                'from workspace_sdk import Flow, Output, Step\n'
+                'flow = Flow((), (Step("Start", lambda: 1, {}),), Output("Start"))\n',
+                encoding="utf-8",
+            )
+            copytree(TELEMETRY, root / "flows" / TELEMETRY.name, ignore=ignore_patterns(".workspace", "__pycache__"))
+            with local_ui(root) as (url, _):
+                for width, height in ((1440, 900), (390, 844)):
+                    with self.subTest(width=width):
+                        page.set_viewport_size({"width": width, "height": height})
+                        page.goto(url)
+                        page.get_by_role("tab", name=TELEMETRY.name, exact=True).click()
+                        sheet = page.frame_locator(f'iframe[title="{TELEMETRY.name} flow"]')
+                        fit = sheet.get_by_role("button", name="Fit graph", exact=True)
+                        expect(fit).to_be_enabled()
+                        graph = sheet.locator("#graph")
+                        self.assertTrue(graph.locator(".node").evaluate_all("""cards => cards.every(card => {
+                            const box = card.getBoundingClientRect();
+                            return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+                        })"""))
+                        initial = graph.evaluate("node => node.style.transform")
+                        fit.click()
+                        self.assertEqual(graph.evaluate("node => node.style.transform"), initial)
+
     def test_dragging_a_zoomed_node_moves_its_edges_and_keeps_source_access(self):
         with local_ui(TELEMETRY, single_flow=True) as (url, _), browser_page() as page:
             page.goto(url)

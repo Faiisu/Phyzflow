@@ -78,5 +78,5 @@ Deepen the four affected architectural areas so each concept lives behind a sing
 
 ## Further Notes
 
-- All deepening steps preserve full backward compatibility with existing single-panel dashboards, `default-workspace` sheets, and `docs/development-plan.md` milestone acceptance criteria.
-- Each candidate area can be implemented and verified incrementally against the existing test suite without blocking other milestones.
+- All deepening steps preserve compatibility with existing single-panel dashboards and `default-workspace` sheets and meet the applicable acceptance criteria in the [first-release tickets](../workspace-first-release/issues/).
+- Each candidate area can be implemented and verified independently against the existing test suite.

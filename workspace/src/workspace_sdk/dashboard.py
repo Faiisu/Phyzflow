@@ -8,6 +8,7 @@ ASSET_ROUTE = r"dashboard-assets/(workflow|[0-9]{1,8})(?:/([A-Za-z0-9._-]+))?"
 SETTINGS_ROUTE = r"dashboard-settings/(workflow|[0-9]{1,8})"
 PANEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js", "bridge.json")
+WORKSPACE_DASHBOARD_DIRECTORY = Path("dashboards/workspace")
 DASHBOARD_BRIDGE_VERSION = 1
 MAX_ASSET_BYTES = 256 * 1024
 
@@ -96,24 +97,30 @@ def _scope_directory(root: Path, step_id: str | None) -> Path:
     return directory / "nodes" / name
 
 
-def dashboard_panels(root: Path, step_id: str | None) -> list[dict[str, str]]:
+def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False) -> list[dict[str, str]]:
     resolved_root = root.resolve()
+    directory = resolved_root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(resolved_root, step_id)
     return [
         {"id": entry["id"], "label": entry["label"]}
-        for entry in _scope_panel_entries(resolved_root, _scope_directory(resolved_root, step_id))
+        for entry in _scope_panel_entries(resolved_root, directory)
         if entry["ready"]
     ]
 
 
-def dashboard_assets(root: Path, step_id: str | None, panel_id: str | None = None) -> dict[str, str]:
-    directory = _scope_directory(root, step_id)
+def dashboard_assets(
+    root: Path, step_id: str | None, panel_id: str | None = None, *, workspace: bool = False,
+    manifest_only: bool = False,
+) -> dict[str, str]:
+    directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
     if panel_id is not None and panel_id != "default":
         if panel_id in (".", "..") or not PANEL_ID_PATTERN.fullmatch(panel_id):
             raise PermissionError("Invalid dashboard panel identifier.")
         directory = directory / "panels" / panel_id
 
+    if manifest_only and not _regular_file(directory / "index.html"):
+        raise FileNotFoundError("index.html")
     assets = {}
-    for name in ASSET_NAMES:
+    for name in ("bridge.json",) if manifest_only else ASSET_NAMES:
         path = directory / name
         # Only load regular files under the workflow's dashboard directory.
         if path.resolve() != path:
@@ -203,4 +210,22 @@ def inspect_sheet_dashboards(root: Path) -> dict:
             "files": list(ASSET_NAMES),
         },
         "theme_reference": DASHBOARD_THEME_REFERENCE,
+    }
+
+
+def inspect_workspace_dashboards(root: Path) -> dict:
+    root = root.resolve()
+    return {
+        "panels": _scope_panel_entries(root, root / WORKSPACE_DASHBOARD_DIRECTORY),
+        "directory": WORKSPACE_DASHBOARD_DIRECTORY.as_posix(),
+        "panel_directory_template": "dashboards/workspace/panels/<panel_id>",
+        "bridge": {
+            "version": DASHBOARD_BRIDGE_VERSION,
+            "methods": ["subscribe(listener)"],
+            "snapshot_fields": ["scope", "sources"],
+            "declaration_example": {
+                "versions": [DASHBOARD_BRIDGE_VERSION],
+                "sources": [{"id": "main-duration", "sheet": ".", "field": "duration_ms"}],
+            },
+        },
     }

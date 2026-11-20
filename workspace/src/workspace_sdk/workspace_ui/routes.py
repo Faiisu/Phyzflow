@@ -8,6 +8,7 @@ import re
 import sqlite3
 from urllib.parse import unquote
 
+from ..dashboard import DASHBOARD_BRIDGE_VERSION, dashboard_assets, dashboard_panels
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
 from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
@@ -28,6 +29,7 @@ from ..web import (
     UIRequestHandler,
     is_flow_view_route,
 )
+from .dashboard_data import dashboard_snapshot, dashboard_sources
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
 
@@ -38,12 +40,15 @@ RECOVERY_NODE_FILES = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_FILES_R
 RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE_ROUTE}")
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
 EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
+WORKSPACE_DASHBOARD_PATH = re.compile(r"/workspace-dashboard/([A-Za-z0-9._-]+)(/data)?")
 WORKSPACE_ASSETS = {
     "/": ("workspace.html", "text/html"),
     "/workspace.css": ("workspace.css", "text/css"),
     "/workspace.js": ("workspace.js", "text/javascript"),
     "/workspace/source-editing.js": ("workspace/source-editing.js", "text/javascript"),
     "/workspace/sheet-dialogs.js": ("workspace/sheet-dialogs.js", "text/javascript"),
+    "/workspace/dashboard.js": ("workspace/dashboard.js", "text/javascript"),
+    "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript"),
 }
 
 
@@ -77,6 +82,23 @@ def workspace_dispatch(
         def __init__(self, request: UIRequestHandler, path: str):
             self.request = request
             self.path = path
+
+        def workspace_dashboard(self, panel_id: str, data: bool) -> None:
+            try:
+                assets = dashboard_assets(root, None, panel_id, workspace=True, manifest_only=data)
+                sources = dashboard_sources(assets.get("bridge.json", "{}"))
+                result = (dashboard_snapshot(root, discovered_sheets(), sources) if data
+                          else {"bridge_version": DASHBOARD_BRIDGE_VERSION, "scope": "workspace", **assets})
+            except FileNotFoundError:
+                self.request.send_json({"error": "Workspace dashboard not found."}, HTTPStatus.NOT_FOUND)
+            except PermissionError:
+                self.request.send_json({"error": "Workspace dashboard files must be inside the dashboard folder."},
+                                       HTTPStatus.FORBIDDEN)
+            except (OSError, RuntimeError, ValueError, RecursionError) as error:
+                message = str(error) if isinstance(error, ValueError) else "Could not load the Workspace dashboard."
+                self.request.send_json({"error": message}, HTTPStatus.BAD_REQUEST)
+            else:
+                self.request.send_json(result)
 
         def create_sheet(self) -> None:
             try:
@@ -426,6 +448,12 @@ def workspace_dispatch(
         def do_GET(self) -> None:
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if self.path == "/workspace-dashboard":
+                self.request.send_json({"panels": dashboard_panels(root, None, workspace=True)})
+                return
+            if dashboard := WORKSPACE_DASHBOARD_PATH.fullmatch(self.path):
+                self.workspace_dashboard(dashboard[1], dashboard[2] is not None)
                 return
             if layout := VISUALIZE_LAYOUT_PATH.fullmatch(self.path):
                 self.visualize_layout(int(layout[1]))

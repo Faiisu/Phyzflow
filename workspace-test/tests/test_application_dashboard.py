@@ -475,9 +475,12 @@ class ApplicationDashboardTests(unittest.TestCase):
             with application(state) as url:
                 workspace_id, token = create_workspace_and_token(page, url, state, root)
 
+                page.set_viewport_size({"width": 620, "height": 900})
                 page.goto(f"{url}/workspaces/{workspace_id}/")
                 flow = page.frame_locator('iframe[title="Main flow"]')
                 expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
+                expect(flow.locator("#panel-visualize")).to_be_hidden()
+                page.set_viewport_size({"width": 1440, "height": 900})
                 expect(flow.locator("#visualize-list")).to_contain_text("No dashboards found in this flow.")
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
@@ -802,6 +805,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                     for path, source in (
                         ("dashboards/workflow/panels/rate-chart/index.html", "<main><h1>Rate</h1><button id='custom-btn'>Inspect</button></main>\n"),
                         ("dashboards/workflow/panels/rate-chart/style.css", "button { background: transparent; border: 0; }\n"),
+                        ("dashboards/workspace/index.html", "<h1>Workspace metrics</h1>\n"),
                         ("dashboards/nodes/Step%2FOne/index.html", "<main><h1>Encoded</h1></main>\n"),
                     ):
                         wrote = call(
@@ -818,6 +822,9 @@ class ApplicationDashboardTests(unittest.TestCase):
                         ["rate-chart"],
                     )
                     self.assertEqual(inspected["nodes"][0]["step_id"], "Step/One")
+                    workspace_panels = output(call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=None))
+                    self.assertEqual(workspace_panels["workspace"], inspected["workspace"])
+                    self.assertEqual(workspace_panels["workspace"]["panels"][0]["assets"], ["dashboards/workspace/index.html"])
                     closed = call(
                         portal, client, "close_sheet",
                         workspace_id=workspace_id, sheet="Main", session_id=session_id,

@@ -17,6 +17,7 @@
       <h1 id="workspace-name" class="workspace-name">Workspace</h1>
     </div>
     <div class="workspace-actions" role="group" aria-label="Workspace actions">
+      <button type="button" id="open-workspace-dashboard" class="secondary-action" aria-haspopup="dialog">Dashboard</button>
       <button type="button" id="run-all" class="secondary-action" hidden>Run All</button>
       <button type="button" id="edit-flow-source" class="secondary-action" aria-haspopup="dialog" disabled>Edit flow.py</button>
       <button type="button" id="reload-flow" class="secondary-action" disabled>Reload flow</button>
@@ -43,6 +44,16 @@
     <div id="sheet-tabs" class="sheet-tabs" role="tablist" aria-label="Flows"></div>
     <button type="button" id="new-sheet" aria-label="New sheet" title="New sheet" disabled>+</button>
   </footer>
+  <dialog id="workspace-dashboard" aria-labelledby="workspace-dashboard-title">
+    <header>
+      <h2 id="workspace-dashboard-title">Workspace dashboard</h2>
+      <select id="workspace-dashboard-panel" aria-label="Dashboard panel" hidden></select>
+      <form method="dialog"><button class="secondary-action">Close</button></form>
+    </header>
+    <p id="workspace-dashboard-status" role="status" hidden></p>
+    <div id="workspace-dashboard-content"></div>
+    <button type="button" id="resize-workspace-dashboard" aria-label="Resize dashboard" title="Drag or use the arrow keys to resize"></button>
+  </dialog>
   <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
     <form>
       <h1 id="flow-source-title">Edit flow.py</h1>
@@ -95,5 +106,6 @@
       </div>
     </form>
   </dialog>
+  <script type="module" src="./workspace/dashboard.js"></script>
 </body>
 </html>

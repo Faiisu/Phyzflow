@@ -228,6 +228,21 @@ def serve(
                 })
             elif self.path == "/status":
                 self.send_json({"status": "running" if sheet_busy(root) else run_status})
+            elif self.path == "/dashboard-live":
+                with live_lock:
+                    started = live_events.get((None, "running")) if run_status == "running" else None
+                    if started is None:
+                        data = None
+                    else:
+                        run = started[1]
+                        metrics, metric_times = {}, {}
+                        for (step, _), (_, event) in live_events.items():
+                            if event.get("run_id") == run["run_id"] and "live_metrics" in event:
+                                metrics.setdefault(step, {}).update(event["live_metrics"])
+                                metric_times.setdefault(step, {}).update(dict.fromkeys(event["live_metrics"], event["time"]))
+                        data = {"id": run["run_id"], "status": "running", "started_at": run["time"],
+                                "metrics": metrics, "metric_times": metric_times}
+                self.send_json(data)
             elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):
                 scope = match[1]
                 try:
@@ -351,7 +366,6 @@ def serve(
             try:
                 with sheet_lock(root):
                     clear_external_snapshot(root)
-                    run_status = "running"
                     self.stream_run(inputs, run_id)
             except FlowBusy as error:
                 self.send_error(HTTPStatus.CONFLICT, str(error))
@@ -451,6 +465,7 @@ def serve(
             with live_lock:
                 live_events.clear()
                 console_events.clear()
+                run_status = "running"
             console_run_id = run_id
             event_lock = Lock()
             self.send_response(HTTPStatus.OK)

@@ -88,18 +88,20 @@ function pick(record, keys) {
   return Object.fromEntries(keys.filter(key => Object.hasOwn(record, key)).map(key => [key, record[key]]));
 }
 
-function childBridge(version) {
+function childBridge(version, workspace) {
   let snapshot;
   let request = 0;
   const listeners = new Set();
   const pending = new Map();
-  window.workspaceDashboard = Object.freeze({
+  const bridge = {
     version,
     subscribe(listener) {
       listeners.add(listener);
       if (snapshot) listener(snapshot);
       return () => listeners.delete(listener);
     },
+  };
+  if (!workspace) Object.assign(bridge, {
     openNode(nodeId) {
       parent.postMessage({ type: "dashboard-open-node", nodeId }, "*");
     },
@@ -114,6 +116,7 @@ function childBridge(version) {
       });
     },
   });
+  window.workspaceDashboard = Object.freeze(bridge);
   window.addEventListener("message", event => {
     if (event.source !== parent) return;
     if (event.data?.type === "dashboard-data") {
@@ -150,7 +153,7 @@ function frameDocument(assets) {
     <meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; base-uri 'none'; form-action 'none'">
     <script>
-    (${childBridge})(${assets.bridge_version});
+    (${childBridge})(${assets.bridge_version}, ${assets.scope === "workspace"});
     (() => {
       const themeStyle = document.createElement("style");
       themeStyle.dataset.phyzflowTheme = "true";
@@ -170,6 +173,19 @@ function frameDocument(assets) {
     })();
     </script>
     ${assets["index.html"]}`;
+}
+
+export function createDashboardFrame(assets, title) {
+  const supported = supportedBridgeVersions(assets);
+  if (!supported.includes(assets.bridge_version)) {
+    throw new Error(`Incompatible Dashboard Bridge. Observed version ${assets.bridge_version}. Supported versions ${supported.join(", ")}.`);
+  }
+  const frame = document.createElement("iframe");
+  frame.title = title;
+  frame.setAttribute("sandbox", "allow-scripts allow-forms");
+  frame.referrerPolicy = "no-referrer";
+  frame.srcdoc = frameDocument(assets);
+  return frame;
 }
 
 async function fetchJSON(path, errorMessage, options) {
@@ -292,16 +308,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
           : `dashboard-assets/${key}`;
         const assets = await fetchJSON(assetPath, "Could not load the dashboard.");
         if (version !== panel.loadVersion || element.hidden) return;
-        const supported = supportedBridgeVersions(assets);
-        if (!supported.includes(assets.bridge_version)) {
-          throw new Error(`Incompatible Dashboard Bridge. Observed version ${assets.bridge_version}. Supported versions ${supported.join(", ")}.`);
-        }
-        const frame = document.createElement("iframe");
-        frame.title = heading.textContent;
-        // The CSP blocks native submissions. The sandbox permits submit handlers to run.
-        frame.setAttribute("sandbox", "allow-scripts allow-forms");
-        frame.referrerPolicy = "no-referrer";
-        frame.srcdoc = frameDocument(assets);
+        const frame = createDashboardFrame(assets, heading.textContent);
         panel.frame = frame;
         preview.replaceChildren(frame);
         message.textContent = "";
@@ -560,7 +567,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   }
 
   const visualizeDrawer = document.querySelector("#panel-visualize");
-  const visualizeToggle = document.querySelector('#panel-switcher button[aria-controls="panel-visualize"]');
   const exitVisualizeBtn = document.querySelector("#exit-visualize-mode");
 
   function setVisualizeMode(active) {
@@ -601,12 +607,13 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
   });
 
-  if (visualizeDrawer && !visualizeDrawer.hidden) {
-    refreshVisualizeList();
+  if (visualizeDrawer) {
+    const refreshVisibleDrawer = () => {
+      if (!visualizeDrawer.hidden) refreshVisualizeList();
+    };
+    new MutationObserver(refreshVisibleDrawer).observe(visualizeDrawer, { attributeFilter: ["hidden"] });
+    refreshVisibleDrawer();
   }
-  visualizeToggle?.addEventListener("click", () => {
-    if (visualizeDrawer && !visualizeDrawer.hidden) refreshVisualizeList();
-  });
   document.querySelector("#visualize-refresh")?.addEventListener("click", () => {
     refreshVisualizeList();
   });

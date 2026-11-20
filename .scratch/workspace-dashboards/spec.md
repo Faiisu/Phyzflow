@@ -11,7 +11,7 @@ Workspace is a local place to observe and control an inference workflow. Develop
 
 ## Constraints
 
-- Extend the local Flow Editor and Run History path in development milestone 4. Reuse the existing Runner, graph and run stream.
+- Extend the local Flow Editor and [run history](../workspace-first-release/issues/08-recover-local-run-history-across-browser-disconnects.md). Reuse the existing Runner, graph, and run stream.
 - Run dashboard code in an isolated browser frame. Workspace mediates data and setting changes. Dashboard assets are local to the selected scope, and the asset loader rejects paths outside that scope.
 - Dashboard data defaults to operational metadata. Preview data is explicit and ephemeral. Requests, samples, and traceback text stay out of the dashboard data channel.
 - Saved settings are snapshotted when a run starts. A live change is scoped to one run and requires acknowledgement from the node.

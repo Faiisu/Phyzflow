@@ -1,6 +1,6 @@
 from typing import Literal
 
-from ..dashboard import inspect_sheet_dashboards
+from ..dashboard import DASHBOARD_THEME_REFERENCE, inspect_sheet_dashboards, inspect_workspace_dashboards
 from ..sheet_locks import SheetLockedError
 from ..sheets import discover_flows
 from ..workspace_environment import install_workspace_packages
@@ -50,10 +50,16 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error) or f"Could not delete sheet {sheet!r}.") from None
         return {"sheet": sheet, **result}
 
-    @server.tool(description="Inspect a sheet's dashboard panels, asset paths, theme contract, and resize guidance.")
-    def inspect_dashboards(workspace_id: str, sheet: str = "Main") -> dict:
-        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
-        return {"sheet": sheet, **inspect_sheet_dashboards(flow_sheet.root)}
+    @server.tool(description="Inspect dashboard panels, asset paths, theme contract, and resize guidance. Pass null to inspect only Workspace panels.")
+    def inspect_dashboards(workspace_id: str, sheet: str | None = "Main") -> dict:
+        if sheet is None:
+            root = access.workspace(workspace_id)
+            ensure_not_protected(root, access.protected_folders)
+            result = {"theme_reference": DASHBOARD_THEME_REFERENCE}
+        else:
+            root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+            result = {"sheet": sheet, **inspect_sheet_dashboards(flow_sheet.root)}
+        return {**result, "workspace": inspect_workspace_dashboards(root)}
 
     @server.tool(description="Open a sheet for exclusive editing or read-only inspection.")
     def open_sheet(workspace_id: str, sheet: str = "Main", mode: Literal["edit", "read"] = "edit") -> dict:

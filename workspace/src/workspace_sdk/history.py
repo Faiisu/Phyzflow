@@ -73,6 +73,19 @@ class RunHistory:
             runs.append({key: record[key] for key in ("id", "status", "started_at", "duration_ms")})
         return sorted(runs, key=lambda run: run["started_at"], reverse=True)
 
+    def latest(self) -> dict[str, Any] | None:
+        latest = None
+        for path in self.directory.glob("*.json"):
+            if not re.fullmatch(r"[0-9a-f]{32}", path.stem) or path.is_symlink() or not path.is_file():
+                continue
+            try:
+                record = json.loads(path.read_bytes())
+            except FileNotFoundError:
+                continue
+            if latest is None or (record["started_at"], record["id"]) > (latest["started_at"], latest["id"]):
+                latest = record
+        return latest
+
     def read(self, run_id: str) -> dict[str, Any] | None:
         if re.fullmatch(r"[0-9a-f]{32}", run_id):
             try:

@@ -143,6 +143,36 @@ In `dashboard.js`, call `window.workspaceDashboard.subscribe(render)`. The callb
 
 The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a node dashboard on the same run.
 
+## Build a dashboard from multiple sheets
+
+Put `index.html`, `dashboard.js`, and optional `style.css` in `dashboards/workspace/` at the Workspace root. To add another panel, put its files in `dashboards/workspace/panels/<panel-id>/`. Open **Dashboard** in the Workspace toolbar and select a panel when there is more than one. Drag the resize handle or focus it and use the arrow keys. Close and reopen the dashboard to reload its files.
+
+Call `inspect_dashboards` with `sheet: null` to inspect Workspace panels and their Bridge contract through MCP.
+
+Declare the panel's inputs in `bridge.json`. Give each source a unique ID and use the sheet directory relative to the Workspace root. Use `.` for Main and `flows/<sheet-folder>` for a secondary sheet.
+
+```json
+{
+  "versions": [1],
+  "sources": [
+    {"id": "main-duration", "sheet": ".", "field": "duration_ms"},
+    {"id": "hand-duration", "sheet": "flows/Hand Detection", "field": "duration_ms"},
+    {
+      "id": "hand-count",
+      "sheet": "flows/Hand Detection",
+      "mode": "live",
+      "metric": {"step": "Detect Hands", "group": "Detection", "name": "Count"}
+    }
+  ]
+}
+```
+
+- Select one field (`status`, `started_at`, `finished_at`, or `duration_ms`) or one metric (`step`, `group`, and `name`) per source. Metric names must match those reported by the flow. Declare up to 32 sources per panel.
+- The default mode, `latest`, reads the most recent saved run and the metrics reported with `record_metrics`. In `live` mode, `status`, `started_at`, and metrics reported with `publish_metrics` are available while the run is active. Use `latest` for the finished time and recorded duration.
+- Call `workspaceDashboard.subscribe(({ sources }) => { /* render */ })` in `dashboard.js`. Each source has `id`, `sheet`, `state`, and `value`. Phyzflow adds `sheet_name` when it resolves the sheet, and `run_id` and `timestamp` when a run is available. The `state` is `available`, `no_data`, `sheet_unavailable`, or `source_unavailable`. Treat a `null` value as missing.
+
+See the [multi-sheet dashboard example](../workspace-test/sheets-demo/dashboards/workspace/) for a responsive duration comparison and live metric cards. Add `workspace-test/sheets-demo` as a Workspace in the installed app, start **Run All**, and open **Dashboard**. The Live Counter publishes continuously. Telemetry Control Room reports its duration after it finishes.
+
 ### Add a control
 
 Declare a `NodeSetting` in Python, include the same object in the node's `Step.settings` mapping, and call its `get()` method in the node. The default determines the supported value type. Numeric settings can declare a minimum and maximum. Use settings for operational values visible in the dashboard.

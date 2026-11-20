@@ -2,7 +2,7 @@ import { createEdgeRouter, pointAlongEdge, traceEdge } from "../edge-routing.js"
 import { createCanvasLayout, snapStep } from "../canvas-layout.js";
 import { element, inputBindings } from "./display.js";
 
-export function initGraph({ recoveryView, onSelect, revealInspector, showNodeFiles }) {
+export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, showNodeFiles }) {
   const graph = document.querySelector("#graph");
   const canvas = graph.querySelector("canvas");
   const edgeLabels = document.createElement("div");
@@ -185,7 +185,7 @@ export function initGraph({ recoveryView, onSelect, revealInspector, showNodeFil
     });
   }
 
-  fitGraph.addEventListener("click", () => {
+  function fitGraphToView() {
     const items = [...Array.from(nodes.values(), item => item.node), ...edgeLabels.children, ...visibleDashboards()];
     const bounds = graphBounds(items);
     for (const point of edgePoints) {
@@ -195,7 +195,9 @@ export function initGraph({ recoveryView, onSelect, revealInspector, showNodeFil
       bounds.bottom = Math.max(bounds.bottom, point.y);
     }
     frameGraphBounds(bounds, true);
-  });
+  }
+
+  fitGraph.addEventListener("click", fitGraphToView);
   fitSelection.addEventListener("click", () => frameGraphBounds(graphBounds([nodes.get(activeNode).node]), true));
 
   function animateWheelZoom(time) {
@@ -355,7 +357,10 @@ export function initGraph({ recoveryView, onSelect, revealInspector, showNodeFil
     document.querySelector("#graph-summary").textContent =
       `${steps.length} ${steps.length === 1 ? "node" : "nodes"} / ${count} ${count === 1 ? "edge" : "edges"}`;
     layoutGraph(graphZoom, true);
-    if (steps.length) inspectNode(steps[0], project);
+    if (steps.length) {
+      inspectNode(steps[0], project);
+      if (fitOnOpen) fitGraphToView();
+    }
     if (!recoveryView) enableNodeDragging(steps);
     const graphObserver = new ResizeObserver(() => {
       layoutGraph();

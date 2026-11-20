@@ -1,0 +1,19 @@
+{
+  "versions": [1],
+  "sources": [
+    {"id": "counter-duration", "sheet": "flows/Live Counter", "field": "duration_ms"},
+    {"id": "telemetry-duration", "sheet": "flows/Telemetry Control Room", "field": "duration_ms"},
+    {
+      "id": "live-count",
+      "sheet": "flows/Live Counter",
+      "mode": "live",
+      "metric": {"step": "Multiply by Ten", "group": "Counter", "name": "Count"}
+    },
+    {
+      "id": "live-scored",
+      "sheet": "flows/Telemetry Control Room",
+      "mode": "live",
+      "metric": {"step": "Run Parallel Pipeline", "group": "Pipeline progress", "name": "Scored"}
+    }
+  ]
+}

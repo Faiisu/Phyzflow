@@ -2,7 +2,7 @@
 
 Phyzflow is a Python application for developers and AI agents to build, run, and inspect flows. Developers can trace execution step by step and use dashboards authored by an AI agent. The same application supports one-time runs, automation, and continuous workloads operated around the clock.
 
-This specification records the intended product behavior and provides the basis for version-by-version acceptance testing. The [development plan](development-plan.md) describes the initial inference milestones. The release requirements below define when a version can ship.
+This specification defines product behavior and the acceptance scenarios for each release. Feature specs and tickets in the [issue tracker](../.scratch/) record implementation scope, dependencies, and status. See the [issue tracker guide](agents/issue-tracker.md) for how those records are maintained.
 
 ## Workspace management
 
@@ -90,6 +90,8 @@ To declare Dashboard Bridge compatibility, add an optional `bridge.json` next to
 
 Use the Live Counter dashboard as the first template. Review a generated panel beside the host UI in idle, live, error, and narrow-panel states. Use the shared theme and the displayed data as the review criteria.
 
+**DASH-03.** A Workspace dashboard panel can combine run fields and reported numeric metrics from explicitly declared sheets in the same Workspace. Open it from the Workspace toolbar. A source selects the latest saved run or the currently active run, and data identifies its sheet, run, and timestamp. Live values are available while the source sheet runs, including when its view is unopened. Keep each source independent when a sheet stops, is deleted, or lacks a value. Use the existing sandbox and Dashboard Bridge v1. Workspace panels receive their declared values without request or response payloads, samples, frames, console output, or exception text.
+
 ## Run types and lifecycle
 
 **RUN-01.** The application can execute all three Python workload patterns below. Flow code owns workload rules such as input and output handling, schedules and triggers, branching on errors, retries, and checkpointing.
@@ -164,6 +166,7 @@ These scenarios describe observable expectations for release acceptance.
 | FLOW-05 | Save invalid Python while a sheet is ready. Verify that the graph and editor stay available after a browser refresh. Select Run, confirm that the sheet reports the source error, then repair the file from the node and run again. |
 | FLOW-05 | Open and run a sheet with invalid Python before its first successful load. Verify that the source preview opens and that Run reports the error. Repair it from a node and run successfully. Restart Phyzflow with the source broken again and verify that its last loaded graph opens before Run. |
 | DASH-01, DASH-02 | Ask an AI agent to author a panel for a flow metric. Open it in the Workspace and verify the values it displays and its conformance to the current application's theme and interaction conventions. |
+| DASH-03 | Open a Workspace dashboard that combines sources from two sheets. Compare their saved durations and observe their live metrics while the sheets run concurrently. Stop or remove one source sheet and verify that the other keeps updating. Verify the source sheet and run IDs, that a reference to another Workspace yields no value, and that existing workflow and node panels still work. |
 | MCP-01, MCP-02 | Verify that each flow-development command is available through MCP. Run representative commands against a Workspace allowed by the deployed instance and one it denies. Verify that the Phyzflow application specification is protected from edits through MCP. |
 | MCP-03 | Grant and revoke a Workspace permission in the web app. Verify that the MCP identity gains access after the grant and that its next request is denied after revocation. |
 | MCP-04, MCP-05 | Use an authenticated remote MCP client to round-trip a large binary file and verify SHA-256. Exercise file revisions, project dotfiles, cross-Sheet moves, Trash recovery, interrupted transfers, revocation, and protected paths. |

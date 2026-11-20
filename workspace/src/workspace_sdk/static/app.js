@@ -18,7 +18,7 @@ const editor = initNodeSource({
   recoveryView, getStopPhase: () => run.stopPhase, isRunInProgress: () => run.runInProgress,
 });
 const graph = initGraph({
-  recoveryView,
+  recoveryView, fitOnOpen: Boolean(workspaceToolbar) || recoveryView,
   onSelect: (step, project) => inspector.inspectNode(step, project),
   revealInspector: () => {
     if (recoveryView || compactPanelLayout.matches) {
