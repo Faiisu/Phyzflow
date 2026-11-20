@@ -76,9 +76,11 @@ export function initNodeSource({ recoveryView, getStopPhase, isRunInProgress }) 
 
   function syncEditLockUI() {
     const lockedByOther = Boolean(sheetEditLock?.locked && !sheetEditLock.owned_by_viewer);
-    editLockBadge.hidden = !lockedByOther;
-    editLockBadge.textContent = lockedByOther && sheetEditLock?.stale ? "Read-only · Possibly stale" : "Read-only";
-    editLockBadge.title = lockedByOther ? externalEditLockMessage() : "";
+    if (editLockBadge) {
+      editLockBadge.hidden = !lockedByOther;
+      editLockBadge.textContent = lockedByOther && sheetEditLock?.stale ? "Read-only · Possibly stale" : "Read-only";
+      editLockBadge.title = lockedByOther ? externalEditLockMessage() : "";
+    }
     forceOpenNodeSource.hidden = !(lockedByOther && window.parent !== window && window.parent.phyzflowRequestForceOpen);
     if (currentSource && !savingSource && !nodeSourceRequest) {
       nodeSourceInput.readOnly = nodeSourceLocked();

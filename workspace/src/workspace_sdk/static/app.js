@@ -8,9 +8,18 @@ import { initRunControls } from "./flow-view/run-controls.js";
 const compactPanelLayout = window.matchMedia("(max-width: 720px)");
 const drawerPanels = ["outline", "visualize", "inspector", "run"];
 let wideDrawers = [];
-const workspaceToolbar = window.parent !== window && window.parent.phyzflowSyncToolbar;
+const onRunChange = window.parent !== window && window.parent.phyzflowRunChanged;
 const recoveryView = window.location.pathname.endsWith("/recovery/");
 const panelSwitcher = document.querySelector("#panel-switcher");
+if (!onRunChange && !recoveryView) {
+  const template = document.querySelector("#standalone-toolbar");
+  const toolbar = template.content.querySelector("#panel-toolbar");
+  const status = document.querySelector("#status");
+  toolbar.querySelector("#run-flow").before(status);
+  status.hidden = false;
+  panelSwitcher.querySelector(".panel-menu").prepend(template.content.querySelector("button[aria-controls]"));
+  template.replaceWith(toolbar);
+}
 const panelToggles = [...panelSwitcher.querySelectorAll("button[aria-controls]")];
 let dashboards;
 
@@ -18,7 +27,7 @@ const editor = initNodeSource({
   recoveryView, getStopPhase: () => run.stopPhase, isRunInProgress: () => run.runInProgress,
 });
 const graph = initGraph({
-  recoveryView, fitOnOpen: Boolean(workspaceToolbar) || recoveryView,
+  recoveryView, fitOnOpen: Boolean(onRunChange) || recoveryView,
   onSelect: (step, project) => inspector.inspectNode(step, project),
   revealInspector: () => {
     if (recoveryView || compactPanelLayout.matches) {
@@ -31,7 +40,7 @@ const inspector = initInspector({
   graph, showNodeFiles: editor.showNodeFiles, openDashboard: id => dashboards.open(id),
 });
 const run = initRunControls({
-  graph, inspector, editor, getDashboards: () => dashboards, setPanel, workspaceToolbar, recoveryView,
+  graph, inspector, editor, getDashboards: () => dashboards, setPanel, onRunChange, recoveryView,
 });
 
 function setPanel(name, visible) {
@@ -87,10 +96,6 @@ for (const button of document.querySelectorAll("[data-close-panel]")) {
   });
 }
 
-if (workspaceToolbar || recoveryView) {
-  setPanel("toolbar", false);
-  panelSwitcher.querySelector('[aria-controls="panel-toolbar"]').hidden = true;
-}
 if (recoveryView) {
   document.querySelector("#visualize-list").replaceChildren(
     element("p", "Open or run the flow to load dashboards.", "muted"),
@@ -122,9 +127,11 @@ try {
     );
   }
   const name = document.querySelector("#project-name");
-  name.textContent = project.name;
-  name.title = project.name;
-  name.hidden = false;
+  if (name) {
+    name.textContent = project.name;
+    name.title = project.name;
+    name.hidden = false;
+  }
   graph.positionGraph(project);
   if (!recoveryView) run.loadSample(project.input);
 } catch (error) {

@@ -2,8 +2,13 @@ import { initSourceEditing } from "./workspace/source-editing.js";
 import { initSheetDialogs } from "./workspace/sheet-dialogs.js";
 
 const workspacePath = window.location.pathname;
-document.querySelector("#workspace-home").hidden = workspacePath === "/";
-document.querySelector("#workspace-brand").hidden = workspacePath !== "/";
+if (workspacePath !== "/") {
+  const home = document.querySelector("#workspace-home");
+  home.href = "../../";
+  home.title = "Workspaces";
+  home.setAttribute("aria-label", home.title);
+  home.removeAttribute("aria-hidden");
+}
 const views = document.querySelector("#sheets");
 const tabs = document.querySelector("#sheet-tabs");
 const notice = document.querySelector("#notice");
@@ -37,7 +42,6 @@ function element(tag, text, className) {
   return node;
 }
 
-
 const {
   isEditingFlowSource, lockNoticeText, notifyFrameEditLock, releaseRemovedSheet,
   releaseSheetEdit, syncFlowSourceLock, syncPolledLock,
@@ -65,14 +69,15 @@ function updateStatus(sheet, status) {
   sheet.view.classList.toggle("is-unavailable", needsRecovery(sheet) || usesSourceGraph(sheet));
   sheet.indicator.textContent = labels[status] ?? status;
   sheet.indicator.dataset.state = status;
-  sheet.stop.disabled = sheet.pending || !["running", "stopping"].includes(status);
+  sheet.stop.hidden = !["running", "stopping"].includes(status);
+  sheet.stop.disabled = sheet.pending || sheet.stop.hidden;
   if (sheet === active) syncFlowSourceLock();
 }
 
-function activeRunButton() {
+function activeRunControls() {
   if (!active || active.pending || active.frameStopped || needsRecovery(active) || usesSourceGraph(active) ||
       ["opening", "running", "stopping", "stopped", "unavailable"].includes(active.status)) return null;
-  return active.frame?.contentDocument?.getElementById("run-flow");
+  return active.frame?.contentWindow?.phyzflowRunControls;
 }
 
 function canRunWithoutWorker(sheet) {
@@ -82,25 +87,23 @@ function canRunWithoutWorker(sheet) {
 
 function syncToolbar() {
   renameSheet.disabled = !active;
-  const button = activeRunButton();
-  runSheet.disabled = !canRunWithoutWorker(active) && button?.disabled !== false;
-  const frameStatus = button?.ownerDocument.getElementById("status");
-  const frameState = frameStatus?.dataset.state;
-  const state = frameState || active?.status || "";
-  const label = frameState ? frameStatus.textContent : labels[state] ?? state;
+  const run = activeRunControls()?.state;
+  runSheet.disabled = !canRunWithoutWorker(active) && !run?.canRun;
+  const state = run?.status?.state || active?.status || "";
+  const label = run?.status?.label ?? labels[state] ?? state;
   flowStatus.hidden = !active;
   if (flowStatus.textContent !== label) flowStatus.textContent = label;
   flowStatus.dataset.state = state;
 }
 
-window.phyzflowSyncToolbar = frameWindow => {
+window.phyzflowRunChanged = frameWindow => {
   if (active?.frame?.contentWindow === frameWindow) syncToolbar();
 };
 
 runSheet.addEventListener("click", async () => {
   const sheet = active;
   if (!canRunWithoutWorker(sheet)) {
-    activeRunButton()?.click();
+    activeRunControls()?.run();
     return;
   }
   sheet.pending = true;
@@ -153,9 +156,8 @@ function showNotice() {
   showRecoveryGraph(active, hasRecoveryGraph);
   reloadFlow.disabled = !active || active.pending || active.status === "running";
   editFlowSource.disabled = !active || active.pending;
-  const deferSource = editRunningSource;
-  const pendingSource = deferSource ? "Source changed. Run to use the saved code." : "Source changed.";
-  const change = active?.sourceChange && active?.status !== "running" ? pendingSource : "";
+  const pendingSource = editRunningSource ? "Source changed. Run to use the saved code." : "Source changed.";
+  const change = active?.sourceChange && active.status !== "running" ? pendingSource : "";
   const reloadText = active?.reloadError || change;
   reloadMessage.hidden = !reloadText;
   if (reloadMessage.textContent !== reloadText) reloadMessage.textContent = reloadText;
@@ -164,7 +166,7 @@ function showNotice() {
   if (editLockMessage.textContent !== lockText) editLockMessage.textContent = lockText;
   forceOpenFlow.hidden = !lockText || Boolean(active?.pending);
   sourceChangeMessage.hidden = !change;
-  const sourceChangeText = deferSource ? pendingSource : "Source changed. Reload pending.";
+  const sourceChangeText = editRunningSource ? pendingSource : "Source changed. Reload pending.";
   if (sourceChangeMessage.textContent !== sourceChangeText) sourceChangeMessage.textContent = sourceChangeText;
   const snapshot = Boolean(active?.frameStopped) && !hasRecoveryGraph;
   notice.classList.toggle("is-snapshot", snapshot);
@@ -341,6 +343,7 @@ function selectSheet(sheet) {
   for (const item of sheets.filter(Boolean)) {
     const selected = item === active;
     item.tab.setAttribute("aria-selected", String(selected));
+    item.tab.setAttribute("aria-describedby", selected ? flowStatus.id : item.indicator.id);
     item.tab.tabIndex = selected ? 0 : -1;
     item.view.classList.toggle("is-active", selected);
     item.view.inert = !selected;
@@ -353,16 +356,13 @@ function selectSheet(sheet) {
 }
 
 function updateSheetName(sheet, name) {
-  if (sheet.name === name) return;
   sheet.name = name;
   sheet.tab.setAttribute("aria-label", name);
-  const title = sheet.tab.querySelector(".sheet-name");
-  title.textContent = title.title = name;
+  sheet.title.textContent = sheet.title.title = name;
   sheet.stop.setAttribute("aria-label", `Stop ${name}`);
-  const remove = sheet.group.querySelector(".delete-flow");
-  if (remove) {
-    remove.title = `Delete ${name}`;
-    remove.setAttribute("aria-label", remove.title);
+  if (sheet.remove) {
+    sheet.remove.title = `Delete ${name}`;
+    sheet.remove.setAttribute("aria-label", sheet.remove.title);
   }
   if (sheet.frame) sheet.frame.title = `${name} flow`;
   if (sheet.recoveryFrame) sheet.recoveryFrame.title = `${name} recovery graph`;
@@ -373,24 +373,19 @@ function makeSheet(flow, index) {
   tab.id = `flow-tab-${index}`;
   tab.setAttribute("role", "tab");
   tab.setAttribute("aria-controls", `flow-view-${index}`);
-  tab.setAttribute("aria-label", flow.name);
   tab.setAttribute("aria-selected", "false");
   tab.tabIndex = -1;
-  const title = element("span", flow.name, "sheet-name");
-  title.title = flow.name;
+  const title = element("span", "", "sheet-name");
   const indicator = element("span", "", "sheet-status");
   tab.setAttribute("aria-describedby", `flow-status-${index}`);
   indicator.id = `flow-status-${index}`;
   tab.append(title, indicator);
   const stop = element("button", "Stop", "stop-flow");
-  stop.setAttribute("aria-label", `Stop ${flow.name}`);
   const group = element("div", "", "sheet");
   group.setAttribute("role", "presentation");
   group.append(tab, stop);
-  if (flow.deletable) {
-    const remove = element("button", "×", "delete-flow");
-    remove.setAttribute("aria-label", `Delete ${flow.name}`);
-    remove.title = `Delete ${flow.name}`;
+  const remove = flow.deletable ? element("button", "×", "delete-flow") : null;
+  if (remove) {
     remove.addEventListener("click", () => confirmDelete(sheet));
     group.append(remove);
   }
@@ -403,12 +398,13 @@ function makeSheet(flow, index) {
   tabs.append(group);
 
   const sheet = {
-    index, name: flow.name, tab, indicator, stop, group, view,
+    index, tab, title, indicator, stop, remove, group, view,
     frame: null, frameStopped: false, recoveryFrame: null, recoverable: flow.recoverable, pending: false, version: 0,
     workerReady: flow.worker_ready,
     revision: flow.revision, runError: flow.error,
     editLock: flow.edit_lock ?? null, editSessionId: null, activeEditors: new Set(), heartbeatTimer: null,
   };
+  updateSheetName(sheet, flow.name);
   updateStatus(sheet, flow.status);
   tab.addEventListener("click", () => selectSheet(sheet));
   stop.addEventListener("click", () => stopFlow(sheet));
@@ -462,9 +458,11 @@ async function getWorkspace() {
 
 function removeSheet(index) {
   const sheet = sheets[index];
-  if (sheet) releaseRemovedSheet(sheet);
-  sheet?.view.remove();
-  sheet?.group.remove();
+  if (sheet) {
+    releaseRemovedSheet(sheet);
+    sheet.view.remove();
+    sheet.group.remove();
+  }
   if (active === sheet) active = null;
   sheets[index] = null;
 }
@@ -477,9 +475,10 @@ function showCurrentSheet() {
 
 function syncSheets(flows) {
   flows.forEach((flow, index) => {
+    const sheet = sheets[index];
     if (flow === null) removeSheet(index);
-    else if (sheets[index] === undefined) sheets[index] = makeSheet(flow, index);
-    else if (sheets[index]) updateSheetName(sheets[index], flow.name);
+    else if (sheet === undefined) sheets[index] = makeSheet(flow, index);
+    else if (sheet && sheet.name !== flow.name) updateSheetName(sheet, flow.name);
   });
   showCurrentSheet();
 }
@@ -498,28 +497,28 @@ async function pollStatus() {
     showFormatNotice(format_notice);
     syncSheets(flows);
     for (const sheet of sheets.filter(Boolean)) {
-      if (flows[sheet.index] && sheet.version === versions[sheet.index]) {
-        syncPolledLock(sheet, flows[sheet.index].edit_lock ?? null, sentSessions[sheet.index]);
+      const { index } = sheet;
+      const flow = flows[index];
+      if (!flow || sheet.version !== versions[index]) continue;
+      syncPolledLock(sheet, flow.edit_lock ?? null, sentSessions[index]);
+      if (sheet.pending || (sheet.frameStopped && runAll.hidden)) continue;
+      const { status, revision, changed_source, error, recoverable, worker_ready } = flow;
+      sheet.recoverable = recoverable;
+      sheet.workerReady = worker_ready;
+      if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0) ||
+          (sheet === active && worker_ready && sheet.recoveryFrame)) &&
+          !["opening", "unavailable", "stopped"].includes(status) && worker_ready !== false &&
+          !error && !hasUnsavedSource(sheet)) {
+        sheet.revision = revision;
+        sheet.error = null;
+        sheet.reloadError = null;
+        if (sheet.frame || (sheet === active && (status === "running" || worker_ready))) showFrame(sheet, revision);
       }
-      if (flows[sheet.index] && (!sheet.frameStopped || !runAll.hidden) && !sheet.pending && sheet.version === versions[sheet.index]) {
-        const { status, revision, changed_source, error, recoverable, worker_ready } = flows[sheet.index];
-        sheet.recoverable = recoverable;
-        sheet.workerReady = worker_ready;
-        if ((revision !== sheet.revision || (sheet === active && !sheet.frame && status === "running" && revision > 0) ||
-            (sheet === active && worker_ready && sheet.recoveryFrame)) &&
-            !["opening", "unavailable", "stopped"].includes(status) && worker_ready !== false &&
-            !error && !hasUnsavedSource(sheet)) {
-          sheet.revision = revision;
-          sheet.error = null;
-          sheet.reloadError = null;
-          if (sheet.frame || (sheet === active && (status === "running" || worker_ready))) showFrame(sheet, revision);
-        }
-        if (status === "stopped") retainStoppedFrame(sheet, false);
-        sheet.runError = error;
-        if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
-        updateStatus(sheet, status);
-        if (sheet.watching) checkSourceChange(sheet, changed_source);
-      }
+      if (status === "stopped") retainStoppedFrame(sheet, false);
+      sheet.runError = error;
+      if (status !== "running" && sheet.status === "running") sheet.reloadError = null;
+      updateStatus(sheet, status);
+      if (sheet.watching) checkSourceChange(sheet, changed_source);
     }
     showNotice();
   } finally {

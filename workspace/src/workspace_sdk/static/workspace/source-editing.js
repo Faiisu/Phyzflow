@@ -77,7 +77,7 @@ export function initSourceEditing({
       keepalive,
     });
     const data = await response.json().catch(() => ({}));
-    return { ok: response.ok, status: response.status, data };
+    return { ok: response.ok, data };
   }
 
   function startSheetHeartbeat(sheet) {
@@ -205,28 +205,17 @@ export function initSourceEditing({
     forceOpenDialog.showModal();
   }
 
-  function flowSourceLocked() {
-    const active = getActiveSheet();
-    if (sourceDraft?.readOnlyLock) return true;
-    if (active?.editLock?.locked && !active.editLock.owned_by_viewer) return true;
-    return !canEditRunningSource() && sourceDraft?.sheet.status === "running";
-  }
-
   function syncFlowSourceLock() {
-    const active = getActiveSheet();
     if (!sourceDialog.open || !sourceDraft || closeSource.disabled) return;
-    const externalLock = active?.editLock?.locked && !active.editLock.owned_by_viewer
-      ? externalLockSummary(active.editLock)
-      : sourceDraft.readOnlyLock
-        ? sourceDraft.lockMessage
-        : "";
-    const running = !canEditRunningSource() && sourceDraft?.sheet.status === "running";
-    const locked = Boolean(externalLock) || running;
+    const externalLock = externalLockSummary(getActiveSheet()?.editLock);
+    const lockMessage = externalLock || (sourceDraft.readOnlyLock ? sourceDraft.lockMessage : "");
+    const running = !canEditRunningSource() && sourceDraft.sheet.status === "running";
+    const locked = Boolean(lockMessage) || running;
     sourceInput.readOnly = locked;
     saveSource.disabled = locked || !flowSourceIsDirty();
-    forceOpenSource.hidden = !Boolean(active?.editLock?.locked && !active.editLock.owned_by_viewer);
-    if (externalLock) {
-      sourceMessage.textContent = `Read-only · ${externalLock}`;
+    forceOpenSource.hidden = !externalLock;
+    if (lockMessage) {
+      sourceMessage.textContent = `Read-only · ${lockMessage}`;
     } else if (running) {
       sourceMessage.textContent = "Flow is running. Editing is disabled.";
     } else if (sourceMessage.textContent === "Flow is running. Editing is disabled.") {
@@ -383,9 +372,7 @@ export function initSourceEditing({
 
   editFlowSource.addEventListener("click", openSourceEditor);
 
-  sourceInput.addEventListener("input", () => {
-    saveSource.disabled = flowSourceLocked() || !flowSourceIsDirty();
-  });
+  sourceInput.addEventListener("input", syncFlowSourceLock);
 
   sourceForm.addEventListener("submit", async event => {
     event.preventDefault();
@@ -396,7 +383,7 @@ export function initSourceEditing({
     sourceMessage.textContent = "Saving…";
     try {
       const saved = await requestFlowSource(sheet, { source, revision });
-      sourceDraft = { ...sourceDraft, sheet, source, revision: saved.revision };
+      sourceDraft = { ...sourceDraft, source, revision: saved.revision };
       sourceMessage.textContent = canEditRunningSource()
         ? "Saved. The next run will use this source."
         : "Saved. Python changes reload automatically.";

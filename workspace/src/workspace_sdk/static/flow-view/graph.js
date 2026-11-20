@@ -141,13 +141,13 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
   function graphAreas() {
     const rect = selector => document.querySelector(selector).getBoundingClientRect();
     const viewport = graphViewport.getBoundingClientRect();
-    const toolbar = rect("#panel-toolbar");
+    const toolbar = document.querySelector("#panel-toolbar")?.getBoundingClientRect();
     const outlinePanel = rect("#panel-outline");
     const sidebar = rect(".overlay-stack");
     const controls = rect("#panel-zoom");
     const panelMenu = rect("#panel-switcher > summary");
     const width = viewport.width;
-    const top = toolbar.height ? toolbar.bottom - viewport.top : 0;
+    const top = toolbar?.height ? toolbar.bottom - viewport.top : 0;
     const bottom = Math.min(
       controls.height ? controls.top : viewport.bottom,
       panelMenu.height ? panelMenu.top : viewport.bottom,

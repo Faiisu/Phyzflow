@@ -37,22 +37,25 @@
     </div>
   </main>
 
-  <header id="panel-toolbar" class="overlay toolbar">
-    <div class="toolbar-project">
-      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-      <strong>Phyzflow</strong>
-      <span id="project-name" class="project-name" hidden></span>
-      <span class="document-name">flow.py</span>
-    </div>
-    <div class="toolbar-actions">
-      <span id="edit-lock-badge" class="badge" data-state="locked" hidden>Read-only</span>
-      <span id="status" role="status" class="badge">Ready</span>
-      <button type="submit" form="run-form" class="primary-button" id="run-flow" disabled>
-        <span class="play-mark" aria-hidden="true"></span>Run flow
-      </button>
-      <button type="button" class="close-panel" data-close-panel="toolbar" aria-label="Close Toolbar">×</button>
-    </div>
-  </header>
+  <span id="status" role="status" class="badge" hidden>Ready</span>
+  <template id="standalone-toolbar">
+    <header id="panel-toolbar" class="overlay toolbar">
+      <div class="toolbar-project">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <strong>Phyzflow</strong>
+        <span id="project-name" class="project-name" hidden></span>
+        <span class="document-name">flow.py</span>
+      </div>
+      <div class="toolbar-actions">
+        <span id="edit-lock-badge" class="badge" data-state="locked" hidden>Read-only</span>
+        <button type="submit" form="run-form" class="primary-button" id="run-flow" disabled>
+          <span class="play-mark" aria-hidden="true"></span>Run flow
+        </button>
+        <button type="button" class="close-panel" data-close-panel="toolbar" aria-label="Close Toolbar">×</button>
+      </div>
+    </header>
+    <button type="button" aria-controls="panel-toolbar" aria-pressed="true">Toolbar</button>
+  </template>
 
   <aside class="outline-stack" aria-label="Flow navigation and dashboards">
     <section id="panel-outline" class="overlay outline" aria-labelledby="outline-heading">
@@ -208,7 +211,6 @@
   <details class="panel-switcher" id="panel-switcher">
     <summary class="overlay">Panels</summary>
     <div class="overlay panel-menu" role="group" aria-label="Panel visibility">
-      <button type="button" aria-controls="panel-toolbar" aria-pressed="true">Toolbar</button>
       <button type="button" aria-controls="panel-outline" aria-pressed="true">Flow outline</button>
       <button type="button" aria-controls="panel-visualize" aria-pressed="true">Visualize</button>
       <button type="button" aria-controls="panel-inspector" aria-pressed="true">Inspector</button>

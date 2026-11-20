@@ -1,7 +1,7 @@
 import { blockedByText, element, formatDuration, jsonOutput, labels, locationText } from "./display.js";
 
 export function initRunControls({
-  graph, inspector, editor, getDashboards, setPanel, workspaceToolbar, recoveryView,
+  graph, inspector, editor, getDashboards, setPanel, onRunChange, recoveryView,
 }) {
   const { nodes, focusGraphNode } = graph;
   const { showInspectorState, trackInspectorExecution } = inspector;
@@ -24,13 +24,15 @@ export function initRunControls({
   let runInProgress = false;
   let streamingOwnRun = false;
   let projectReady = false;
+  let runStatus = null;
   let deferredRunError = null;
   let liveOutput = null;
 
   function setStatus(value, label = labels[value]) {
+    runStatus = { state: value, label };
     status.textContent = label;
     status.dataset.state = value;
-    if (workspaceToolbar) workspaceToolbar(window);
+    if (onRunChange) onRunChange(window);
   }
 
   function clearConsole() {
@@ -124,11 +126,29 @@ export function initRunControls({
     }
   }
 
-  button.addEventListener("click", () => setPanel("run", true).scrollIntoView({ block: "nearest" }));
+  function revealRunPanel() {
+    setPanel("run", true).scrollIntoView({ block: "nearest" });
+  }
+
+  button?.addEventListener("click", revealRunPanel);
+  const canRun = () => projectReady && !runInProgress && !stopPhase;
+  if (onRunChange && !recoveryView) {
+    window.phyzflowRunControls = {
+      get state() {
+        return { status: runStatus, canRun: canRun() };
+      },
+      run() {
+        if (!canRun()) return;
+        revealRunPanel();
+        form.requestSubmit(runInput);
+      },
+    };
+  }
 
   function updateRunControls() {
-    button.disabled = runInput.disabled = !projectReady || runInProgress || Boolean(stopPhase);
-    if (workspaceToolbar) workspaceToolbar(window);
+    runInput.disabled = !canRun();
+    if (button) button.disabled = runInput.disabled;
+    if (onRunChange) onRunChange(window);
     editor.syncRunState();
   }
 
@@ -179,7 +199,7 @@ export function initRunControls({
 
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (stopPhase || runInProgress || !projectReady) return;
+    if (!canRun()) return;
     runInProgress = true;
     streamingOwnRun = true;
     consoleRunId = null;
