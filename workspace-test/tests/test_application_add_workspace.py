@@ -4,6 +4,7 @@ import json
 import os
 from shutil import copy2, copytree
 import subprocess
+import tomllib
 import unittest
 from zipfile import ZipFile
 
@@ -44,6 +45,54 @@ def run_sheet(page, name):
 
 
 class AddWorkspaceTests(unittest.TestCase):
+    def test_workspace_format_controls_whether_application_opens_sheets(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state = parent / "state"
+            with application(state) as url:
+                sign_in(page, url, state)
+                for name, declaration, expected in (
+                    ("Supported", "format_version = 1", None),
+                    ("Unsupported", "format_version = 2", "found 2"),
+                    ("Malformed", 'format_version = "1"', "found '1'"),
+                    ("Unspecified", "", None),
+                ):
+                    with self.subTest(format=name):
+                        root = parent / name
+                        sheet = root / "flows" / "Child"
+                        source = write_flow(sheet, "return 73")
+                        imported = sheet / "flow-imported"
+                        source.write_text(
+                            f"from pathlib import Path\nPath({str(imported)!r}).touch()\n"
+                            + source.read_text(encoding="utf-8"),
+                            encoding="utf-8",
+                        )
+                        config = root / "pyproject.toml"
+                        config.write_text("[tool.workspace]\nformat_version = 1\n")
+                        (sheet / "pyproject.toml").write_text("[tool.workspace]\nformat_version = 2\n")
+                        headers = {"Origin": url}
+                        body = {"action": "add", "path": str(root)}
+                        registered = page.request.post(f"{url}/workspaces", data=body, headers=headers)
+                        self.assertEqual(registered.status, 201, registered.text())
+                        address = f"{url}/workspaces/{registered.json()['id']}/"
+                        config.write_text(f"[tool.workspace]\n{declaration}\n")
+                        original = config.read_bytes()
+                        if expected is not None:
+                            response = page.request.get(address)
+                            self.assertEqual(response.status, 400, response.text())
+                            error = response.json()["error"]
+                            self.assertIn(str(config), error)
+                            self.assertIn(expected, error)
+                            self.assertIn("supported version is 1", error)
+                            self.assertFalse(imported.exists())
+                        else:
+                            page.goto(address)
+                            if not declaration:
+                                expect(page.get_by_text("Workspace format is unspecified", exact=False)).to_be_visible()
+                            self.assertEqual(run_sheet(page, "Child"), 73)
+                            self.assertTrue(imported.exists())
+                        self.assertEqual(config.read_bytes(), original)
+
     def test_browse_host_folders_to_create_and_add_workspaces(self):
         with TemporaryDirectory(prefix="Phyzflow projects ", dir=Path.home()) as temp, browser_page() as page:
             parent = Path(temp).resolve()
@@ -78,6 +127,8 @@ class AddWorkspaceTests(unittest.TestCase):
                 dialog.get_by_role("button", name="Create", exact=True).click()
                 expect(page.get_by_role("link", name=new_root.name)).to_be_focused(timeout=20_000)
                 self.assertTrue((new_root / "flow.py").is_file())
+                settings = tomllib.loads((new_root / "pyproject.toml").read_text())["tool"]["workspace"]
+                self.assertEqual(settings["format_version"], 1)
 
                 page.get_by_role("button", name="Add Workspace").click()
                 dialog = page.get_by_role("dialog", name="Add Workspace")

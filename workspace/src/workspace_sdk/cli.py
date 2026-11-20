@@ -9,9 +9,9 @@ import sys
 import traceback
 
 from .node_settings import SettingsStore
-from .project import ValidationError, load_project
+from .project import ValidationError, load_project, workspace_format_notice
 from .runner import run
-from .sheets import create_sheet, discover_flows, initialize_workspace
+from .sheets import create_sheet, discover_flows, initialize_workspace, workspace_root_for_sheet
 from .ui_settings import load_ui_settings, prompt_ui_settings
 
 
@@ -98,13 +98,17 @@ def main() -> int:
             return 0
         if not root.is_dir():
             raise ValueError(f"Workspace directory does not exist: {root}")
+        name = getattr(args, "sheet", None)
+        format_root = workspace_root_for_sheet(root) if name is None and args.command in ("check", "run") else root
+        if notice := workspace_format_notice(format_root):
+            print(notice, file=sys.stderr)
         if args.command == "sheets":
             print(json.dumps([{"name": title, "file": str(path / "flow.py")} for title, path in discover_flows(root)]))
             return 0
         if args.command == "new-sheet":
             print(create_sheet(root, args.name))
             return 0
-        if (name := getattr(args, "sheet", None)) is not None:
+        if name is not None:
             path = next((path for title, path in discover_flows(root) if title == name), None)
             if path is None:
                 raise ValueError(f"No sheet named {name!r} in {root}. List its sheets with 'workspace sheets'.")
