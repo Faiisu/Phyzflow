@@ -1,4 +1,4 @@
-from importlib.metadata import distribution, version
+from importlib.metadata import version
 import os
 from pathlib import Path
 from shutil import copytree, ignore_patterns
@@ -79,9 +79,13 @@ class ApplicationWorkerCompatibilityTests(unittest.TestCase):
                 app_install = parent / "application-install"
                 package = app_install / "workspace_sdk"
                 copytree(Path(workspace_sdk.__file__).parent, package, ignore=ignore_patterns("__pycache__"))
-                metadata = app_install / f"workspace_sdk-{version('workspace-sdk')}.dist-info"
+                sdk_version = version("workspace-sdk")
+                metadata = app_install / f"workspace_sdk-{sdk_version}.dist-info"
                 metadata.mkdir()
-                (metadata / "METADATA").write_text(distribution("workspace-sdk").read_text("METADATA"), encoding="utf-8")
+                (metadata / "METADATA").write_text(
+                    f"Metadata-Version: 2.1\nName: workspace-sdk\nVersion: {sdk_version}\n",
+                    encoding="utf-8",
+                )
                 worker = package / "sheet_worker.py"
                 announcement = '"protocol_version": SHEET_WORKER_PROTOCOL_VERSION,'
                 replacement = '"protocol_version": 99,' if protocol is not None else ""
@@ -101,7 +105,7 @@ class ApplicationWorkerCompatibilityTests(unittest.TestCase):
                     self.assertEqual(startup["stage"], "startup")
                     self.assertEqual(startup["protocol_version"], protocol)
                     self.assertEqual(startup["supported_protocol_versions"], [1])
-                    self.assertEqual(startup["loaded_sdk_version"], version("workspace-sdk"))
+                    self.assertEqual(startup["loaded_sdk_version"], sdk_version)
                     self.assertIsNone(startup["installed_sdk_version"])
                     self.assertEqual(startup["error"], error)
                     self.assertFalse(marker.exists())
