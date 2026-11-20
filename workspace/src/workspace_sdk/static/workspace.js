@@ -461,11 +461,18 @@ function syncSheets(flows) {
   showCurrentSheet();
 }
 
+function showFormatNotice(notice) {
+  const formatNotice = document.querySelector("#format-notice");
+  formatNotice.textContent = notice ?? "";
+  formatNotice.hidden = !notice;
+}
+
 async function pollStatus() {
   const versions = sheets.map(sheet => sheet?.version);
   const sentSessions = sheets.map(sheet => sheet?.editSessionId ?? null);
   try {
-    const { flows } = await getWorkspace();
+    const { flows, format_notice } = await getWorkspace();
+    showFormatNotice(format_notice);
     syncSheets(flows);
     for (const sheet of sheets.filter(Boolean)) {
       if (flows[sheet.index] && sheet.version === versions[sheet.index]) {
@@ -502,9 +509,7 @@ try {
   const name = document.querySelector("#workspace-name");
   name.textContent = workspace.name;
   name.title = workspace.name;
-  const formatNotice = document.querySelector("#format-notice");
-  formatNotice.textContent = workspace.format_notice ?? "";
-  formatNotice.hidden = !workspace.format_notice;
+  showFormatNotice(workspace.format_notice);
   runAll.hidden = !workspace.run_all;
   editRunningSource = workspace.edit_running_source;
   syncSheets(workspace.flows);

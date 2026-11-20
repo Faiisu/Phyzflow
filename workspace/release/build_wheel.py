@@ -12,7 +12,7 @@ import subprocess
 import sys
 from tarfile import open as tar_open
 from tempfile import TemporaryDirectory
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 
 MODULE_FILES = {
@@ -29,11 +29,35 @@ MODULES = ("application", *MODULE_FILES)
 MANIFEST_NAME = "phyzflow-release.json"
 
 
-def read_previous_modules(path):
-    if path is None:
+def previous_macos_manifest(output):
+    archives = sorted(
+        output.glob("Workspace-*-macos-*.zip"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    for path in archives:
+        try:
+            with ZipFile(path) as archive:
+                wheels = [
+                    name for name in archive.namelist()
+                    if re.fullmatch(r"Workspace[.]app/Contents/Resources/workspace_sdk-[^/]+[.]whl", name)
+                ]
+                wheel, = wheels
+                with ZipFile(BytesIO(archive.read(wheel))) as packaged:
+                    manifests = [name for name in packaged.namelist() if name.endswith(f".dist-info/{MANIFEST_NAME}")]
+                    if manifests:
+                        name, = manifests
+                        return packaged.read(name), path
+        except (BadZipFile, OSError, ValueError) as error:
+            raise ValueError(f"Could not read the previous release {path}: {error}") from error
+    return None, None
+
+
+def read_previous_modules(data, location):
+    if data is None:
         return {}
     try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads(data)
         previous = manifest["modules"]
         if not re.fullmatch(r"[a-f0-9]{40}(?:[a-f0-9]{24})?", manifest["commit"]):
             raise ValueError("Expected a full Git commit ID.")
@@ -46,8 +70,8 @@ def read_previous_modules(path):
         ):
             return previous
     except (OSError, ValueError, TypeError, KeyError) as error:
-        raise ValueError(f"Invalid previous release manifest {path}: {error}") from error
-    raise ValueError(f"Invalid previous release manifest {path}: expected all module fingerprints and release versions.")
+        raise ValueError(f"Invalid previous release manifest {location}: {error}") from error
+    raise ValueError(f"Invalid previous release manifest {location}: expected all module fingerprints and release versions.")
 
 
 def write_release_wheel(raw_wheel, release_wheel, commit, previous):
@@ -91,11 +115,19 @@ def main():
     parser = argparse.ArgumentParser(description="Build a Phyzflow release wheel from committed source.")
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1], help="SDK source directory.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for the release wheel.")
-    parser.add_argument("--previous-manifest", type=Path, help="Manifest from the preceding published release.")
+    previous_source = parser.add_mutually_exclusive_group()
+    previous_source.add_argument("--previous-manifest", type=Path, help="Manifest from the preceding published release.")
+    previous_source.add_argument("--previous-macos-output", type=Path, help="Output directory containing previous macOS releases.")
     args = parser.parse_args()
     try:
-        previous = read_previous_modules(args.previous_manifest)
-    except ValueError as error:
+        if args.previous_manifest is not None:
+            data, location = args.previous_manifest.read_bytes(), args.previous_manifest
+        elif args.previous_macos_output is not None:
+            data, location = previous_macos_manifest(args.previous_macos_output)
+        else:
+            data, location = None, None
+        previous = read_previous_modules(data, location)
+    except (OSError, ValueError) as error:
         parser.error(str(error))
     output = args.out_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)

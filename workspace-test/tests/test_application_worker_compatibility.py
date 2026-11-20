@@ -16,6 +16,20 @@ from test_application_add_workspace import add_workspace, run_sheet, write_flow
 import workspace_sdk
 
 
+def application_copy(parent):
+    app_install = parent / "application-install"
+    package = app_install / "workspace_sdk"
+    copytree(Path(workspace_sdk.__file__).parent, package, ignore=ignore_patterns("__pycache__"))
+    sdk_version = version("workspace-sdk")
+    metadata = app_install / f"workspace_sdk-{sdk_version}.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: workspace-sdk\nVersion: {sdk_version}\n",
+        encoding="utf-8",
+    )
+    return app_install, package / "sheet_worker.py"
+
+
 class ApplicationWorkerCompatibilityTests(unittest.TestCase):
     def test_supported_worker_opens_and_reports_sdk_when_workspace_has_no_distribution(self):
         with TemporaryDirectory() as temporary, browser_page() as page:
@@ -67,7 +81,7 @@ class ApplicationWorkerCompatibilityTests(unittest.TestCase):
 
     def test_unsupported_or_missing_protocol_is_diagnosed_before_loading_project(self):
         for protocol in (99, None):
-            with self.subTest(protocol=protocol), TemporaryDirectory() as temporary, browser_page() as page:
+            with self.subTest(combination=protocol), TemporaryDirectory() as temporary, browser_page() as page:
                 parent = Path(temporary).resolve()
                 root, state = parent / "Project", parent / "state"
                 source = write_flow(root, "return 72")
@@ -76,19 +90,10 @@ class ApplicationWorkerCompatibilityTests(unittest.TestCase):
                     f"from pathlib import Path\nPath({str(marker)!r}).touch()\n" + source.read_text(),
                     encoding="utf-8",
                 )
-                app_install = parent / "application-install"
-                package = app_install / "workspace_sdk"
-                copytree(Path(workspace_sdk.__file__).parent, package, ignore=ignore_patterns("__pycache__"))
+                app_install, worker = application_copy(parent)
                 sdk_version = version("workspace-sdk")
-                metadata = app_install / f"workspace_sdk-{sdk_version}.dist-info"
-                metadata.mkdir()
-                (metadata / "METADATA").write_text(
-                    f"Metadata-Version: 2.1\nName: workspace-sdk\nVersion: {sdk_version}\n",
-                    encoding="utf-8",
-                )
-                worker = package / "sheet_worker.py"
                 announcement = '"protocol_version": SHEET_WORKER_PROTOCOL_VERSION,'
-                replacement = '"protocol_version": 99,' if protocol is not None else ""
+                replacement = f'"protocol_version": {protocol},' if protocol is not None else ""
                 worker_source = worker.read_text()
                 self.assertIn(announcement, worker_source)
                 worker.write_text(worker_source.replace(announcement, replacement), encoding="utf-8")
@@ -97,7 +102,7 @@ class ApplicationWorkerCompatibilityTests(unittest.TestCase):
                     add_workspace(page, root)
                     page.get_by_role("link", name=root.name, exact=True).click(timeout=20_000)
                     error = (
-                        "Unsupported Sheet Worker protocol 99. Supported versions: 1."
+                        f"Unsupported Sheet Worker protocol {protocol}. Supported versions: 1."
                         if protocol is not None else "Sheet Worker protocol is missing. Supported versions: 1."
                     )
                     expect(page.get_by_text(error, exact=True)).to_be_visible()
@@ -108,4 +113,35 @@ class ApplicationWorkerCompatibilityTests(unittest.TestCase):
                     self.assertEqual(startup["loaded_sdk_version"], sdk_version)
                     self.assertIsNone(startup["installed_sdk_version"])
                     self.assertEqual(startup["error"], error)
+                    self.assertFalse(marker.exists())
+
+
+    def test_worker_bootstrap_failures_preserve_the_startup_reason(self):
+        for worker_code, reason in (
+            ('raise SystemExit(3)\n', "exited during startup"),
+            ('from pathlib import Path\nimport sys\nPath(sys.argv[2]).write_text("invalid")\n', "invalid JSON"),
+            ('from time import sleep\nsleep(30)\n', "did not start within ten seconds"),
+        ):
+            with self.subTest(reason=reason), TemporaryDirectory() as temporary, browser_page() as page:
+                parent = Path(temporary).resolve()
+                root, state = parent / "Project", parent / "state"
+                source = write_flow(root, "return 72")
+                marker = root / "flow-imported"
+                source.write_text(
+                    f"from pathlib import Path\nPath({str(marker)!r}).touch()\n" + source.read_text(),
+                    encoding="utf-8",
+                )
+                app_install, worker = application_copy(parent)
+                worker.write_text(worker_code, encoding="utf-8")
+                with patch.dict(os.environ, PYTHONPATH=str(app_install)), application(state) as url:
+                    sign_in(page, url, state)
+                    add_workspace(page, root)
+                    page.get_by_role("link", name=root.name, exact=True).click(timeout=20_000)
+                    expect(page.get_by_text(reason, exact=False)).to_be_visible(timeout=20_000)
+                    startup = page.request.get(f"{page.url}workspace").json()["flows"][0]["startup"]
+                    self.assertEqual(startup["stage"], "startup")
+                    self.assertIsNone(startup["protocol_version"])
+                    self.assertEqual(startup["supported_protocol_versions"], [1])
+                    self.assertIn("Sheet Worker protocol is missing", startup["error"])
+                    self.assertIn(reason, startup["error"])
                     self.assertFalse(marker.exists())

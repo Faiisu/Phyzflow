@@ -23,10 +23,14 @@ WORKER_COMPATIBLE = (
 )
 WORKER_REJECTED = WORKER + "test_unsupported_or_missing_protocol_is_diagnosed_before_loading_project"
 BRIDGE = "test_dashboards.DashboardTests.test_dashboard_bridge_compatibility_is_local_to_each_panel"
+COMBINATION_TESTS = {WORKSPACE_CLI, WORKSPACE_APP, WORKER_REJECTED, BRIDGE}
 
 CASES = (
     ("workspace_format", 1, 1, "compatible", (WORKSPACE_CLI, WORKSPACE_APP)),
     ("workspace_format", 1, 2, "rejected", (WORKSPACE_CLI, WORKSPACE_APP)),
+    ("workspace_format", 1, "1", "rejected", (WORKSPACE_CLI, WORKSPACE_APP)),
+    ("workspace_format", 1, True, "rejected", (WORKSPACE_CLI,)),
+    ("workspace_format", 1, 1.0, "rejected", (WORKSPACE_CLI,)),
     ("workspace_format", 1, None, "compatible", (WORKSPACE_LEGACY, WORKSPACE_APP)),
     ("sheet_worker_protocol", 1, 1, "compatible", WORKER_COMPATIBLE),
     ("sheet_worker_protocol", 1, 99, "rejected", (WORKER_REJECTED,)),
@@ -51,15 +55,46 @@ print(json.dumps({
 }))
 """
 RUN_TEST = """
+import json
 from pathlib import Path
 import sys
 import unittest
 
-root, name = sys.argv[1:]
+
+class CaseResult(unittest.TextTestResult):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.combinations = {}
+
+    def record(self, subtest, passed):
+        if 'combination' in getattr(subtest, 'params', {}):
+            key = json.dumps(subtest.params['combination'], separators=(',', ':'))
+            previous = self.combinations.get(key)
+            self.combinations[key] = 'passed' if passed and previous != 'failed' else 'failed'
+
+    def addSubTest(self, test, subtest, err):
+        super().addSubTest(test, subtest, err)
+        self.record(subtest, err is None)
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        self.record(test, False)
+
+
+root, name, output = sys.argv[1:]
 sys.path.extend((root, str(Path(root) / 'tests')))
 suite = unittest.defaultTestLoader.loadTestsFromName(name)
-result = unittest.TextTestRunner(verbosity=2).run(suite)
-sys.exit(not (result.testsRun == 1 and result.wasSuccessful() and not result.skipped and not result.expectedFailures))
+case, = suite
+result = unittest.TextTestRunner(verbosity=2, resultclass=CaseResult).run(suite)
+failures = result.errors + result.failures + result.skipped + result.expectedFailures
+complete = result.testsRun == 1 and not (
+    any(test is case for test, _ in failures) or result.unexpectedSuccesses
+)
+Path(output).write_text(json.dumps({
+    'passed': complete and result.wasSuccessful() and not failures,
+    'complete': complete,
+    'combinations': result.combinations,
+}), encoding='utf-8')
 """
 
 
@@ -85,10 +120,17 @@ def compatibility_cases(python, cli, root, source, wheel, env, report):
         "sheet_worker_protocol": worker_versions,
         "dashboard_bridge": [declared["dashboard_bridge"]],
     }
+    selections = {}
     for interface, version, combination, expected, tests in CASES:
+        selected = []
+        for test in tests:
+            selector = json.dumps(combination, separators=(",", ":")) if test in COMBINATION_TESTS else None
+            name = test if selector is None else f"{test}[combination={selector}]"
+            selections.setdefault(test, {})[name] = selector
+            selected.append(name)
         report["cases"].append({
             "interface": interface, "version": version, "combination": combination,
-            "expected": expected, "tests": tests, "result": "not_run",
+            "expected": expected, "tests": selected, "result": "not_run",
         })
 
     covered = {(interface, version) for interface, version, _, expected, tests in CASES if expected == "compatible" and tests}
@@ -126,12 +168,22 @@ def compatibility_cases(python, cli, root, source, wheel, env, report):
     run(["uv", "pip", "install", "--python", python, playwright], check=True)
 
     results = report["test_results"]
-    for test in dict.fromkeys(test for case in report["cases"] for test in case["tests"]):
-        result = run([python, "-I", "-c", RUN_TEST, test_root, test])
-        results[test] = "failed" if result.returncode else "passed"
+    test_report = root / "test-result.json"
+    for test, selected in selections.items():
+        test_report.unlink(missing_ok=True)
+        result = run([python, "-I", "-c", RUN_TEST, test_root, test, test_report])
+        evidence = json.loads(test_report.read_text(encoding="utf-8")) if result.returncode == 0 else {}
+        for name, selector in selected.items():
+            if not evidence.get("complete"):
+                results[name] = "failed"
+            elif selector is None:
+                results[name] = "passed" if evidence["passed"] else "failed"
+            else:
+                results[name] = evidence["combinations"].get(selector, "untested")
     for case in report["cases"]:
-        case["result"] = "passed" if all(results[test] == "passed" for test in case["tests"]) else "failed"
-    return all(result == "passed" for result in results.values())
+        outcomes = {results[test] for test in case["tests"]}
+        case["result"] = "failed" if "failed" in outcomes else "untested" if "untested" in outcomes else "passed"
+    return all(case["result"] == "passed" for case in report["cases"])
 
 
 def main():

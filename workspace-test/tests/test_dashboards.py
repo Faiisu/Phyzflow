@@ -31,7 +31,8 @@ class DashboardTests(unittest.TestCase):
                 'flow = Flow((), (Step("Start", start, {}),), Output("Start"))\n'
             )
             workflow = root / "dashboards" / "workflow"
-            for panel_id, versions in (("default", None), ("compatible", [2, 1]), ("incompatible", [2, 3])):
+            panels = {"default": None, "compatible": [2, 1], "incompatible": [2, 3]}
+            for panel_id, versions in panels.items():
                 panel = workflow if panel_id == "default" else workflow / "panels" / panel_id
                 panel.mkdir(parents=True)
                 (panel / "index.html").write_text("<output></output>")
@@ -55,17 +56,23 @@ class DashboardTests(unittest.TestCase):
                     compatible = page.frame_locator('iframe[title="Workflow dashboard · compatible"]')
                     undeclared = page.frame_locator('iframe[title="Workflow dashboard"]')
                     incompatible = page.get_by_role("region", name="Workflow dashboard · incompatible")
-                    expect(incompatible.get_by_role("status")).to_have_text(
-                        "Incompatible Dashboard Bridge. Observed version 1. Supported versions 2, 3."
-                    )
-                    expect(compatible.locator("output")).to_have_text("1: running")
-                    expect(undeclared.locator("output")).to_have_text("1: running")
+                    with self.subTest(combination=panels["incompatible"]):
+                        expected = ", ".join(map(str, panels["incompatible"]))
+                        expect(incompatible.get_by_role("status")).to_have_text(
+                            f"Incompatible Dashboard Bridge. Observed version 1. Supported versions {expected}."
+                        )
+                        expect(incompatible.locator("iframe")).to_have_count(0)
+                        expect(page.get_by_role("region", name="Start dashboard")).to_have_count(0)
+                    for name, frame in (("compatible", compatible), ("default", undeclared)):
+                        with self.subTest(combination=panels[name]):
+                            expect(frame.owner).to_have_attribute("sandbox", "allow-scripts allow-forms")
+                            expect(frame.locator("output")).to_have_text("1: running")
                 finally:
                     (root / "finish").touch()
-                expect(compatible.locator("output")).to_have_text("1: succeeded")
-                expect(undeclared.locator("output")).to_have_text("1: succeeded")
+                for name, frame in (("compatible", compatible), ("default", undeclared)):
+                    with self.subTest(combination=panels[name]):
+                        expect(frame.locator("output")).to_have_text("1: succeeded")
                 expect(page.get_by_role("region", name="Start dashboard")).to_have_count(0)
-                expect(incompatible.locator("iframe")).to_have_count(0)
                 expect(page.locator("#status")).to_have_text("Succeeded")
 
     def test_dashboard_moves_resizes_and_restores_from_full_screen(self):

@@ -228,11 +228,10 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
             if workspace_id in deleting:
                 raise RuntimeError("This Workspace is being deleted.")
             if workspace_id not in mounted:
-                format_notice = workspace_format_notice(root)
+                flows = discover_flows(root)
                 interpreter = verified_workspace_interpreter(root) if os.name == "nt" else workspace_interpreter(root)
                 mounted[workspace_id] = workspace_routes(
-                    root, discover_flows(root), load_ui_settings(root, port),
-                    format_notice=format_notice,
+                    root, flows, load_ui_settings(root, port),
                     interpreter=interpreter,
                     workspace_id=workspace_id,
                     run_state=run_state,

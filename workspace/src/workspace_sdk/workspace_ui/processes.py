@@ -10,8 +10,8 @@ from time import monotonic, sleep
 import traceback
 from typing import TYPE_CHECKING
 
-from ..project import ValidationError, load_project
-from ..sheets import sheet_source_files
+from ..project import ValidationError, load_project, workspace_format_notice
+from ..sheets import sheet_source_files, workspace_root_for_sheet
 from ..ui_settings import ZoomSettings
 
 if TYPE_CHECKING:
@@ -19,11 +19,12 @@ if TYPE_CHECKING:
 
 def serve_flow(
     root: Path, zoom: ZoomSettings, publish: Callable[[dict], None], *,
-    run_token: str | None = None, main: bool = False,
+    workspace_root: Path | None = None, run_token: str | None = None, main: bool = False,
 ) -> None:
     from ..web import serve
 
     try:
+        workspace_format_notice(workspace_root or workspace_root_for_sheet(root))
         sources: dict[Path, str] = {}
         snapshot_sources = sheet_source_files(root, main=main) if run_token is not None else ()
         with load_project(root, sources, snapshot_sources=snapshot_sources) as flow:

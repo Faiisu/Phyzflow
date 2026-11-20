@@ -8,6 +8,7 @@ from time import monotonic, sleep
 
 from ..execution import FlowBusy, sheet_busy
 from ..history import RunHistory
+from ..project import workspace_format_notice
 from ..sheet_locks import SheetLockedError
 from ..sheet_runs import RunStateStore, SheetRun
 from ..sheets import (
@@ -27,7 +28,6 @@ def workspace_routes(
     flows: list[tuple[str, Path]],
     settings: UISettings,
     *,
-    format_notice: str | None = None,
     interpreter: Path | None = None,
     workspace_id: str | None = None,
     run_state: RunStateStore | None = None,
@@ -36,7 +36,7 @@ def workspace_routes(
     def make_sheet(title: str, path: Path) -> FlowSheet:
         sheet_key = "." if path == root else path.relative_to(root).as_posix()
         return FlowSheet(
-            title, path, settings.zoom, main=path == root, interpreter=interpreter,
+            title, path, settings.zoom, workspace_root=root, main=path == root, interpreter=interpreter,
             workspace_closing=lambda: closing or app_closing(),
             workspace_id=workspace_id, sheet_key=sheet_key, run_state=run_state,
         )
@@ -151,6 +151,7 @@ def workspace_routes(
         with sheets_lock:
             if closing:
                 raise RuntimeError("Workspace is shutting down.")
+            workspace_format_notice(root)
             directory = create_sheet(root, name).parent
             index = len(sheets)
             sheets.append(make_sheet(directory.name, directory))
@@ -217,7 +218,6 @@ def workspace_routes(
 
     dispatch = workspace_dispatch(
         root, sheets, sheets_lock,
-        format_notice=format_notice,
         interpreter=interpreter,
         is_closing=lambda: closing,
         discovered_sheets=discovered_sheets,

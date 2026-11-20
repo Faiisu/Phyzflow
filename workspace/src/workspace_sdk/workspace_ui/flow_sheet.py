@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from ..agent_supervisor import spawn_supervised
 from ..execution import FlowBusy, sheet_busy, sheet_lock
+from ..project import workspace_format_notice
 from ..sheet_locks import SheetEditLease
 from ..sheet_runs import RunStateStore, SheetRun
 from ..sheets import (
@@ -47,14 +48,19 @@ def _worker_reply(path: Path, worker: OpenFlow, deadline: float) -> dict:
         if monotonic() >= deadline:
             raise RuntimeError("The flow did not start within ten seconds.")
         sleep(.02)
-    reply = json.loads(path.read_text(encoding="utf-8"))
-    return reply if isinstance(reply, dict) else {}
+    try:
+        reply = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        raise RuntimeError("The Sheet Worker startup reply contained invalid JSON.") from error
+    if not isinstance(reply, dict):
+        raise RuntimeError("The Sheet Worker startup reply must be a JSON object.")
+    return reply
 
 
 class FlowSheet:
     def __init__(
         self, title: str, root: Path, zoom: ZoomSettings, *,
-        main: bool = False, interpreter: Path | None = None,
+        workspace_root: Path, main: bool = False, interpreter: Path | None = None,
         workspace_closing: Callable[[], bool] = lambda: False,
         workspace_id: str | None = None,
         sheet_key: str | None = None,
@@ -62,6 +68,7 @@ class FlowSheet:
     ):
         self.title = title
         self.root = root
+        self.workspace_root = workspace_root
         self.zoom = zoom
         self.worker: OpenFlow | None = None
         self.startup: dict | None = None
@@ -113,6 +120,7 @@ class FlowSheet:
                     raise ReloadConflict("Could not verify the run status. Try reloading again or stop the flow first.")
                 if automatic_source is not None and self.changed_source(status) != automatic_source:
                     raise ReloadDeferred
+                workspace_format_notice(self.workspace_root)
                 self.stop_worker(status="opening")
             if self.worker is not None:
                 if (
@@ -218,12 +226,12 @@ class FlowSheet:
             if self.interpreter is not None:
                 argv.insert(1, "-I")
                 token = uuid4().hex
-                argv.extend((token, str(int(self.main))))
                 options["env"] = {
                     **os.environ,
                     "PATH": f"{self.interpreter.parent}{os.pathsep}{os.environ.get('PATH', '')}",
                     "VIRTUAL_ENV": str(self.interpreter.parent.parent),
                 }
+            argv.extend((token or "", str(int(self.main)), self.workspace_root))
             lifeline = None
             if token is not None and os.name == "posix":
                 process, lifeline = spawn_supervised(argv, cwd=self.root, **options)
@@ -236,9 +244,11 @@ class FlowSheet:
             worker = self.worker = OpenFlow(process, run_token=token, lifeline=lifeline)
             try:
                 deadline = monotonic() + 10
+                bootstrap_error = None
                 try:
                     reply = _worker_reply(startup, worker, deadline)
-                except (RuntimeError, ValueError):
+                except (OSError, RuntimeError) as error:
+                    bootstrap_error = error
                     reply = {}
                 protocol = reply.get("protocol_version")
                 supported = SUPPORTED_SHEET_WORKER_PROTOCOL_VERSIONS
@@ -253,12 +263,18 @@ class FlowSheet:
                     problem = "Sheet Worker protocol is missing" if protocol is None else f"Unsupported Sheet Worker protocol {protocol!r}"
                     versions = ", ".join(map(str, supported))
                     error = f"{problem}. Supported versions: {versions}."
+                    if bootstrap_error is not None:
+                        error = f"{error} {bootstrap_error}"
                     self.startup["error"] = error
-                    raise RuntimeError(error)
-                startup.with_name("approved").touch()
-                reply = _worker_reply(startup.with_name("ready.json"), worker, deadline)
-                if "error" in reply:
-                    raise RuntimeError(reply["error"])
+                    raise RuntimeError(error) from bootstrap_error
+                try:
+                    startup.with_name("approved").touch()
+                    reply = _worker_reply(startup.with_name("ready.json"), worker, deadline)
+                    if "error" in reply:
+                        raise RuntimeError(reply["error"])
+                except (OSError, RuntimeError) as error:
+                    self.startup["error"] = str(error)
+                    raise
                 worker.url = reply["url"]
                 self.recovery_graph = {
                     "name": self.root.name, "steps": reply["steps"], "output": reply["output"], "zoom": self.zoom,

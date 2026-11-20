@@ -11,7 +11,7 @@ See the [application specification](../docs/application-spec.md) for requirement
 3. Choose an existing Workspace or an empty folder. The launcher uses the project's `.venv`, installs the SDK from the release, and opens the configured local URL in your browser. Select **+** to create a sheet, then **Run flow**.
 4. Share the project folder path with an AI agent or open it in your IDE. If startup fails, the launcher shows the error. UI logs are in the project's `.workspace/launcher-*.log`. Edit the project's `setting.json` to resolve a port conflict.
 
-Build a release on macOS from the repository root with `sh workspace/release/macos/build.sh`. The ZIP is written to `workspace/dist/` by default after the compatibility check passes. The build requires uv and Google Chrome, selects Python 3.12 through uv, uses the local Mac architecture, and signs the bundle ad hoc. Set `PREVIOUS_RELEASE_MANIFEST` to the preceding release manifest for subsequent builds.
+Build a release on macOS from the repository root with `sh workspace/release/macos/build.sh`. The ZIP is written to `workspace/dist/` by default after the compatibility check passes. The build requires uv and Google Chrome, selects Python 3.12 through uv, uses the local Mac architecture, and signs the bundle ad hoc. The build uses the manifest from the latest macOS ZIP in the output directory that contains one. Set `PREVIOUS_RELEASE_MANIFEST` to use the preceding release manifest from another location.
 
 ## Sign in to the local Phyzflow application
 
@@ -152,4 +152,4 @@ python workspace/release/check_compatibility.py "$wheel" --report /tmp/phyzflow-
 
 The check installs the wheel in a temporary environment and runs the compatibility tests from the candidate's commit. The JSON report identifies the release, commit, and wheel SHA-256, and records the Workspace format, Sheet Worker protocol, and Dashboard Bridge combinations with their test results. A failed test or an advertised version without a test blocks the release. Update the case list and its tests whenever an interface adds an advertised version.
 
-The macOS release includes `Workspace.app/Contents/Resources/phyzflow-compatibility.json` in the signed bundle. It records `published_at` in UTC when the checked wheel and report are staged for packaging in the release output directory.
+The macOS release includes `Workspace.app/Contents/Resources/phyzflow-compatibility.json` in the signed bundle. After publishing the ZIP in the output directory, the build writes a neighboring `*.zip.compatibility.json` with the ZIP's SHA-256 checksum and its UTC publication time.

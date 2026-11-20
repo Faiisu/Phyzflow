@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -6,6 +7,8 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from io import BytesIO
+from zipfile import ZipFile
 
 from test_release_manifest import BUILDER, WORKSPACE, command, snapshot
 
@@ -75,6 +78,59 @@ class ReleaseCompatibilityTests(unittest.TestCase):
             cases = [case for case in report["cases"] if case["interface"] == interface]
             self.assertEqual({case["expected"] for case in cases}, {"compatible", "rejected"})
             self.assertTrue(all(case["result"] == "passed" and case["tests"] for case in cases))
+
+    def test_worker_combinations_keep_independent_results_and_require_matching_fixtures(self):
+        fixture = self.root / "workspace-test/tests/test_application_worker_compatibility.py"
+        fixture.write_text(fixture.read_text().replace("for protocol in (99, None):", "for protocol in (98, None):"))
+        result, report = self.check_candidate()
+        self.assertNotEqual(result.returncode, 0)
+        cases = {
+            case["combination"]: case["result"]
+            for case in report["cases"] if case["interface"] == "sheet_worker_protocol"
+        }
+        self.assertEqual(cases, {1: "passed", 99: "untested", None: "passed"})
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS packaging requires Apple tools")
+    def test_macos_publication_records_the_zip_and_preserves_previous_module_versions(self):
+        output = self.root / "macos-dist"
+        builder = self.root / "workspace/release/macos/build.sh"
+
+        def package():
+            before = datetime.now(timezone.utc)
+            artifact = Path(command("sh", builder, output, cwd=self.root))
+            after = datetime.now(timezone.utc)
+            published = json.loads(artifact.with_suffix(".zip.compatibility.json").read_text())
+            self.assertEqual(published["artifact_sha256"], sha256(artifact.read_bytes()).hexdigest())
+            self.assertLessEqual(before, datetime.fromisoformat(published["published_at"]))
+            self.assertLessEqual(datetime.fromisoformat(published["published_at"]), after)
+            self.assertGreaterEqual(datetime.fromisoformat(published["published_at"]).timestamp(), artifact.stat().st_mtime)
+            with ZipFile(artifact) as archive:
+                signed = json.loads(archive.read("Workspace.app/Contents/Resources/phyzflow-compatibility.json"))
+                self.assertNotIn("published_at", signed)
+                self.assertEqual(signed["wheel_sha256"], published["wheel_sha256"])
+                self.assertEqual(signed["result"], "passed")
+                wheel = archive.read("Workspace.app/Contents/Resources/" + signed["wheel"])
+                self.assertEqual(sha256(wheel).hexdigest(), published["wheel_sha256"])
+            with ZipFile(BytesIO(wheel)) as archive:
+                name, = (name for name in archive.namelist() if name.endswith("/phyzflow-release.json"))
+                return json.loads(archive.read(name))
+
+        snapshot(self.root)
+        previous = package()
+        config = self.root / "workspace/pyproject.toml"
+        version = previous["version"]
+        next_version = version.rsplit(".", 1)[0] + "." + str(int(version.rsplit(".", 1)[1]) + 1)
+        config.write_text(config.read_text().replace(f'version = "{version}"', f'version = "{next_version}"', 1))
+        sdk = self.root / "workspace/src/workspace_sdk"
+        with (sdk / "cli.py").open("a") as cli:
+            cli.write("\n\nRELEASE_HISTORY_TEST = True\n")
+        snapshot(self.root)
+        current = package()
+        self.assertEqual(current["version"], next_version)
+        self.assertEqual(current["modules"]["cli"]["last_changed_version"], next_version)
+        self.assertNotEqual(current["modules"]["cli"]["fingerprint"], previous["modules"]["cli"]["fingerprint"])
+        for module in ("application", "mcp", "runner", "web_ui"):
+            self.assertEqual(current["modules"][module], previous["modules"][module])
 
     def test_failing_advertised_workspace_format_blocks_release(self):
         project = self.root / "workspace/src/workspace_sdk/project.py"

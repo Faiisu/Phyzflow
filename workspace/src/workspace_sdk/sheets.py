@@ -14,7 +14,7 @@ from unicodedata import category, normalize
 from uuid import uuid4
 
 from .node_sources import edit_source_file, read_node_source
-from .project import WORKSPACE_FORMAT_VERSION
+from .project import WORKSPACE_FORMAT_VERSION, workspace_format_notice
 from .ui_settings import load_ui_settings
 
 
@@ -46,6 +46,7 @@ WORKSPACE_AGENT_GUIDE = """# Workspace instructions
 
 
 def discover_flows(root: Path) -> list[tuple[str, Path]]:
+    workspace_format_notice(root)
     folder = root / "flows"
     flows = []
     if folder.is_dir():
