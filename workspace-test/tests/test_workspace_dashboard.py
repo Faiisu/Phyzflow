@@ -64,23 +64,43 @@ class WorkspaceDashboardTests(unittest.TestCase):
                     {"id": "outside", "sheet": str(outside), "field": "status"},
                 ))
                 manifest.write_text(json.dumps(declaration), encoding="utf-8")
+                health = panel / "panels" / "run-state"
+                health.mkdir(parents=True)
+                (health / "index.html").write_text("<h1>Run state</h1><output></output>", encoding="utf-8")
+                (health / "bridge.json").write_text(json.dumps({"versions": [1], "sources": [
+                    {"id": "status", "sheet": ".", "mode": "live", "field": "status"},
+                ]}), encoding="utf-8")
+                (health / "dashboard.js").write_text(
+                    'workspaceDashboard.subscribe(({sources}) => {\n'
+                    '  document.querySelector("output").textContent = sources[0].value ?? "Waiting";\n'
+                    '});\n', encoding="utf-8",
+                )
 
                 workspace.click()
                 workspace_url = page.url.rstrip("/")
                 sources_url = f"{workspace_url}/workspace-dashboard/default/data"
+                layout_url = f"{workspace_url}/dashboard/visualize-layout"
                 dialog = page.get_by_role("dialog", name="Workspace dashboard")
                 dashboard = page.get_by_role("button", name="Dashboard", exact=True)
                 dashboard.click()
-                frame = dialog.frame_locator('iframe[title="Overview"]')
+                board = dialog.frame_locator('iframe[title="Workspace Dashboard"]')
+                frame = board.frame_locator('iframe[title="Overview"]')
+                run_state = board.frame_locator('iframe[title="run state"]')
                 expect(frame.get_by_text("No saved run")).to_have_count(2)
+                expect(run_state.locator("output")).to_have_text("Waiting")
+                expect(board.locator("body")).to_have_class("is-visualize-mode is-workspace-dashboard")
                 expect(frame.get_by_text("Waiting for a live run")).to_have_count(2)
                 expect(frame.owner).to_have_attribute("sandbox", "allow-scripts allow-forms")
                 self.assertEqual(frame.locator("html").evaluate("() => typeof workspaceDashboard.setSetting"), "undefined")
                 expect(page.locator('iframe[title="Hand Detection flow"]')).to_have_count(0)
 
-                size = dialog.bounding_box()
                 viewport = page.viewport_size
-                handle = dialog.get_by_role("button", name="Resize dashboard").bounding_box()
+                self.assertEqual(dialog.bounding_box(), {"x": 0, "y": 0, **viewport})
+                overview = board.get_by_role("region", name="Overview", exact=True)
+                secondary = board.get_by_role("region", name="run state", exact=True)
+                original = overview.bounding_box()
+                self.assertGreater(secondary.bounding_box()["x"], original["x"] + original["width"])
+                handle = overview.locator('[data-dash="resize"]').bounding_box()
                 x = handle["x"] + handle["width"] / 2
                 y = handle["y"] + handle["height"] / 2
                 page.mouse.move(x, y)
@@ -88,9 +108,29 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 page.mouse.move(x - 390, y - 125, steps=10)
                 page.mouse.up()
                 self.assertEqual(page.viewport_size, viewport)
-                self.assertLess(dialog.bounding_box()["width"], 420)
-                self.assertLess(dialog.bounding_box()["height"], size["height"])
+                resized = overview.bounding_box()
+                self.assertLess(resized["width"], 420)
+                self.assertLess(resized["height"], original["height"])
                 self.assertTrue(frame.locator("html").evaluate("root => root.scrollWidth === root.clientWidth"))
+                wait_for(lambda: page.request.get(layout_url).json()["panels"].get('[null,"default"]', {}).get("width")
+                         == resized["width"])
+
+                overview.get_by_role("button", name="Full screen", exact=True).click()
+                expect(board.locator(".dashboard-panel:fullscreen")).to_have_count(1)
+                overview.get_by_role("button", name="Exit full screen", exact=True).click()
+                expect(board.locator(".dashboard-panel:fullscreen")).to_have_count(0)
+
+                board.locator("#panel-switcher summary").click()
+                board.get_by_role("button", name="Full screen dashboard", exact=True).click()
+                expect(board.locator("html:fullscreen")).to_have_count(1)
+                board.get_by_role("button", name="Exit full screen dashboard", exact=True).click()
+                expect(board.locator("html:fullscreen")).to_have_count(0)
+                toggle = board.locator('[data-vis-panel="run-state"]')
+                toggle.click()
+                expect(secondary).to_be_hidden()
+                toggle.click()
+                expect(run_state.locator("output")).to_have_text("Waiting")
+                board.locator("#panel-switcher summary").click()
 
                 def sources():
                     response = page.request.get(sources_url)
@@ -109,10 +149,13 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 self.assertEqual(command("run-all").status, 202)
                 expect(frame.get_by_text("12", exact=True)).to_be_visible(timeout=20_000)
                 expect(frame.get_by_text("34", exact=True)).to_be_visible(timeout=20_000)
+                expect(run_state.locator("output")).to_have_text("running")
                 live = sources()
                 self.assertNotEqual(live["live-count"]["run_id"], live["live-scored"]["run_id"])
                 self.assertTrue(live["live-count"]["timestamp"])
                 self.assertTrue(live["live-scored"]["timestamp"])
+                overview.get_by_role("button", name="Reload dashboard", exact=True).click()
+                expect(frame.get_by_text("34", exact=True)).to_be_visible()
 
                 for sheet in (root, hand):
                     (sheet / "finish").touch()
@@ -128,6 +171,7 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 page.reload()
                 dashboard.click()
                 expect(frame.locator(".chart-value").filter(has_text="ms")).to_have_count(2)
+                expect(overview).to_have_css("width", f"{int(resized['width'])}px")
                 self.assertEqual(sources()["telemetry-duration"], saved["telemetry-duration"])
 
                 for sheet in (root, hand):
@@ -141,3 +185,13 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 expect(frame.get_by_text("Sheet unavailable")).to_have_count(2)
                 expect(frame.get_by_text("12", exact=True)).to_be_visible()
                 (root / "finish").touch()
+                page.set_viewport_size({"width": 390, "height": 844})
+                expect(board.locator(".graph-scroll")).to_have_attribute("data-layout-fitted", "")
+                first = overview.bounding_box()
+                second = secondary.bounding_box()
+                self.assertEqual(first["x"], second["x"])
+                self.assertGreater(second["y"], first["y"] + first["height"])
+                self.assertLessEqual(second["x"] + second["width"], 390)
+                board.get_by_role("button", name="Back to sheets").click()
+                expect(dialog).to_be_hidden()
+                expect(dashboard).to_be_focused()

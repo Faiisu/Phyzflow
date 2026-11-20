@@ -30,7 +30,7 @@ export function createCanvasLayout({
   const pendingBounds = new Map();
   const layoutStatus = document.querySelector("#visualize-layout-status");
   const retryLayout = layoutStatus.querySelector("button");
-  const sharedLayout = /^\/workspaces\/[a-f0-9]{32}\/flows\//.test(location.pathname);
+  const sharedLayout = /^\/workspaces\/[a-f0-9]{32}\/(?:flows\/|dashboard\/$)/.test(location.pathname);
   let layoutLoad = sharedLayout ? "unloaded" : "ready";
   let layoutSave = "idle";
   let fitted = false;
@@ -215,7 +215,7 @@ export function createCanvasLayout({
   function defaultVisualizeBounds(panel) {
     const viewportWidth = Math.max(640, graphViewport.clientWidth || window.innerWidth);
     const gap = WORKSPACE_STEP;
-    const colWidth = Math.max(360, snapDashboardSize((viewportWidth - gap * 3) / 2));
+    const colWidth = Math.max(360, Math.floor((viewportWidth - gap * 3) / (2 * gap)) * gap);
     const width = Math.min(colWidth, snapDashboardSize(viewportWidth - gap * 2));
     const height = DEFAULT_PANEL_HEIGHT;
     const slot = findNonOverlappingSlot(panel, width, height, gap, gap, viewportWidth - gap * 2, gap);

@@ -44,15 +44,8 @@
     <div id="sheet-tabs" class="sheet-tabs" role="tablist" aria-label="Flows"></div>
     <button type="button" id="new-sheet" aria-label="New sheet" title="New sheet" disabled>+</button>
   </footer>
-  <dialog id="workspace-dashboard" aria-labelledby="workspace-dashboard-title">
-    <header>
-      <h2 id="workspace-dashboard-title">Workspace dashboard</h2>
-      <select id="workspace-dashboard-panel" aria-label="Dashboard panel" hidden></select>
-      <form method="dialog"><button class="secondary-action">Close</button></form>
-    </header>
-    <p id="workspace-dashboard-status" role="status" hidden></p>
-    <div id="workspace-dashboard-content"></div>
-    <button type="button" id="resize-workspace-dashboard" aria-label="Resize dashboard" title="Drag or use the arrow keys to resize"></button>
+  <dialog id="workspace-dashboard" aria-label="Workspace dashboard">
+    <iframe title="Workspace Dashboard" allowfullscreen></iframe>
   </dialog>
   <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
     <form>

@@ -175,7 +175,7 @@ function frameDocument(assets) {
     ${assets["index.html"]}`;
 }
 
-export function createDashboardFrame(assets, title) {
+function createDashboardFrame(assets, title) {
   const supported = supportedBridgeVersions(assets);
   if (!supported.includes(assets.bridge_version)) {
     throw new Error(`Incompatible Dashboard Bridge. Observed version ${assets.bridge_version}. Supported versions ${supported.join(", ")}.`);
@@ -196,7 +196,9 @@ async function fetchJSON(path, errorMessage, options) {
   return data;
 }
 
-export function initDashboards(project, revealBoard, releaseBoard = () => {}, setVisualizeModeLayout = () => {}) {
+export function initDashboards(project, revealBoard, releaseBoard = () => {}, setVisualizeModeLayout = () => {}, {
+  workspace,
+} = {}) {
   const graph = project.steps.map(step => pick(step, ["id", "dependencies"]));
   let liveRun = null;
   let stopped = false;
@@ -264,6 +266,10 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     if (isPrimary) primaryBoard._panelInstance = panel;
 
     function updateHeading() {
+      if (workspace) {
+        heading.textContent = panel.panelLabel || panel.panelId;
+        return;
+      }
       const base = panel.scope === null ? "Workflow dashboard" : `${panel.scope} dashboard`;
       heading.textContent = panel.panelId && panel.panelId !== "default"
         ? `${base} · ${panel.panelLabel || panel.panelId}`
@@ -271,7 +277,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
 
     panel.sendSnapshot = function sendSnapshot() {
-      if (!panel.ready || !panel.frame?.contentWindow) return;
+      if (workspace || !panel.ready || !panel.frame?.contentWindow) return;
       const run = panel.following ? liveRun : panel.savedRun;
       const inScope = id => panel.scope === null || id === panel.scope;
       panel.frame.contentWindow.postMessage({
@@ -297,25 +303,55 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
 
     panel.loadDashboard = async function loadDashboard() {
       const version = ++panel.loadVersion;
+      panel.workspaceData?.abort();
+      panel.workspaceData = null;
       panel.ready = false;
       panel.frame = null;
       preview.replaceChildren();
       message.textContent = "Loading dashboard…";
       try {
         const key = scopeKey(panel.scope);
-        const assetPath = panel.panelId && panel.panelId !== "default"
-          ? `dashboard-assets/${key}/${encodeURIComponent(panel.panelId)}`
-          : `dashboard-assets/${key}`;
+        const panelPath = encodeURIComponent(panel.panelId);
+        const assetPath = workspace ? `../workspace-dashboard/${panelPath}`
+          : panel.panelId && panel.panelId !== "default" ? `dashboard-assets/${key}/${panelPath}` : `dashboard-assets/${key}`;
         const assets = await fetchJSON(assetPath, "Could not load the dashboard.");
         if (version !== panel.loadVersion || element.hidden) return;
         const frame = createDashboardFrame(assets, heading.textContent);
         panel.frame = frame;
         preview.replaceChildren(frame);
         message.textContent = "";
-        panel.loadSettings(version);
+        if (!workspace) panel.loadSettings(version);
       } catch (error) {
         if (version === panel.loadVersion) message.textContent = error.message;
       }
+    };
+
+    panel.followWorkspace = function followWorkspace() {
+      const controller = new AbortController();
+      panel.workspaceData = controller;
+      const { signal } = controller;
+      const frame = panel.frame;
+      const path = `../workspace-dashboard/${encodeURIComponent(panel.panelId)}/data`;
+      let previous;
+      let timer;
+      async function poll() {
+        try {
+          const snapshot = await fetchJSON(path, "Could not read dashboard data.", { signal });
+          if (signal.aborted) return;
+          message.textContent = "";
+          const serialized = JSON.stringify(snapshot);
+          if (serialized !== previous) {
+            frame.contentWindow.postMessage({ type: "dashboard-data", snapshot }, "*");
+            previous = serialized;
+          }
+        } catch (error) {
+          if (!signal.aborted) message.textContent = error.message;
+        } finally {
+          if (!signal.aborted) timer = setTimeout(poll, 500);
+        }
+      }
+      signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+      void poll();
     };
 
     panel.loadSettings = async function loadSettings(version) {
@@ -381,6 +417,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       releaseBoard(element, layoutKey(panel.scope, panel.panelId));
       if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
       panel.loadVersion++;
+      panel.workspaceData?.abort();
       panel.runVersion++;
       panel.ready = false;
       panel.frame = null;
@@ -454,7 +491,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     if (enterVisBtn) {
       enterVisBtn.disabled = availablePanels.length === 0 && activePanels.size === 0;
     }
-    if (activePanels.size === 0 && document.body.classList.contains("is-visualize-mode")) {
+    if (!workspace && activePanels.size === 0 && document.body.classList.contains("is-visualize-mode")) {
       setVisualizeMode(false);
     }
   }
@@ -473,16 +510,17 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     return panel;
   }
 
-  async function refreshVisualizeList() {
+  async function refreshVisualizeList(openOnLoad = false) {
     const list = document.querySelector("#visualize-list");
     if (!list) return;
-    const scopes = [
+    const scopes = workspace ? [{ nodeId: null, key: "workspace", title: "Workspace" }] : [
       { nodeId: null, key: "workflow", title: "Workflow" },
       ...graph.map((node, index) => ({ nodeId: node.id, key: String(index), title: node.id })),
     ];
     const results = await Promise.allSettled(
       scopes.map(async item => {
-        const data = await fetchJSON(`dashboard-panels/${item.key}`, "Could not list panels.");
+        const path = workspace ? "../workspace-dashboard" : `dashboard-panels/${item.key}`;
+        const data = await fetchJSON(path, "Could not list panels.");
         return { ...item, panels: data.panels ?? [] };
       }),
     );
@@ -494,10 +532,17 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       group.panels.map(entry => ({ nodeId: group.nodeId, panelId: entry.id, label: entry.label })),
     );
 
+    if (workspace) {
+      const message = results[0].status === "rejected" ? results[0].reason.message
+        : groups.length ? "" : "Add a panel in dashboards/workspace to display Workspace data.";
+      workspace.status.textContent = message;
+      workspace.status.hidden = !message;
+    }
+
     if (!groups.length) {
       const empty = document.createElement("p");
       empty.className = "muted";
-      empty.textContent = "No dashboards found in this flow.";
+      empty.textContent = workspace ? "No dashboards found in this Workspace." : "No dashboards found in this flow.";
       list.replaceChildren(empty);
       syncVisualizeDrawer();
       return;
@@ -540,6 +585,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       }
     }
     list.replaceChildren(fragment);
+    if (openOnLoad) openAll();
     syncVisualizeDrawer();
   }
 
@@ -585,13 +631,14 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     setVisualizeModeLayout(active);
   }
 
-  document.querySelector("#visualize-open-all")?.addEventListener("click", () => {
+  function openAll() {
     for (const item of availablePanels) {
       if (!findPanel(item.nodeId, item.panelId)) {
         openSinglePanel(item.nodeId, item.panelId, item.label);
       }
     }
-  });
+  }
+  document.querySelector("#visualize-open-all")?.addEventListener("click", openAll);
   document.querySelector("#visualize-close-all")?.addEventListener("click", () => {
     for (const panel of [...activePanels]) panel.close();
   });
@@ -599,15 +646,20 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     setVisualizeMode(true);
   });
   exitVisualizeBtn?.addEventListener("click", () => {
-    setVisualizeMode(false);
+    if (workspace) workspace.exit();
+    else setVisualizeMode(false);
   });
   window.addEventListener("keydown", event => {
     if (event.key === "Escape" && document.body.classList.contains("is-visualize-mode") && !document.fullscreenElement) {
-      setVisualizeMode(false);
+      if (workspace) workspace.exit();
+      else setVisualizeMode(false);
     }
   });
 
-  if (visualizeDrawer) {
+  if (workspace) {
+    workspace.status.textContent = "Loading dashboard panels…";
+    refreshVisualizeList(true);
+  } else if (visualizeDrawer) {
     const refreshVisibleDrawer = () => {
       if (!visualizeDrawer.hidden) refreshVisualizeList();
     };
@@ -635,6 +687,10 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     const panel = [...activePanels].find(p => p.frame?.contentWindow === event.source);
     if (!panel || panel.element.hidden) return;
     const data = event.data;
+    if (workspace) {
+      if (data?.type === "dashboard-ready" && !panel.workspaceData) panel.followWorkspace();
+      return;
+    }
     if (data?.type === "dashboard-ready") {
       panel.ready = true;
       panel.sendSnapshot();

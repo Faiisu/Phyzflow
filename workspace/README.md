@@ -145,7 +145,7 @@ The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a n
 
 ## Build a dashboard from multiple sheets
 
-Put `index.html`, `dashboard.js`, and optional `style.css` in `dashboards/workspace/` at the Workspace root. To add another panel, put its files in `dashboards/workspace/panels/<panel-id>/`. Open **Dashboard** in the Workspace toolbar and select a panel when there is more than one. Drag the resize handle or focus it and use the arrow keys. Close and reopen the dashboard to reload its files.
+Put `index.html`, `dashboard.js`, and optional `style.css` in `dashboards/workspace/` at the Workspace root. To add another panel, put its files in `dashboards/workspace/panels/<panel-id>/`. Open **Dashboard** in the Workspace toolbar to see all configured panels together on a full-window Visualize canvas. Use **Panels** to show, hide, or refresh panels and to enter browser full screen. Drag a panel by its title or resize it from its lower-right corner. Focus the title and use the arrow keys to move it or hold **Shift** to resize. The installed application saves the Workspace layout. Select **Back to sheets** to return to the flows.
 
 Call `inspect_dashboards` with `sheet: null` to inspect Workspace panels and their Bridge contract through MCP.
 

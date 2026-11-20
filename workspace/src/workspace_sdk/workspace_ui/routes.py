@@ -8,7 +8,7 @@ import re
 import sqlite3
 from urllib.parse import unquote
 
-from ..dashboard import DASHBOARD_BRIDGE_VERSION, dashboard_assets, dashboard_panels
+from ..dashboard import DASHBOARD_BRIDGE_VERSION, WORKSPACE_DASHBOARD_DIRECTORY, dashboard_assets, dashboard_panels
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
 from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
@@ -41,6 +41,7 @@ RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
 EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
 WORKSPACE_DASHBOARD_PATH = re.compile(r"/workspace-dashboard/([A-Za-z0-9._-]+)(/data)?")
+WORKSPACE_VISUALIZE_LAYOUT = "/dashboard/visualize-layout"
 WORKSPACE_ASSETS = {
     "/": ("workspace.html", "text/html"),
     "/workspace.css": ("workspace.css", "text/css"),
@@ -48,7 +49,12 @@ WORKSPACE_ASSETS = {
     "/workspace/source-editing.js": ("workspace/source-editing.js", "text/javascript"),
     "/workspace/sheet-dialogs.js": ("workspace/sheet-dialogs.js", "text/javascript"),
     "/workspace/dashboard.js": ("workspace/dashboard.js", "text/javascript"),
-    "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript"),
+    "/dashboard/": FLOW_VIEW_ASSETS["/"],
+    "/dashboard/app.css": FLOW_VIEW_ASSETS["/app.css"],
+    "/dashboard/app.js": ("workspace/dashboard-view.js", "text/javascript"),
+    "/dashboard/canvas-layout.js": FLOW_VIEW_ASSETS["/canvas-layout.js"],
+    "/dashboard/dashboard-ui.js": FLOW_VIEW_ASSETS["/dashboard-ui.js"],
+    "/dashboard/prism-syntax.js": FLOW_VIEW_ASSETS["/prism-syntax.js"],
 }
 
 
@@ -76,7 +82,7 @@ def validate_visualize_layout(panels: object) -> dict:
 
 def workspace_dispatch(
     root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
-    create_workspace_sheet, delete_workspace_sheet, run_all_sheets,
+    create_workspace_sheet, delete_workspace_sheet, run_all_sheets, workspace_id, run_state,
 ):
     class Routes:
         def __init__(self, request: UIRequestHandler, path: str):
@@ -161,10 +167,12 @@ def workspace_dispatch(
             sheet = sheets[index]
             return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
 
-        def visualize_layout(self, index: int) -> None:
-            sheet = sheets[index] if index < len(sheets) else None
-            if sheet is None or sheet.run_state is None or sheet.workspace_id is None or sheet.sheet_key is None:
-                self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+        def visualize_layout(self, index: int | None = None) -> None:
+            sheet = sheets[index] if index is not None and index < len(sheets) else None
+            sheet_key = WORKSPACE_DASHBOARD_DIRECTORY.as_posix() if index is None else sheet and sheet.sheet_key
+            unavailable = "This Workspace is unavailable." if index is None else "This sheet is unavailable."
+            if run_state is None or workspace_id is None or sheet_key is None:
+                self.request.send_json({"error": unavailable}, HTTPStatus.NOT_FOUND)
                 return
             panels = None
             if self.request.command == "POST":
@@ -176,14 +184,14 @@ def workspace_dispatch(
                     self.request.send_json({"error": "Send valid dashboard panel bounds."}, HTTPStatus.BAD_REQUEST)
                     return
             try:
-                with sheet.lock:
-                    if sheet.closing or sheet.workspace_closing():
-                        self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+                with sheet.lock if sheet is not None else sheets_lock:
+                    if is_closing() or (sheet is not None and (sheet.closing or sheet.workspace_closing())):
+                        self.request.send_json({"error": unavailable}, HTTPStatus.NOT_FOUND)
                         return
                     if panels is None:
-                        result = {"panels": sheet.run_state.load_visualize_layout(sheet.workspace_id, sheet.sheet_key)}
+                        result = {"panels": run_state.load_visualize_layout(workspace_id, sheet_key)}
                     else:
-                        sheet.run_state.save_visualize_layout(sheet.workspace_id, sheet.sheet_key, panels)
+                        run_state.save_visualize_layout(workspace_id, sheet_key, panels)
                         result = {}
             except sqlite3.Error:
                 self.request.send_json({"error": "Could not access the saved dashboard layout."}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -449,6 +457,9 @@ def workspace_dispatch(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if self.path == WORKSPACE_VISUALIZE_LAYOUT:
+                self.visualize_layout()
+                return
             if self.path == "/workspace-dashboard":
                 self.request.send_json({"panels": dashboard_panels(root, None, workspace=True)})
                 return
@@ -525,11 +536,15 @@ def workspace_dispatch(
                 self.request.send_error(HTTPStatus.NOT_FOUND)
                 return
             filename, content_type = asset
-            self.request.send_bytes((STATIC / filename).read_bytes(), f"{content_type}; charset=utf-8")
+            content_type = content_type if ";" in content_type else f"{content_type}; charset=utf-8"
+            self.request.send_bytes((STATIC / filename).read_bytes(), content_type)
 
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if self.path == WORKSPACE_VISUALIZE_LAYOUT:
+                self.visualize_layout()
                 return
             if layout := VISUALIZE_LAYOUT_PATH.fullmatch(self.path):
                 self.visualize_layout(int(layout[1]))

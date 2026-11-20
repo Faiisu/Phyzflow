@@ -232,6 +232,8 @@ def workspace_routes(
         create_workspace_sheet=create_workspace_sheet,
         delete_workspace_sheet=delete_workspace_sheet,
         run_all_sheets=run_all_sheets,
+        workspace_id=workspace_id,
+        run_state=run_state,
     )
 
     def close(*, delete: bool = False) -> None:
