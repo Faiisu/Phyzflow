@@ -1,5 +1,6 @@
 import argparse
 from contextlib import ExitStack
+from importlib.metadata import PackageNotFoundError, distribution
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="workspace")
     parser.add_argument("--project", type=Path, help="Select a Workspace directory (default: current directory).")
     commands = parser.add_subparsers(dest="command", required=True)
+    version_parser = commands.add_parser("version", help="Report the installed Phyzflow release and module versions.")
+    version_parser.add_argument("--json", action="store_true", help="Print the release manifest as JSON.")
     check_parser = commands.add_parser("check", help="Validate a Python flow.")
     check_parser.add_argument("--sheet", help="Validate a named Workspace sheet.")
     run_parser = commands.add_parser("run", help="Validate and run the current flow.")
@@ -57,6 +60,23 @@ def main() -> int:
     deploy_parser.add_argument("--port", type=int, help="Host port (default: 8080), or 0 for an available port.")
     deploy_parser.add_argument("--container-port", type=int, help="Port used by the container service (default: 8000).")
     args = parser.parse_args()
+
+    if args.command == "version":
+        try:
+            release = distribution("workspace-sdk").read_text("phyzflow-release.json")
+        except PackageNotFoundError:
+            release = None
+        if release is None:
+            print("Phyzflow: This installation has no release manifest.", file=sys.stderr)
+            return 1
+        manifest = json.loads(release)
+        if args.json:
+            print(release, end="")
+        else:
+            print(f"Phyzflow {manifest['version']} ({manifest['commit']})")
+            for name, module in manifest["modules"].items():
+                print(f"{name}: {module['last_changed_version']} ({module['fingerprint']})")
+        return 0
 
     if args.command == "app":
         from .application import serve_application
