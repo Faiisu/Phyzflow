@@ -134,7 +134,7 @@ export function initRunControls({
   const canRun = () => projectReady && !runInProgress && !stopPhase;
   if (onRunChange && !recoveryView) {
     window.phyzflowRunControls = {
-      get state() {
+      get snapshot() {
         return { status: runStatus, canRun: canRun() };
       },
       run() {

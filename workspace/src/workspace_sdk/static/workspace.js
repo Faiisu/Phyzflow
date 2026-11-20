@@ -87,7 +87,7 @@ function canRunWithoutWorker(sheet) {
 
 function syncToolbar() {
   renameSheet.disabled = !active;
-  const run = activeRunControls()?.state;
+  const run = activeRunControls()?.snapshot;
   runSheet.disabled = !canRunWithoutWorker(active) && !run?.canRun;
   const state = run?.status?.state || active?.status || "";
   const label = run?.status?.label ?? labels[state] ?? state;
