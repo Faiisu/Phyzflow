@@ -461,16 +461,18 @@ class SheetEditLease:
         operation: Callable[[], T],
         *,
         path: str | None = None,
+        paths: tuple[str, ...] = (),
     ) -> T:
         with self._lock:
             self.verify_write(principal, session_id)
             result = operation()
-            if path is not None and session_id is not None:
+            saved = {*paths, path} if path is not None else set(paths)
+            if saved and session_id is not None:
                 current = self._read_lock()
                 if current is not None and current["session_id"] == session_id:
                     drafts = current.get("unsaved_draft")
-                    if isinstance(drafts, dict) and path in drafts:
-                        remaining = {key: value for key, value in drafts.items() if key != path}
+                    if isinstance(drafts, dict) and saved.intersection(drafts):
+                        remaining = {key: value for key, value in drafts.items() if key not in saved}
                         updated = {**current, "unsaved_draft": remaining or None}
                         self._write_json_atomic(self._lock_path(create_dir=True), updated)
             return result

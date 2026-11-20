@@ -29,7 +29,7 @@ class DeploySettings:
 
 @dataclass(frozen=True)
 class ApplicationNetwork:
-    ipv4: str = "127.0.0.1"
+    ipv4: str = "0.0.0.0"
     port: int = 18080
 
 

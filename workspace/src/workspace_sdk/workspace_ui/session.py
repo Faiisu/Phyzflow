@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from time import monotonic, sleep
 
 from ..execution import FlowBusy, sheet_busy
@@ -43,7 +43,7 @@ def workspace_routes(
 
     closing = False
     sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
-    sheets_lock = Lock()
+    sheets_lock = RLock()
 
     def restore_states() -> None:
         if run_state is None or workspace_id is None:
@@ -212,9 +212,17 @@ def workspace_routes(
                     errors[key] = str(error)
         return {"started": started, "errors": errors}
 
+    def file_leases():
+        with sheets_lock:
+            if closing:
+                raise RuntimeError("Workspace is shutting down.")
+            return {sheet.root: sheet.edit_lease for sheet in sheets if sheet is not None}
+
+    resolve_sheet.file_leases = file_leases
     resolve_sheet.create_workspace_sheet = create_workspace_sheet
     resolve_sheet.delete_workspace_sheet = delete_workspace_sheet
     resolve_sheet.run_all_sheets = run_all_sheets
+    resolve_sheet.file_guard = sheets_lock
 
     dispatch = workspace_dispatch(
         root, sheets, sheets_lock,

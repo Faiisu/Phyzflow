@@ -15,7 +15,7 @@ MCP_RESPONSE_HEADERS = {"allow", "content-type", "mcp-protocol-version", "mcp-se
 
 
 @contextmanager
-def mcp_transport(access: WorkspaceAccess):
+def mcp_transport(access: WorkspaceAccess, transfers):
     try:
         from mcp.server import MCPServer
     except ModuleNotFoundError as error:
@@ -37,7 +37,7 @@ def mcp_transport(access: WorkspaceAccess):
         ),
         log_level="WARNING",
     )
-    register_workspace_tools(server, access)
+    register_workspace_tools(server, access, transfers)
     app = server.streamable_http_app(
         streamable_http_path="/mcp", stateless_http=True, json_response=True, max_request_body_size=MCP_BODY_LIMIT,
     )

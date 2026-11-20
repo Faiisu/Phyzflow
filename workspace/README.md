@@ -30,7 +30,7 @@ Keep application state separate from Workspace folders.
 
 On Windows, new Workspaces use uv-managed Python 3.12 so Phyzflow can stop their process trees. An existing Workspace can reuse a virtual environment backed by uv-managed or standalone Python 3.12. If its environment uses Microsoft Store Python, move the existing environment aside, add the Workspace, and reinstall its dependencies in the new environment.
 
-Select **Network settings** on the landing page to set the application's bind IPv4 address and port. Phyzflow saves the settings in `network.json` under its state directory and reads them at startup. The defaults are `127.0.0.1` and `18080`. Save the settings and restart Phyzflow to apply them. Use `workspace app --ipv4 127.0.0.1 --port 0` to override the saved address and start on an available port for a single launch.
+Select **Network settings** on the landing page to set the application's bind IPv4 address and port. Phyzflow saves the settings in `network.json` under its state directory and reads them at startup. By default, Phyzflow listens on all IPv4 interfaces (`0.0.0.0`) on port `18080`. Save the settings and restart Phyzflow to apply them. Use `workspace app --ipv4 127.0.0.1 --port 0` to override the saved address and start on an available port for a single launch.
 
 Use direct HTTP on loopback or an isolated test network. For HTTPS, bind Phyzflow to loopback and follow the [application deployment design](../docs/application-spec.md#deployment).
 
@@ -46,6 +46,34 @@ Authorized MCP clients have full flow-development parity inside their granted Wo
 - **Inspection, logs, and dependencies:** `inspect_execution`, `read_console_logs`, `configure_console_logs`, and `install_dependencies` (targeting the granted Workspace's `.venv` only).
 
 All MCP commands enforce live Workspace grants and keep application state, the Phyzflow source checkout, raw shell execution, and application updates or restarts outside the MCP boundary.
+
+### Transfer and manage Workspace files
+
+Use `list_workspace_files` with a directory path and the returned `next_after` as the next call's `after` argument. Paths use forward slashes and are relative to the Workspace root. Use `.` to list the root. `stat_workspace_file` returns a regular file's byte size and revision. Use `read_workspace_text` and `write_workspace_text` for UTF-8 files up to 128 KiB. Text writes and uploads take the current revision for replacement or `missing` for creation. Use `move_workspace_file` to rename or move a file on the same filesystem without overwriting a destination. Use `delete_workspace_file` to send a file to the host Trash or Recycle Bin. Moves and deletions require the source revision. Use Sheet commands to remove Sheets and their entrypoints.
+
+Project dotfiles such as `.gitignore` and `.github/` are accessible. Protected paths include `.git`, `.workspace`, Python environments and caches, Phyzflow application data and source, and temporary transfer files. Symbolic links, junctions, hard-linked files, and special files are outside the file tool scope. When an affected Sheet is locked, pass its edit session in `session_ids`, keyed by the Sheet's Workspace-relative directory. Use `.` for Main and, for example, `flows/Secondary` for a secondary Sheet. A move across Sheets checks both leases.
+
+Set `PHYZFLOW_MCP_TOKEN` in your environment, then stream a file through the installed MCP SDK client:
+
+```sh
+python -m workspace_sdk.application_mcp.file_client --url http://127.0.0.1:18080 --workspace-id WORKSPACE_ID upload ./archive.zip assets/archive.zip
+python -m workspace_sdk.application_mcp.file_client --url http://127.0.0.1:18080 --workspace-id WORKSPACE_ID download assets/archive.zip ./received.zip
+```
+
+Upload is create-only by default. Use `--revision REVISION` to replace a known version. Use `--session SHEET_PATH=SESSION_ID` when the affected Sheet is locked. Downloads create a new local file and verify size and SHA-256 before publishing it.
+
+Clients using tools directly call `begin_workspace_transfer` with `workspace_id`, `path`, and `direction` (`upload` or `download`). Uploads also provide `revision`, `size`, and a lowercase hexadecimal `sha256`. Pass the returned `transfer_id` to `write_workspace_chunk` with `offset` and Base64 `data`, or to `read_workspace_chunk` with `offset` and an optional byte `count`. Continue at the returned `next_offset`. Retry the last chunk at the same offset after a lost response. Call `finish_workspace_transfer` once all bytes have been transferred, passing `session_ids` for locked upload targets. It returns the verified digest, byte size, and revision. Repeat finalization with the same transfer ID if its response was lost. Use `cancel_workspace_transfer` to discard a pending transfer.
+
+Each chunk carries up to 512 KiB of file bytes. The server stages the upload on the destination filesystem and reserves 256 MiB of free disk space. Available space and the filesystem determine the maximum file size. A 1 GiB file uses 2,048 chunk calls in each direction. A token can have one upload and one download active, with up to 32 active transfers per installation. Transfers expire after 15 minutes of inactivity. Restarting the server discards pending transfers. Each call checks the current Workspace grant and the server checks the destination revision again at upload commit.
+
+To reproduce the 1 GiB round-trip check from the repository root after installing `./workspace[mcp]` and the test dependencies:
+
+```sh
+PYTHONPATH=workspace-test:workspace-test/tests PHYZFLOW_MCP_LARGE_FILE_TEST=1 \
+  python -m unittest -v test_application_mcp_files.ApplicationMcpFilesTests.test_installed_gib_round_trip
+```
+
+A localhost run on macOS arm64 with Python 3.12.11 uploaded 1 GiB in 17.7 seconds and downloaded it in 15.8 seconds. The source, Workspace file, and downloaded file had the same SHA-256. Peak sampled server RSS was 110 MiB. Client peak RSS was 81 MiB uploading and 84 MiB downloading. Each side used about 1 GiB of staging space while it wrote the file.
 
 ## Work on a selected project from the CLI
 

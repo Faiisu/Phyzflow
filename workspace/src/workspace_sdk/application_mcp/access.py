@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from secrets import token_urlsafe
 import sqlite3
+from threading import RLock
 from uuid import uuid4
 
 from ..sheets import discover_flows
@@ -81,10 +82,13 @@ class WorkspaceAccess:
     def __init__(
         self, tokens: McpTokens, registry, mount_sheet_resolver,
         is_deleting: Callable[[str], bool] = lambda _: False,
+        mounted_sheet_resolver: Callable[[str], Callable | None] = lambda _: None,
     ) -> None:
         self.tokens = tokens
+        self.file_gate = RLock()
         self.registry = registry
         self.mount_sheet_resolver = mount_sheet_resolver
+        self.mounted_sheet_resolver = mounted_sheet_resolver
         self.is_deleting = is_deleting
         self.protected_folders: tuple[Path, ...] = tuple(
             folder.resolve() for folder, _ in getattr(registry, "protected_folders", ())

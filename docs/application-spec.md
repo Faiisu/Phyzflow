@@ -52,6 +52,10 @@ Opening a sheet and saving Python source keep the graph and editors available. R
 
 **MCP-03.** An administrator manages MCP access in the deployed web application. The administrator selects which Workspaces an MCP identity may access and can revoke those grants. The deployed instance checks the grant for each request.
 
+**MCP-04.** An authorized MCP client can list, read, create, replace, move, and trash regular project files by Workspace-relative path, including project dotfiles. Protect application files, runtime state, Git data, Python environments, and filesystem aliases. Manage Sheet removal through the Sheet lifecycle. Check the current revision and affected Sheet locks on file mutations. A move preserves an existing destination. A deletion uses the host Trash or Recycle Bin.
+
+**MCP-05.** Transfer files as opaque bytes in MCP chunks. Limit each chunk to 512 KiB decoded and determine upload capacity from the destination filesystem and available disk space. Publish an upload only after verifying its size, SHA-256, destination revision, and permissions. Provide a streaming client and reclaim staged files on cancellation, idle expiry, and service restart.
+
 **EDIT-01.** Opening a sheet for editing acquires an exclusive editing lock for that sheet. While the lock is held, other authorized users can open the sheet in read-only mode. Editing through the UI or MCP is exclusive, and other sheets can be opened and edited independently.
 
 **EDIT-02.** MCP is the primary path for acquiring and releasing the sheet editing lock. When an MCP operation finishes, including on failure or cancellation, it must cleanly close the processes it owns for that operation and release its lock when it closes the sheet. Runs handed off to the Workspace are managed by the Workspace under the run lifecycle rules.
@@ -162,6 +166,7 @@ These scenarios describe observable expectations for release acceptance.
 | DASH-01, DASH-02 | Ask an AI agent to author a panel for a flow metric. Open it in the Workspace and verify the values it displays and its conformance to the current application's theme and interaction conventions. |
 | MCP-01, MCP-02 | Verify that each flow-development command is available through MCP. Run representative commands against a Workspace allowed by the deployed instance and one it denies. Verify that the Phyzflow application specification is protected from edits through MCP. |
 | MCP-03 | Grant and revoke a Workspace permission in the web app. Verify that the MCP identity gains access after the grant and that its next request is denied after revocation. |
+| MCP-04, MCP-05 | Use an authenticated remote MCP client to round-trip a large binary file and verify SHA-256. Exercise file revisions, project dotfiles, cross-Sheet moves, Trash recovery, interrupted transfers, revocation, and protected paths. |
 | AUTH-01 | Install two independent instances. Verify that each has one `admin` account and a distinct initial password. Verify that an incorrect password is rejected and that the correct password still works after reboot. Sign in to issue an MCP token scoped to a Workspace. |
 | EDIT-01 | Open a sheet for editing. Verify that another authorized user can view it read-only and cannot edit it through the UI or MCP. Verify that the other user can edit a different unlocked sheet. |
 | EDIT-02 | Finish an MCP editing operation, then repeat with a failure and a cancellation. Verify that its processes close cleanly and that the lock is released when the sheet closes. Verify that a run handed off to the Workspace follows the Workspace lifecycle. |

@@ -44,6 +44,17 @@ EXPECTED_TOOLS = {
     "read_console_logs",
     "configure_console_logs",
     "install_dependencies",
+    "list_workspace_files",
+    "stat_workspace_file",
+    "read_workspace_text",
+    "write_workspace_text",
+    "move_workspace_file",
+    "delete_workspace_file",
+    "begin_workspace_transfer",
+    "write_workspace_chunk",
+    "read_workspace_chunk",
+    "finish_workspace_transfer",
+    "cancel_workspace_transfer",
 }
 
 FORBIDDEN_TOOLS = {"run_command", "update_workspace", "restart_workspace"}

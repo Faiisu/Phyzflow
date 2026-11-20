@@ -29,6 +29,7 @@ from .application_mcp import (
     MCP_BODY_LIMIT, MCP_REQUEST_HEADERS, MCP_RESPONSE_HEADERS, TOKEN_PATH,
     McpTokens, WorkspaceAccess, mcp_transport,
 )
+from .application_mcp.file_transfers import FileTransfers
 from .project import workspace_format_notice
 from .sheet_runs import RunStateStore
 from .sheets import discover_flows, initialize_workspace
@@ -221,8 +222,13 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
         with lock:
             return workspace_id in deleting
 
-    def mount_workspace(workspace_id: str, root: Path):
+    def mounted_sheet_resolver(workspace_id: str):
         with lock:
+            entry = mounted.get(workspace_id)
+            return entry[2] if entry is not None else None
+
+    def mount_workspace(workspace_id: str, root: Path):
+        with access.file_gate, lock:
             if shutting_down:
                 raise RuntimeError("The application is shutting down.")
             if workspace_id in deleting:
@@ -265,8 +271,10 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
 
     access = WorkspaceAccess(
         tokens, registry, lambda workspace_id, root: mount_workspace(workspace_id, root)[2],
-        is_deleting=is_deleting,
+        is_deleting=is_deleting, mounted_sheet_resolver=mounted_sheet_resolver,
     )
+
+    transfers = FileTransfers(access, administrator.directory / "mcp-file-staging")
 
     class Handler(UIRequestHandler):
         def end_headers(self) -> None:
@@ -572,7 +580,7 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
 
         def delete_workspace(self, workspace_id: str) -> None:
             try:
-                with lock:
+                with access.file_gate, lock:
                     if shutting_down:
                         self.send_json({"error": "The application is shutting down."}, HTTPStatus.SERVICE_UNAVAILABLE)
                         return
@@ -598,6 +606,7 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
                     self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
                     return
                 try:
+                    transfers.cancel_workspace(workspace_id)
                     move_workspace_to_trash(root)
                 except OSError as error:
                     with lock:
@@ -631,7 +640,7 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
             self.send_error(HTTPStatus.NOT_FOUND)
 
     try:
-        with mcp_transport(access) as send_mcp, ThreadingHTTPServer((ipv4, port), Handler) as server:
+        with mcp_transport(access, transfers) as send_mcp, ThreadingHTTPServer((ipv4, port), Handler) as server:
             print(f"Phyzflow: {ui_address(ipv4, server.server_port)}", flush=True)
             if administrator.initial_password.is_file():
                 print(f"Sign in as admin with the initial password in {administrator.initial_password}.", flush=True)
@@ -659,4 +668,5 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
             mounted_routes = list(mounted.values())
         for _, close, _ in mounted_routes:
             close()
+        transfers.close()
         run_state.close()

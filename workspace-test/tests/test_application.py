@@ -28,6 +28,7 @@ def read_application_line(stdout) -> str:
 @contextmanager
 def application(
     state: Path, *, args: tuple[str, ...] = ("--port", "0"), cwd: Path | None = None,
+    processes: list[subprocess.Popen] | None = None,
 ):
     cli = [Path(sys.executable).with_name("workspace")]
     if os.name == "nt":
@@ -44,6 +45,8 @@ def application(
             prefix = "Phyzflow: "
             if not line.startswith(prefix):
                 raise RuntimeError(f"Phyzflow did not publish its address: {line!r}.")
+            if processes is not None:
+                processes.append(process)
             yield line.removeprefix(prefix)
         finally:
             if process.poll() is None:
@@ -113,7 +116,7 @@ class ApplicationTests(unittest.TestCase):
             with application(state) as url:
                 endpoint = f"{url}/network-settings"
                 port = int(url.rsplit(":", 1)[1])
-                network = {"ipv4": "0.0.0.0", "port": port}
+                network = {"ipv4": "127.0.0.1", "port": port}
                 self.assertEqual(page.request.get(endpoint).status, 401)
                 self.assertEqual(page.request.post(endpoint, data=network, headers={"Origin": url}).status, 401)
                 page.goto(f"{url}/settings/network")
@@ -127,9 +130,9 @@ class ApplicationTests(unittest.TestCase):
                 page.get_by_role("link", name="Network settings").click()
                 expect(page.get_by_role("heading", name="Network settings")).to_be_visible()
                 address = page.get_by_label("Bind IPv4 address")
-                expect(address).to_have_value("127.0.0.1")
+                expect(address).to_have_value("0.0.0.0")
                 expect(page.get_by_label("Port")).to_have_value("18080")
-                expect(page.locator("#active-listener")).to_have_text(f"127.0.0.1:{port}")
+                expect(page.locator("#active-listener")).to_have_text(f"0.0.0.0:{port}")
                 page.get_by_label("Port").fill(str(port))
                 address.fill("300.0.0.1")
                 save = page.get_by_role("button", name="Save settings")
@@ -140,7 +143,7 @@ class ApplicationTests(unittest.TestCase):
                 address.fill(network["ipv4"])
                 save.click()
                 expect(page.get_by_role("status")).to_contain_text("Restart Phyzflow")
-                expect(page.locator("#active-listener")).to_have_text(f"127.0.0.1:{port}")
+                expect(page.locator("#active-listener")).to_have_text(f"0.0.0.0:{port}")
                 page.reload()
                 expect(address).to_have_value(network["ipv4"])
                 expect(page.get_by_label("Port")).to_have_value(str(port))
@@ -152,11 +155,11 @@ class ApplicationTests(unittest.TestCase):
                 sign_in(page, restarted, state)
                 self.assertEqual(page.request.get(f"{restarted}/network-settings").json(), {"saved": network, "active": network})
 
-            with application(state, args=("--ipv4", "127.0.0.1", "--port", "0")) as overridden:
+            with application(state, args=("--ipv4", "0.0.0.0", "--port", "0")) as overridden:
                 sign_in(page, overridden, state)
                 settings = page.request.get(f"{overridden}/network-settings").json()
                 self.assertEqual(settings["saved"], network)
-                self.assertEqual(settings["active"]["ipv4"], "127.0.0.1")
+                self.assertEqual(settings["active"]["ipv4"], "0.0.0.0")
                 self.assertEqual(settings["active"]["port"], int(overridden.rsplit(":", 1)[1]))
 
     def test_sign_in_with_the_installation_administrator(self):

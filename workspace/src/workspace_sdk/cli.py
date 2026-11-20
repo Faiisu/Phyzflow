@@ -12,7 +12,7 @@ from .node_settings import SettingsStore
 from .project import ValidationError, load_project, workspace_format_notice
 from .runner import run
 from .sheets import create_sheet, discover_flows, initialize_workspace, workspace_root_for_sheet
-from .ui_settings import load_ui_settings, prompt_ui_settings
+from .ui_settings import ApplicationNetwork, load_ui_settings, prompt_ui_settings
 
 
 def report_event(event):
@@ -50,7 +50,7 @@ def main() -> int:
     ui_command.add_argument("--prompt", action="store_true", help="Ask for the IPv4 bind address and port before starting.")
     ui_command.add_argument("--single-flow", action="store_true", help="Open the current flow without sheets.")
     app_parser = commands.add_parser("app", help="Open the Phyzflow application and Workspace list.")
-    app_parser.add_argument("--ipv4", help="Override the saved IPv4 bind address (default: 127.0.0.1).")
+    app_parser.add_argument("--ipv4", help=f"Override the saved IPv4 bind address (default: {ApplicationNetwork().ipv4}).")
     app_parser.add_argument("--port", type=int, help="Override the saved HTTP port (default: 18080). Use 0 for an available port.")
     app_parser.add_argument("--state-dir", type=Path, default=Path.home() / ".phyzflow", help="Application data directory.")
     deploy_parser = commands.add_parser("deploy", help="Validate and serve a Linux ARM64 build.")

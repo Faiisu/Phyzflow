@@ -10,7 +10,7 @@ dependencies = ["pywin32>=306; sys_platform == 'win32'"]
 description = "Run and debug Python inference flows."
 
 [project.optional-dependencies]
-mcp = ["mcp==2.3.0"]
+mcp = ["mcp==2.3.0", "Send2Trash==2.2.0"]
 
 [project.scripts]
 workspace = "workspace_sdk.cli:main"
