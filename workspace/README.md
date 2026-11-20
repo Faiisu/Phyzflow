@@ -11,7 +11,7 @@ See the [application specification](../docs/application-spec.md) for requirement
 3. Choose an existing Workspace or an empty folder. The launcher uses the project's `.venv`, installs the SDK from the release, and opens the configured local URL in your browser. Select **+** to create a sheet, then **Run flow**.
 4. Share the project folder path with an AI agent or open it in your IDE. If startup fails, the launcher shows the error. UI logs are in the project's `.workspace/launcher-*.log`. Edit the project's `setting.json` to resolve a port conflict.
 
-Build a release on macOS from the repository root with `sh workspace/release/macos/build.sh`. The ZIP is written to `workspace/dist/` by default. The build uses the local Mac architecture and ad-hoc signing for local use.
+Build a release on macOS from the repository root with `sh workspace/release/macos/build.sh`. The ZIP is written to `workspace/dist/` by default after the compatibility check passes. The build requires uv and Google Chrome, selects Python 3.12 through uv, uses the local Mac architecture, and signs the bundle ad hoc. Set `PREVIOUS_RELEASE_MANIFEST` to the preceding release manifest for subsequent builds.
 
 ## Sign in to the local Phyzflow application
 
@@ -140,3 +140,16 @@ python workspace/release/build_wheel.py --out-dir workspace/dist
 Use this command without `--previous-manifest` to establish the first baseline. For subsequent builds, pass `--previous-manifest` with the JSON reported by the preceding published wheel. The builder carries forward the last-changed release for unchanged modules. Direct source and editable installs do not include a release manifest.
 
 Fingerprints hash the packaged file paths and contents by module. The release builder maps the CLI, Runner, Web UI, and MCP files explicitly and assigns the other SDK files to the Application. When adding a file outside the Application, update its module assignment in the builder. Wheel metadata and the manifest itself are excluded from the module fingerprints.
+
+## Verify a release candidate
+
+With Python 3.12, uv, and Google Chrome installed, check a candidate from the repository that contains its Git commit.
+
+```sh
+wheel=$(python workspace/release/build_wheel.py --out-dir /tmp/phyzflow-candidate)
+python workspace/release/check_compatibility.py "$wheel" --report /tmp/phyzflow-candidate/compatibility.json
+```
+
+The check installs the wheel in a temporary environment and runs the compatibility tests from the candidate's commit. The JSON report identifies the release, commit, and wheel SHA-256, and records the Workspace format, Sheet Worker protocol, and Dashboard Bridge combinations with their test results. A failed test or an advertised version without a test blocks the release. Update the case list and its tests whenever an interface adds an advertised version.
+
+The macOS release includes `Workspace.app/Contents/Resources/phyzflow-compatibility.json` in the signed bundle. It records `published_at` in UTC when the checked wheel and report are staged for packaging in the release output directory.
