@@ -109,6 +109,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 expect(main).to_have_accessible_description("Ready")
                 expect(page.get_by_role("tab", name="Quality checks").locator(".sheet-status")).to_be_visible()
                 expect(page.get_by_role("button", name="Stop Main")).to_have_count(0)
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                inspector = flow.get_by_role("region", name="Node inspector")
+                header = page.locator(".workspace-header")
                 for width, height in ((320, 620), (390, 844), (768, 1024), (1440, 900), (320, 620)):
                     page.set_viewport_size({"width": width, "height": height})
                     with self.subTest(width=width):
@@ -117,9 +120,14 @@ class ApplicationLifecycleTests(unittest.TestCase):
                         for action in ("Run flow", "Run All", "Rename sheet", "Edit flow.py", "Reload flow", "New sheet"):
                             button = page.get_by_role("button", name=action, exact=True).bounding_box()
                             self.assertLessEqual(button["x"] + button["width"], width)
+                        if width == 1440:
+                            header_box = header.bounding_box()
+                            for panel in (flow.locator("#panel-outline"), inspector):
+                                expect(panel).to_be_visible()
+                                self.assertAlmostEqual(
+                                    panel.bounding_box()["y"] - header_box["y"] - header_box["height"], 13.6, delta=1,
+                                )
 
-                flow = page.frame_locator('iframe[title="Main flow"]')
-                inspector = flow.get_by_role("region", name="Node inspector")
                 run = flow.get_by_role("region", name="Run", exact=True)
                 expect(flow.locator("#panel-toolbar")).to_have_count(0)
                 expect(flow.locator('[aria-controls="panel-toolbar"]')).to_have_count(0)
@@ -127,6 +135,10 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 expect(run).to_be_hidden()
                 flow.get_by_role("button", name="Inspect Start").click()
                 expect(inspector).to_be_visible()
+                header_box = header.bounding_box()
+                self.assertAlmostEqual(
+                    inspector.bounding_box()["y"] - header_box["y"] - header_box["height"], 8, delta=1,
+                )
                 run_flow = page.get_by_role("button", name="Run flow", exact=True)
                 run_flow.click()
                 expect(status).to_have_text("Succeeded")
