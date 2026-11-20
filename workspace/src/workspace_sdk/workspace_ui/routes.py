@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import nullcontext
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
+import json
 import re
+import sqlite3
 from urllib.parse import unquote
 
 from ..execution import FlowBusy, sheet_lock
@@ -29,6 +31,7 @@ from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
 
 VIEW_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/([0-9]{1,8}))?/view" + FLOW_VIEW_SUBPATH_PATTERN)
+VISUALIZE_LAYOUT_PATH = re.compile(r"/flows/([0-9]{1,8})(?:/revision/[0-9]{1,8})?/view/visualize-layout")
 RECOVERY_PATH = re.compile(rf"/flows/([0-9]{{1,8}})/recovery({FLOW_VIEW_ASSET_PATTERN}|/[^/]*)")
 RECOVERY_NODE_FILES = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_FILES_ROUTE}")
 RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE_ROUTE}")
@@ -41,6 +44,28 @@ WORKSPACE_ASSETS = {
     "/workspace/source-editing.js": ("workspace/source-editing.js", "text/javascript"),
     "/workspace/sheet-dialogs.js": ("workspace/sheet-dialogs.js", "text/javascript"),
 }
+
+
+def validate_visualize_layout(panels: object) -> dict:
+    if not isinstance(panels, dict) or not panels:
+        raise ValueError
+    minimums = {"left": 20, "top": 20, "width": 280, "height": 220}
+    for key, bounds in panels.items():
+        key.encode("utf-8")
+        identity = json.loads(key)
+        if (
+            not isinstance(identity, list) or len(identity) != 2
+            or (identity[0] is not None and (not isinstance(identity[0], str) or not identity[0]))
+            or not isinstance(identity[1], str) or not identity[1]
+            or not isinstance(bounds, dict) or bounds.keys() != minimums.keys()
+            or any(
+                type(bounds[name]) is not int or bounds[name] < minimum
+                or bounds[name] > 10_000_000 or bounds[name] % 20
+                for name, minimum in minimums.items()
+            )
+        ):
+            raise ValueError
+    return panels
 
 
 def workspace_dispatch(
@@ -112,6 +137,35 @@ def workspace_dispatch(
                 return None
             sheet = sheets[index]
             return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
+
+        def visualize_layout(self, index: int) -> None:
+            sheet = sheets[index] if index < len(sheets) else None
+            if sheet is None or sheet.run_state is None or sheet.workspace_id is None or sheet.sheet_key is None:
+                self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+                return
+            panels = None
+            if self.request.command == "POST":
+                try:
+                    if self.request.headers.get_content_type() != "application/json":
+                        raise ValueError
+                    panels = validate_visualize_layout(self.request.read_json_dict().get("panels"))
+                except (ValueError, UnicodeError, RecursionError):
+                    self.request.send_json({"error": "Send valid dashboard panel bounds."}, HTTPStatus.BAD_REQUEST)
+                    return
+            try:
+                with sheet.lock:
+                    if sheet.closing or sheet.workspace_closing():
+                        self.request.send_json({"error": "This sheet is unavailable."}, HTTPStatus.NOT_FOUND)
+                        return
+                    if panels is None:
+                        result = {"panels": sheet.run_state.load_visualize_layout(sheet.workspace_id, sheet.sheet_key)}
+                    else:
+                        sheet.run_state.save_visualize_layout(sheet.workspace_id, sheet.sheet_key, panels)
+                        result = {}
+            except sqlite3.Error:
+                self.request.send_json({"error": "Could not access the saved dashboard layout."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self.request.send_json(result)
 
         def flow_source(self, index: int, query: str | None, path: str | None) -> None:
             source = revision = None
@@ -367,6 +421,9 @@ def workspace_dispatch(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
+            if layout := VISUALIZE_LAYOUT_PATH.fullmatch(self.path):
+                self.visualize_layout(int(layout[1]))
+                return
             if node := RECOVERY_NODE_FILES.fullmatch(self.path):
                 self.recovery_node(int(node[1]), int(node[2]))
                 return
@@ -431,6 +488,9 @@ def workspace_dispatch(
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if layout := VISUALIZE_LAYOUT_PATH.fullmatch(self.path):
+                self.visualize_layout(int(layout[1]))
                 return
             if node := RECOVERY_NODE_SOURCE.fullmatch(self.path):
                 self.recovery_node(int(node[1]), int(node[2]), edit=True)

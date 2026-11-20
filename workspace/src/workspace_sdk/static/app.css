@@ -787,6 +787,31 @@ body.is-visualize-mode .dashboard-panel :is(.dashboard-controls, .dashboard-acti
   display: none !important;
 }
 
+#visualize-layout-status {
+  position: fixed;
+  z-index: 12;
+  left: 20px;
+  bottom: 20px;
+  max-width: calc(100% - 40px);
+  padding: .4rem .65rem;
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--dock);
+}
+body:not(.is-visualize-mode) #visualize-layout-status,
+.graph-scroll[data-layout-locked] [data-dash="resize"] {
+  display: none;
+}
+.graph-scroll[data-layout-locked] .dashboard-panel .dock-heading {
+  cursor: default;
+}
+.graph-scroll[data-layout-fitted] .dashboard-panel:not(:fullscreen) {
+  min-width: 0;
+}
+.graph-scroll[data-layout-loading] .dashboard-panel:not(:fullscreen) {
+  visibility: hidden;
+}
+
 @media (max-width: 720px) {
   :is(.outline-stack, .overlay-stack) { width: calc(100vw - 2 * var(--edge)); }
   .panel-switcher summary, .panel-menu button { min-height: 2.75rem; }
