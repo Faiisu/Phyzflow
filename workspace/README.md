@@ -126,3 +126,17 @@ For a setting declared with `live=True`, the dashboard can send mode `"live"` wh
 ## Inspect a project through a local agent
 
 Use the authenticated local development agent to inspect configured projects without a browser. See [Workspace development agent](../docs/workspace-agent.md) for startup, client usage, limits, and the request contract.
+
+## Report release and module versions
+
+Run `workspace version --json` in the environment where the release wheel is installed. The manifest identifies the installed release and Git commit and reports each module's `fingerprint` and `last_changed_version`. Run `workspace version` for a text summary.
+
+Build a release wheel from the committed SDK source with Python 3.12 or newer and uv:
+
+```sh
+python workspace/release/build_wheel.py --out-dir workspace/dist
+```
+
+Use this command without `--previous-manifest` to establish the first baseline. For subsequent builds, pass `--previous-manifest` with the JSON reported by the preceding published wheel. The builder carries forward the last-changed release for unchanged modules. Direct source and editable installs do not include a release manifest.
+
+Fingerprints hash the packaged file paths and contents by module. The release builder maps the CLI, Runner, Web UI, and MCP files explicitly and assigns the other SDK files to the Application. When adding a file outside the Application, update its module assignment in the builder. Wheel metadata and the manifest itself are excluded from the module fingerprints.

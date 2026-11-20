@@ -1,5 +1,6 @@
 import argparse
 from contextlib import ExitStack
+from importlib.metadata import PackageNotFoundError, distribution
 import json
 import os
 from pathlib import Path
@@ -8,9 +9,9 @@ import sys
 import traceback
 
 from .node_settings import SettingsStore
-from .project import ValidationError, load_project
+from .project import ValidationError, load_project, workspace_format_notice
 from .runner import run
-from .sheets import create_sheet, discover_flows, initialize_workspace
+from .sheets import create_sheet, discover_flows, initialize_workspace, workspace_root_for_sheet
 from .ui_settings import load_ui_settings, prompt_ui_settings
 
 
@@ -30,6 +31,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="workspace")
     parser.add_argument("--project", type=Path, help="Select a Workspace directory (default: current directory).")
     commands = parser.add_subparsers(dest="command", required=True)
+    version_parser = commands.add_parser("version", help="Report the installed Phyzflow release and module versions.")
+    version_parser.add_argument("--json", action="store_true", help="Print the release manifest as JSON.")
     check_parser = commands.add_parser("check", help="Validate a Python flow.")
     check_parser.add_argument("--sheet", help="Validate a named Workspace sheet.")
     run_parser = commands.add_parser("run", help="Validate and run the current flow.")
@@ -58,6 +61,23 @@ def main() -> int:
     deploy_parser.add_argument("--container-port", type=int, help="Port used by the container service (default: 8000).")
     args = parser.parse_args()
 
+    if args.command == "version":
+        try:
+            release = distribution("workspace-sdk").read_text("phyzflow-release.json")
+        except PackageNotFoundError:
+            release = None
+        if release is None:
+            print("Phyzflow: This installation has no release manifest.", file=sys.stderr)
+            return 1
+        manifest = json.loads(release)
+        if args.json:
+            print(release, end="")
+        else:
+            print(f"Phyzflow {manifest['version']} ({manifest['commit']})")
+            for name, module in manifest["modules"].items():
+                print(f"{name}: {module['last_changed_version']} ({module['fingerprint']})")
+        return 0
+
     if args.command == "app":
         from .application import serve_application
 
@@ -78,13 +98,17 @@ def main() -> int:
             return 0
         if not root.is_dir():
             raise ValueError(f"Workspace directory does not exist: {root}")
+        name = getattr(args, "sheet", None)
+        format_root = workspace_root_for_sheet(root) if name is None and args.command in ("check", "run") else root
+        if notice := workspace_format_notice(format_root):
+            print(notice, file=sys.stderr)
         if args.command == "sheets":
             print(json.dumps([{"name": title, "file": str(path / "flow.py")} for title, path in discover_flows(root)]))
             return 0
         if args.command == "new-sheet":
             print(create_sheet(root, args.name))
             return 0
-        if (name := getattr(args, "sheet", None)) is not None:
+        if name is not None:
             path = next((path for title, path in discover_flows(root) if title == name), None)
             if path is None:
                 raise ValueError(f"No sheet named {name!r} in {root}. List its sheets with 'workspace sheets'.")

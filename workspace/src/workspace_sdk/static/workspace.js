@@ -502,6 +502,9 @@ try {
   const name = document.querySelector("#workspace-name");
   name.textContent = workspace.name;
   name.title = workspace.name;
+  const formatNotice = document.querySelector("#format-notice");
+  formatNotice.textContent = workspace.format_notice ?? "";
+  formatNotice.hidden = !workspace.format_notice;
   runAll.hidden = !workspace.run_all;
   editRunningSource = workspace.edit_running_source;
   syncSheets(workspace.flows);

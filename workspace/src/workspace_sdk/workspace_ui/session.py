@@ -27,6 +27,7 @@ def workspace_routes(
     flows: list[tuple[str, Path]],
     settings: UISettings,
     *,
+    format_notice: str | None = None,
     interpreter: Path | None = None,
     workspace_id: str | None = None,
     run_state: RunStateStore | None = None,
@@ -216,6 +217,7 @@ def workspace_routes(
 
     dispatch = workspace_dispatch(
         root, sheets, sheets_lock,
+        format_notice=format_notice,
         interpreter=interpreter,
         is_closing=lambda: closing,
         discovered_sheets=discovered_sheets,
