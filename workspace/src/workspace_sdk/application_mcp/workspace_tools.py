@@ -50,6 +50,15 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error) or f"Could not delete sheet {sheet!r}.") from None
         return {"sheet": sheet, **result}
 
+    @server.tool(description="Rename a sheet without moving its project files or interrupting its runs.")
+    def rename_sheet(workspace_id: str, sheet: str, name: str, session_id: str | None = None) -> dict:
+        _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            return resolver.rename_workspace_sheet(flow_sheet, name, principal=access.principal(), session_id=session_id)
+        except (SheetLockedError, OSError, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or f"Could not rename sheet {sheet!r}.") from None
+
     @server.tool(description="Inspect dashboard panels, asset paths, theme contract, and resize guidance. Pass null to inspect only Workspace panels.")
     def inspect_dashboards(workspace_id: str, sheet: str | None = "Main") -> dict:
         if sheet is None:

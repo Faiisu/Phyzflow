@@ -11,7 +11,7 @@ import traceback
 from .node_settings import SettingsStore
 from .project import ValidationError, load_project, workspace_format_notice
 from .runner import run
-from .sheets import create_sheet, discover_flows, initialize_workspace, workspace_root_for_sheet
+from .sheets import create_sheet, discover_flows, find_sheet, initialize_workspace, workspace_root_for_sheet
 from .ui_settings import ApplicationNetwork, load_ui_settings, prompt_ui_settings
 
 
@@ -109,7 +109,7 @@ def main() -> int:
             print(create_sheet(root, args.name))
             return 0
         if name is not None:
-            path = next((path for title, path in discover_flows(root) if title == name), None)
+            path = find_sheet(root, name)
             if path is None:
                 raise ValueError(f"No sheet named {name!r} in {root}. List its sheets with 'workspace sheets'.")
             root = path

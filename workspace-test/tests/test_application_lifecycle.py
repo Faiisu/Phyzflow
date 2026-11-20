@@ -109,7 +109,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
                     with self.subTest(width=width):
                         self.assertTrue(page.locator("html").evaluate("root => root.scrollWidth === root.clientWidth"))
                         self.assertGreater(page.get_by_role("tablist", name="Flows").bounding_box()["width"], 200)
-                        for action in ("Run flow", "Run All", "Edit flow.py", "Reload flow", "New sheet"):
+                        for action in ("Run flow", "Run All", "Rename sheet", "Edit flow.py", "Reload flow", "New sheet"):
                             button = page.get_by_role("button", name=action, exact=True).bounding_box()
                             self.assertLessEqual(button["x"] + button["width"], width)
 

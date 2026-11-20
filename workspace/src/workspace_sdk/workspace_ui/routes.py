@@ -82,7 +82,7 @@ def validate_visualize_layout(panels: object) -> dict:
 
 def workspace_dispatch(
     root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
-    create_workspace_sheet, delete_workspace_sheet, run_all_sheets, workspace_id, run_state,
+    create_workspace_sheet, rename_workspace_sheet, delete_workspace_sheet, run_all_sheets, workspace_id, run_state,
 ):
     class Routes:
         def __init__(self, request: UIRequestHandler, path: str):
@@ -159,6 +159,30 @@ def workspace_dispatch(
                 self.request.send_json({"error": "Could not move the flow folder to deleted flows."}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
             self.request.send_json(result)
+
+        def rename_sheet(self, sheet: FlowSheet) -> None:
+            try:
+                if self.request.headers.get_content_type() != "application/json":
+                    raise ValueError
+                data = self.request.read_json_dict(4096)
+            except (ValueError, UnicodeError):
+                self.request.send_json({"error": "Send a JSON object with a sheet name."}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                result = rename_workspace_sheet(
+                    sheet, data.get("name"), principal="web",
+                    session_id=self.request.headers.get("X-Phyzflow-Edit-Session"),
+                )
+            except SheetLockedError as error:
+                self.request.send_json({"error": str(error), "edit_lock": error.snapshot}, HTTPStatus.CONFLICT)
+            except (FileExistsError, FileNotFoundError) as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
+            except ValueError as error:
+                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            except OSError:
+                self.request.send_json({"error": "Could not save the sheet name."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.request.send_json(result)
 
         def view_route(self) -> tuple[FlowSheet, int, str] | None:
             route = VIEW_PATH.fullmatch(self.path)
@@ -584,7 +608,7 @@ def workspace_dispatch(
                     return
                 self.forward_view(*view)
                 return
-            command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|reload|reload/([0-9a-f]{64}))", self.path)
+            command = re.fullmatch(r"/flows/([0-9]{1,8})/(open|stop|delete|rename|reload|reload/([0-9a-f]{64}))", self.path)
             if command is None or (index := int(command[1])) >= len(sheets):
                 self.request.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -594,6 +618,9 @@ def workspace_dispatch(
                 return
             if sheet is None:
                 self.request.send_json({"error": "This sheet has been deleted."}, HTTPStatus.NOT_FOUND)
+                return
+            if command[2] == "rename":
+                self.rename_sheet(sheet)
                 return
             if command[2] == "stop":
                 try:

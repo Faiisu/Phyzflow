@@ -16,6 +16,8 @@ from ..sheets import (
     can_delete_sheet,
     create_sheet,
     discover_flows,
+    set_sheet_name,
+    validate_sheet_name,
 )
 from ..ui_settings import UISettings
 from .flow_sheet import FlowSheet
@@ -139,12 +141,12 @@ def workspace_routes(
     def discovered_sheets() -> list[FlowSheet | None]:
         with sheets_lock:
             if not closing:
-                known = {sheet.root for sheet in sheets if sheet is not None}
-                sheets.extend(
-                    make_sheet(title, path)
-                    for title, path in discover_flows(root)
-                    if path not in known
-                )
+                known = {sheet.root: sheet for sheet in sheets if sheet is not None}
+                for title, path in discover_flows(root):
+                    if path in known:
+                        known[path].title = title
+                    else:
+                        sheets.append(make_sheet(title, path))
             return list(sheets)
 
     def create_workspace_sheet(name: object) -> dict:
@@ -160,6 +162,23 @@ def workspace_routes(
             "name": directory.name,
             "entrypoint": (directory / "flow.py").relative_to(root).as_posix(),
         }
+
+    def rename_workspace_sheet(
+        sheet: FlowSheet, value: object, *, principal: str, session_id: str | None = None,
+    ) -> dict:
+        name = validate_sheet_name(value)
+        with sheets_lock:
+            if closing or sheet.closing or sheet not in sheets or not (sheet.root / "flow.py").is_file():
+                raise FileNotFoundError("This sheet is no longer available.")
+            if sheet.root != root and not can_delete_sheet(root, sheet.root):
+                raise ValueError("Only sheets in this Workspace can be renamed.")
+            if (sheet.root != root and name.casefold() == "main") or any(
+                path != sheet.root and title.casefold() == name.casefold() for title, path in discover_flows(root)
+            ):
+                raise FileExistsError("That sheet name is already in use. Choose another name.")
+            sheet.edit_lease.write_locked(principal, session_id, lambda: set_sheet_name(sheet.root, name))
+            sheet.title = name
+            return {"name": name, "entrypoint": (sheet.root / "flow.py").relative_to(root).as_posix()}
 
     def delete_workspace_sheet(
         sheet_root: Path,
@@ -220,6 +239,7 @@ def workspace_routes(
 
     resolve_sheet.file_leases = file_leases
     resolve_sheet.create_workspace_sheet = create_workspace_sheet
+    resolve_sheet.rename_workspace_sheet = rename_workspace_sheet
     resolve_sheet.delete_workspace_sheet = delete_workspace_sheet
     resolve_sheet.run_all_sheets = run_all_sheets
     resolve_sheet.file_guard = sheets_lock
@@ -230,6 +250,7 @@ def workspace_routes(
         is_closing=lambda: closing,
         discovered_sheets=discovered_sheets,
         create_workspace_sheet=create_workspace_sheet,
+        rename_workspace_sheet=rename_workspace_sheet,
         delete_workspace_sheet=delete_workspace_sheet,
         run_all_sheets=run_all_sheets,
         workspace_id=workspace_id,

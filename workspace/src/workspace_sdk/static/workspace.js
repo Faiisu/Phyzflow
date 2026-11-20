@@ -12,6 +12,7 @@ const recoveryHint = document.querySelector("#recovery-hint");
 const reopen = document.querySelector("#open-flow");
 const newSheet = document.querySelector("#new-sheet");
 const runAll = document.querySelector("#run-all");
+const renameSheet = document.querySelector("#rename-sheet");
 const runSheet = document.querySelector("#run-sheet");
 const flowStatus = document.querySelector("#workspace-flow-status");
 const reloadFlow = document.querySelector("#reload-flow");
@@ -47,7 +48,7 @@ const {
 });
 const { confirmDelete } = initSheetDialogs({
   sheets, getActiveSheet: () => active, command, getWorkspace, removeSheet,
-  selectSheet, showCurrentSheet, syncSheets,
+  selectSheet, showCurrentSheet, syncSheets, updateSheetName,
 });
 
 function needsRecovery(sheet) {
@@ -80,6 +81,7 @@ function canRunWithoutWorker(sheet) {
 }
 
 function syncToolbar() {
+  renameSheet.disabled = !active;
   const button = activeRunButton();
   runSheet.disabled = !canRunWithoutWorker(active) && button?.disabled !== false;
   const frameStatus = button?.ownerDocument.getElementById("status");
@@ -206,10 +208,14 @@ function mayReplaceView(sheet) {
   return !hasUnsavedSource(sheet) || window.confirm("Discard unsaved source changes in this sheet?");
 }
 
-async function command(sheet, action) {
+async function command(sheet, action, body = null) {
   const options = { method: "POST" };
-  if (action === "delete" && sheet.editSessionId) {
-    options.headers = { "X-Phyzflow-Edit-Session": sheet.editSessionId };
+  if (body) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
+  }
+  if ((action === "delete" || action === "rename") && sheet.editSessionId) {
+    options.headers = { ...options.headers, "X-Phyzflow-Edit-Session": sheet.editSessionId };
   }
   const response = await fetch(`./flows/${sheet.index}/${action}`, options);
   const data = await response.json();
@@ -346,6 +352,22 @@ function selectSheet(sheet) {
   showNotice();
 }
 
+function updateSheetName(sheet, name) {
+  if (sheet.name === name) return;
+  sheet.name = name;
+  sheet.tab.setAttribute("aria-label", name);
+  const title = sheet.tab.querySelector(".sheet-name");
+  title.textContent = title.title = name;
+  sheet.stop.setAttribute("aria-label", `Stop ${name}`);
+  const remove = sheet.group.querySelector(".delete-flow");
+  if (remove) {
+    remove.title = `Delete ${name}`;
+    remove.setAttribute("aria-label", remove.title);
+  }
+  if (sheet.frame) sheet.frame.title = `${name} flow`;
+  if (sheet.recoveryFrame) sheet.recoveryFrame.title = `${name} recovery graph`;
+}
+
 function makeSheet(flow, index) {
   const tab = element("button", "", "sheet-tab");
   tab.id = `flow-tab-${index}`;
@@ -457,6 +479,7 @@ function syncSheets(flows) {
   flows.forEach((flow, index) => {
     if (flow === null) removeSheet(index);
     else if (sheets[index] === undefined) sheets[index] = makeSheet(flow, index);
+    else if (sheets[index]) updateSheetName(sheets[index], flow.name);
   });
   showCurrentSheet();
 }

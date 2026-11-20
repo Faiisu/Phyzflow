@@ -38,7 +38,7 @@ Select **MCP access** on the landing page, name the client, and select the Works
 
 Authorized MCP clients have full flow-development parity inside their granted Workspaces across these tool categories:
 
-- **Workspace and sheet management:** `list_workspaces`, `inspect_workspace`, `create_sheet`, and `delete_sheet`.
+- **Workspace and sheet management:** `list_workspaces`, `inspect_workspace`, `create_sheet`, `rename_sheet`, and `delete_sheet`.
 - **Sheet editing sessions:** `open_sheet`, `heartbeat_sheet`, `stage_draft`, and `close_sheet`.
 - **Files, source, and dashboards:** `list_files`, `read_file`, `search_code`, `write_file`, `apply_patch`, and `inspect_dashboards`.
 - **Node settings:** `read_node_settings` and `update_node_setting`.
@@ -87,6 +87,8 @@ workspace --project "$project_path" ui
 ```
 
 Use `workspace init "$project_path"` to initialize a new project and `workspace --project "$project_path" new-sheet "First Flow"` to create a runnable Python sheet. The CLI prints the path to its Python entry point. A browser already open on the project discovers the new sheet without a restart. After editing Python, select the sheet and click **Reload flow** to refresh the graph and use the edited code on the next run.
+
+To change a sheet's name, select it and click **Rename sheet**. MCP clients can call `rename_sheet` with the Workspace ID, current `sheet` name, and new `name`. Include the editing session ID when the sheet is locked by your session. Renaming preserves the project folder, run history, and Workspace Dashboard sources. Use the new name in CLI and MCP calls. `Main` remains an alias for the root sheet.
 
 In the Workspace, select a sheet and choose **Edit flow.py** to open its flow source. **Save** writes to the project file. If another editor changed the file, copy any changes you want to keep and reopen the editor to see the latest version. If **Reload flow** reports a validation error, use the diagnostic to locate it. You can reopen **Edit flow.py** to fix the flow source, save it, and retry **Reload flow**.
 

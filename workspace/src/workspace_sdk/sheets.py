@@ -9,6 +9,7 @@ from importlib.metadata import version
 import json
 import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Callable
 from unicodedata import category, normalize
 from uuid import uuid4
@@ -50,10 +51,43 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     folder = root / "flows"
     flows = []
     if folder.is_dir():
-        flows = [(path.name, path) for path in sorted(folder.iterdir()) if (path / "flow.py").is_file()]
+        flows = [(sheet_name(path, path.name), path) for path in sorted(folder.iterdir()) if (path / "flow.py").is_file()]
     if (root / "flow.py").is_file():
-        flows.insert(0, ("Main", root))
+        flows.insert(0, (sheet_name(root, "Main"), root))
     return flows
+
+
+def find_sheet(root: Path, name: str) -> Path | None:
+    return next((path for title, path in discover_flows(root)
+                 if title == name or (name == "Main" and path == root)), None)
+
+
+def sheet_name(path: Path, default: str) -> str:
+    file = path / ".workspace" / "sheet-name"
+    if path.is_symlink() or file.parent.is_symlink() or file.is_symlink() or not file.is_file():
+        return default
+    try:
+        with file.open("rb") as stream:
+            name = validate_sheet_name(stream.read(258).decode())
+        return name if default == "Main" or name.casefold() != "main" else default
+    except (OSError, ValueError):
+        return default
+
+
+def set_sheet_name(path: Path, name: str) -> None:
+    directory = path / ".workspace"
+    if directory.is_symlink():
+        raise ValueError("Workspace state must not be a symbolic link.")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    pending = None
+    try:
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as stream:
+            pending = Path(stream.name)
+            stream.write(name + "\n")
+        pending.replace(directory / "sheet-name")
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
 
 
 def workspace_root_for_sheet(root: Path) -> Path:
@@ -220,18 +254,23 @@ def write_starter_flow(directory: Path, cleanup: ExitStack) -> Path:
     return entrypoint
 
 
-def create_sheet(root: Path, value: object) -> Path:
+def validate_sheet_name(value: object) -> str:
     name = normalize("NFC", value.strip()) if isinstance(value, str) else ""
     if not (
         0 < len(name) <= 64 and name[0].isalnum()
         and all(char.isalnum() or char in " _-" or category(char).startswith("M") for char in name)
     ):
         raise ValueError("Start with a letter or number and use up to 64 letters, numbers, spaces, underscores, or hyphens.")
+    return name
+
+
+def create_sheet(root: Path, value: object) -> Path:
+    name = validate_sheet_name(value)
     parent = root / "flows"
     if parent.is_symlink():
         raise ValueError("The flows directory must be inside this Workspace.")
     parent.mkdir(exist_ok=True)
-    if name.casefold() == "main" or any(
+    if name.casefold() == "main" or any(title.casefold() == name.casefold() for title, _ in discover_flows(root)) or any(
         normalize("NFC", path.name).casefold() == name.casefold() for path in parent.iterdir()
     ):
         raise FileExistsError("That sheet name is already in use. Choose another name.")

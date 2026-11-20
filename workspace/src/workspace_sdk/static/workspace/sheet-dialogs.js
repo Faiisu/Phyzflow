@@ -1,9 +1,11 @@
 export function initSheetDialogs({
-  sheets, getActiveSheet, command, getWorkspace, removeSheet, selectSheet, showCurrentSheet, syncSheets,
+  sheets, getActiveSheet, command, getWorkspace, removeSheet, selectSheet, showCurrentSheet, syncSheets, updateSheetName,
 }) {
   const newSheet = document.querySelector("#new-sheet");
+  const renameSheet = document.querySelector("#rename-sheet");
   const createDialog = document.querySelector("#create-sheet");
   const createForm = createDialog.querySelector("form");
+  const dialogTitle = createForm.querySelector("#create-sheet-title");
   const sheetTitle = createForm.querySelector("#sheet-title");
   const createError = createForm.querySelector("#create-error");
   const createButton = createForm.querySelector('button[type="submit"]');
@@ -15,6 +17,7 @@ export function initSheetDialogs({
   const deleteButton = deleteForm.querySelector('button[type="submit"]');
   const cancelDelete = deleteForm.querySelector('button[type="button"]');
   let sheetToDelete = null;
+  let sheetToRename = null;
 
   function confirmDelete(sheet) {
     sheetToDelete = sheet;
@@ -45,10 +48,21 @@ export function initSheetDialogs({
     }
   });
 
-  newSheet.addEventListener("click", () => {
+  function openNameDialog(sheet) {
+    sheetToRename = sheet;
     createForm.reset();
     createError.hidden = true;
+    dialogTitle.textContent = sheet ? "Rename sheet" : "New sheet";
+    createButton.textContent = sheet ? "Rename sheet" : "Create sheet";
+    sheetTitle.value = sheet?.name ?? "";
     createDialog.showModal();
+    if (sheet) sheetTitle.select();
+  }
+
+  newSheet.addEventListener("click", () => openNameDialog(null));
+  renameSheet.addEventListener("click", () => {
+    const sheet = getActiveSheet();
+    if (sheet) openNameDialog(sheet);
   });
   cancelSheet.addEventListener("click", () => createDialog.close());
   createDialog.addEventListener("cancel", event => {
@@ -59,6 +73,13 @@ export function initSheetDialogs({
     createError.hidden = true;
     createButton.disabled = cancelSheet.disabled = true;
     try {
+      if (sheetToRename) {
+        const { name } = await command(sheetToRename, "rename", { name: sheetTitle.value });
+        updateSheetName(sheetToRename, name);
+        createDialog.close();
+        sheetToRename.tab.focus();
+        return;
+      }
       const response = await fetch("./flows", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

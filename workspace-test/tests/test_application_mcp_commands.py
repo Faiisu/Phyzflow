@@ -23,6 +23,7 @@ EXPECTED_TOOLS = {
     "list_workspaces",
     "inspect_workspace",
     "create_sheet",
+    "rename_sheet",
     "delete_sheet",
     "inspect_dashboards",
     "open_sheet",
@@ -133,6 +134,7 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                     for tool_name, args in (
                         ("inspect_workspace", {"workspace_id": denied_id}),
                         ("create_sheet", {"workspace_id": denied_id, "name": "Extra"}),
+                        ("rename_sheet", {"workspace_id": denied_id, "sheet": "Main", "name": "Renamed"}),
                         ("delete_sheet", {"workspace_id": denied_id, "sheet": "Main"}),
                         ("inspect_dashboards", {"workspace_id": denied_id}),
                         ("open_sheet", {"workspace_id": denied_id, "sheet": "Main", "mode": "edit"}),

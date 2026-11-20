@@ -10,7 +10,7 @@ import sqlite3
 from threading import RLock
 from uuid import uuid4
 
-from ..sheets import discover_flows
+from ..sheets import find_sheet
 from ..workspace_environment import is_protected_path
 
 BEARER = re.compile(r"(?i:Bearer) +([a-zA-Z0-9_-]{43})")
@@ -156,7 +156,7 @@ def resolve_workspace_sheet(access: WorkspaceAccess, workspace_id: str, sheet: s
 
     root = access.workspace(workspace_id)
     ensure_not_protected(root, access.protected_folders)
-    match = next((path for name, path in discover_flows(root) if name == sheet), None)
+    match = find_sheet(root, sheet)
     if match is None or not available_root(match) or (match / "flow.py").is_symlink():
         raise ToolError(f"Unknown sheet {sheet!r}.")
     if match != root:

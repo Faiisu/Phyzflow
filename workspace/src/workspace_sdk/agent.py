@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from .node_sources import SourceChanged, edit_source_file
-from .sheets import discover_flows
+from .sheets import discover_flows, find_sheet
 from .agent_jobs import AgentJobs
 from .agent_state import AgentState
 from .execution import FlowBusy
@@ -173,7 +173,7 @@ class WorkspaceAgent:
             return self.jobs.get(project, arguments['job_id'], operation == 'cancel_job')
         if operation in ('validate_flow', 'run_flow'):
             sheet_name = arguments.get('sheet', 'Main')
-            sheet = next((path for name, path in discover_flows(root) if name == sheet_name), None)
+            sheet = find_sheet(root, sheet_name)
             if sheet is None or project_path(root, sheet.relative_to(root).as_posix()) != sheet:
                 raise AgentError('invalid_arguments', 'Unknown project sheet.')
             inputs = arguments.get('input', {})
