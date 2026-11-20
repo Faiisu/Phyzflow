@@ -563,7 +563,8 @@ def workspace_dispatch(
                     if part.strip()
                 } or None
                 try:
-                    format_notice = workspace_format_notice(root)
+                    format_fn = getattr(discovered_sheets, "format_notice", None)
+                    format_notice = format_fn() if format_fn is not None else workspace_format_notice(root)
                     current = discovered_sheets()
                 except ValidationError as error:
                     format_notice = str(error)
@@ -578,7 +579,7 @@ def workspace_dispatch(
                     entry = {
                         "name": sheet.title, "status": status, "deletable": can_delete_sheet(root, sheet.root),
                         "revision": sheet.revision, "changed_source": sheet.changed_source(status),
-                        "edit_lock": sheet.edit_lease.status(viewer_sessions),
+                        "edit_lock": sheet.edit_lock_status(viewer_sessions),
                         "recoverable": sheet.recovery_graph is not None,
                     }
                     if interpreter is not None:

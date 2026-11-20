@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from playwright.sync_api import expect
 
 from browser_support import browser_page, local_ui
-from workspace_sdk.sheets import create_sheet
+from workspace_sdk.sheets import create_sheet, source_stamp
+from workspace_sdk.workspace_ui.flow_sheet import FlowSheet
 
 
 FLOW_SOURCE = '''from pathlib import Path
@@ -287,6 +289,42 @@ class FrontendSyncOptimizationTests(unittest.TestCase):
                 page.wait_for_timeout(500)
                 resumed_sheet1 = [entry for entry in responses if "/flows/1/" in entry[0] and "/live-run" in entry[0]]
                 self.assertTrue(resumed_sheet1)
+
+    def test_backend_workspace_caching_avoids_redundant_walks_and_worker_probes(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / "flow.py").write_text(SIMPLE_FLOW, encoding="utf-8")
+            nodes = root / "nodes" / "ping"
+            nodes.mkdir(parents=True)
+            helper = nodes / "helper.py"
+            helper.write_text("VALUE = 1\n", encoding="utf-8")
+            sheet = FlowSheet(
+                "Main",
+                root,
+                {"speed": 1.0, "smooth_ms": 0},
+                workspace_root=root,
+                main=True,
+            )
+            try:
+                sheet.open()
+                baseline = sheet.attempted_source
+                self.assertEqual(baseline, source_stamp(root, main=True))
+                with patch("os.walk", side_effect=AssertionError("os.walk should not run when directories are unchanged")):
+                    self.assertIsNone(sheet.changed_source("ready"))
+                    helper.write_text("VALUE = 222\n", encoding="utf-8")
+                    updated = sheet.changed_source("ready")
+                self.assertIsNotNone(updated)
+                self.assertEqual(updated, source_stamp(root, main=True))
+                (nodes / "extra.py").write_text("EXTRA = True\n", encoding="utf-8")
+                added = sheet.changed_source("ready")
+                self.assertIsNotNone(added)
+                self.assertNotEqual(added, updated)
+                self.assertEqual(added, source_stamp(root, main=True))
+                with patch("workspace_sdk.workspace_ui.flow_sheet.build_opener", side_effect=AssertionError("worker /status HTTP probe should be cached while idle")):
+                    self.assertEqual(sheet.status(), "ready")
+                self.assertEqual(sheet.worker_status(probe=True), "ready")
+            finally:
+                sheet.stop()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -89,12 +90,102 @@ class FlowSheet:
         self.attempted_source: str | None = None
         self.attempt: SheetRun | None = None
         self.edit_lease = SheetEditLease(self.root)
+        self._cached_worker_status: str | None = None
+        self._source_dirs: tuple[tuple[Path, int, int], ...] | None = None
+        self._source_files: tuple[Path, ...] = ()
+        self._source_entries: list[tuple[str, int, int, int, int]] | None = None
+        self._source_digest: str | None = None
+
+    def _dirs_unchanged(self) -> bool:
+        if self._source_dirs is None:
+            return False
+        for directory, ino, mtime_ns in self._source_dirs:
+            try:
+                stat = directory.stat(follow_symlinks=False)
+            except OSError:
+                return False
+            if stat.st_ino != ino or stat.st_mtime_ns != mtime_ns:
+                return False
+        return True
+
+    def _scan_source_tree(self) -> tuple[tuple[tuple[Path, int, int], ...], tuple[Path, ...]]:
+        dirs = []
+        files = []
+        for directory, folders, filenames in os.walk(self.root):
+            path = Path(directory)
+            folders[:] = [
+                name for name in folders
+                if not name.startswith(".") and name != "__pycache__"
+                and not (self.main and path == self.root and name == "flows")
+                and not (path / name / "pyvenv.cfg").is_file()
+            ]
+            try:
+                dir_stat = path.stat(follow_symlinks=False)
+                dirs.append((path, dir_stat.st_ino, dir_stat.st_mtime_ns))
+            except OSError:
+                pass
+            for name in filenames:
+                if name.endswith(".py") or (path == self.root and name == "pyproject.toml"):
+                    files.append(path / name)
+        return tuple(dirs), tuple(files)
+
+    def _current_source_stamp(self) -> str:
+        if not self._dirs_unchanged():
+            self._source_dirs, self._source_files = self._scan_source_tree()
+            self._source_entries = None
+        entries = []
+        for source in self._source_files:
+            try:
+                stat = source.stat(follow_symlinks=False)
+            except OSError:
+                self._source_dirs = None
+                return source_stamp(self.root, main=self.main)
+            entries.append((
+                str(source.relative_to(self.root)),
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            ))
+        entries.sort()
+        if entries == self._source_entries and self._source_digest is not None:
+            return self._source_digest
+        digest = sha256(json.dumps(entries).encode()).hexdigest()
+        self._source_entries = entries
+        self._source_digest = digest
+        return digest
+
+    def edit_lock_status(self, viewer_sessions) -> dict:
+        ws_dir = self.root / ".workspace"
+        lock_file = ws_dir / "edit-lock.json"
+        sessions_file = ws_dir / "edit-lock-sessions.json"
+        if (
+            not ws_dir.is_symlink()
+            and not lock_file.is_symlink()
+            and not sessions_file.is_symlink()
+            and not lock_file.exists()
+            and not sessions_file.exists()
+        ):
+            return {
+                "locked": False,
+                "session_id": None,
+                "principal": None,
+                "principal_type": None,
+                "owner": None,
+                "last_heartbeat": None,
+                "stale": False,
+                "disconnected": False,
+                "owned_by_viewer": False,
+                "has_unsaved_draft": False,
+                "generation": self.edit_lease._generation,
+            }
+        return self.edit_lease.status(viewer_sessions)
 
     def changed_source(self, status: str) -> str | None:
         attempted = self.attempted_source
         if attempted is None or status == "stopped":
             return None
-        stamp = source_stamp(self.root, main=self.main)
+        stamp = self._current_source_stamp()
         return stamp if stamp != attempted else None
 
     def open(
@@ -109,7 +200,7 @@ class FlowSheet:
                 active = self.attempt
                 if active is not None and active is not attempt and active.status == "running":
                     raise ReloadConflict("This flow is running. Wait for it to finish or stop it before reloading.")
-                status = self.worker_status()
+                status = self.worker_status(probe=True)
                 try:
                     reservation.enter_context(sheet_lock(self.root))
                 except FlowBusy as error:
@@ -138,7 +229,7 @@ class FlowSheet:
             active = self.attempt
             if attempt is None and active is not None and active.status != "running" and (stopped or reload):
                 self.attempt = None
-            self.attempted_source = automatic_source or source_stamp(self.root, main=self.main)
+            self.attempted_source = automatic_source or self._current_source_stamp()
             self.inactive_status = "opening"
             try:
                 self.start_worker()
@@ -147,6 +238,10 @@ class FlowSheet:
                     self.revision += 1
                 self.inactive_status = "unavailable"
                 raise
+            self._source_dirs = None
+            self.attempted_source = automatic_source or self._current_source_stamp()
+            if automatic_source is not None:
+                self._current_source_stamp()
             if reload or replacing:
                 self.revision += 1
             self.inactive_status = "ready"
@@ -276,6 +371,7 @@ class FlowSheet:
                     self.startup["error"] = str(error)
                     raise
                 worker.url = reply["url"]
+                self._cached_worker_status = "ready"
                 self.recovery_graph = {
                     "name": self.root.name, "steps": reply["steps"], "output": reply["output"], "zoom": self.zoom,
                 }
@@ -312,6 +408,7 @@ class FlowSheet:
             self.revision += 1
 
     def stop_worker(self, *, status: str = "stopped") -> None:
+        self._cached_worker_status = None
         if self.worker is not None:
             self.inactive_status = "stopping"
             try:
@@ -385,16 +482,22 @@ class FlowSheet:
             ]
         return {"name": self.root.name, "steps": steps, "zoom": self.zoom}
 
-    def worker_status(self) -> str:
+    def worker_status(self, *, probe: bool = False) -> str:
         if not self.closing and sheet_busy(self.root):
+            self._cached_worker_status = None
             return "running"
         worker = self.worker
         if worker is None:
             return self.inactive_status
         if worker.url and worker.process.poll() is None:
+            if not probe and self._cached_worker_status is not None:
+                return self._cached_worker_status
             try:
                 with build_opener(ProxyHandler({})).open(f"{worker.url}/status", timeout=.5) as response:
-                    return json.load(response)["status"]
+                    reported = json.load(response)["status"]
+                    if reported != "running":
+                        self._cached_worker_status = reported
+                    return reported
             except (OSError, ValueError):
-                pass
+                self._cached_worker_status = None
         return "unavailable"

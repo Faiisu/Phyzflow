@@ -362,7 +362,28 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
       if (fitOnOpen) fitGraphToView();
     }
     if (!recoveryView) enableNodeDragging(steps);
+    let pendingResize = false;
+    function isSheetVisible() {
+      if (document.hidden) return false;
+      if (window.parent !== window && typeof window.parent.phyzflowSheetState === "function") {
+        return Boolean(window.parent.phyzflowSheetState(window)?.active);
+      }
+      return true;
+    }
+    function flushPendingResize() {
+      if (!pendingResize || !isSheetVisible()) return;
+      pendingResize = false;
+      layoutGraph();
+      drawEdges(steps);
+    }
+    window.addEventListener("workspace-sheet-activity", flushPendingResize);
+    document.addEventListener("visibilitychange", flushPendingResize);
     const graphObserver = new ResizeObserver(() => {
+      if (!isSheetVisible()) {
+        pendingResize = true;
+        return;
+      }
+      pendingResize = false;
       layoutGraph();
       drawEdges(steps);
     });

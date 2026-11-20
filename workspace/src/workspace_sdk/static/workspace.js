@@ -32,6 +32,13 @@ let active = null;
 let editRunningSource = false;
 let dashboardModalOpen = false;
 let workspaceSync = null;
+let unchangedStreak = 0;
+
+function wakeWorkspaceSync({ resetEtag = false } = {}) {
+  unchangedStreak = 0;
+  if (resetEtag) workspaceSync?.resetEtag();
+  workspaceSync?.wake();
+}
 
 function sheetActivityDetail(sheet) {
   return {
@@ -142,7 +149,7 @@ window.phyzflowRunChanged = frameWindow => {
   const state = activeRunControls()?.snapshot?.status?.state ?? null;
   if (state !== active.lastFrameRunState) {
     active.lastFrameRunState = state;
-    workspaceSync?.wake();
+    wakeWorkspaceSync();
   }
 };
 
@@ -167,8 +174,7 @@ runSheet.addEventListener("click", async () => {
     sheet.version++;
     updateStatus(sheet, sheet.status);
     showNotice();
-    workspaceSync?.resetEtag();
-    workspaceSync?.wake();
+    wakeWorkspaceSync({ resetEtag: true });
   }
 });
 
@@ -337,8 +343,7 @@ async function openFlow(sheet, action = "open", automaticSource = null) {
     sheet.version++;
     updateStatus(sheet, sheet.status);
     showNotice();
-    workspaceSync?.resetEtag();
-    workspaceSync?.wake();
+    unchangedStreak = 0;
   }
 }
 
@@ -389,8 +394,7 @@ async function stopFlow(sheet) {
     sheet.version++;
     updateStatus(sheet, sheet.status);
     showNotice();
-    workspaceSync?.resetEtag();
-    workspaceSync?.wake();
+    wakeWorkspaceSync({ resetEtag: true });
   }
 }
 
@@ -500,8 +504,7 @@ runAll.addEventListener("click", async () => {
     }
   } finally {
     runAll.disabled = false;
-    workspaceSync?.resetEtag();
-    workspaceSync?.wake();
+    wakeWorkspaceSync({ resetEtag: true });
   }
 });
 
@@ -558,12 +561,19 @@ function showFormatNotice(notice) {
 }
 
 function workspaceNextDelayMs() {
+  let hasRunning = false;
   for (const sheet of sheets) {
     if (!sheet) continue;
-    if (sheet.pending || ["opening", "running", "stopping"].includes(sheet.status)) return 400;
+    if (sheet.pending || ["opening", "stopping"].includes(sheet.status)) return 400;
     if (sheet.watching && sheet.sourceChange && !editRunningSource) return 400;
+    if (sheet.status === "running") hasRunning = true;
   }
-  return 1000;
+  if (hasRunning) {
+    if (unchangedStreak < 4) return 400;
+    if (unchangedStreak < 8) return 900;
+    return 1500;
+  }
+  return unchangedStreak < 6 ? 1000 : 1500;
 }
 
 function checkPendingSourceReloads() {
@@ -591,9 +601,11 @@ function startWorkspaceSync(initialEtag) {
       };
     },
     onUnchanged: () => {
+      unchangedStreak += 1;
       checkPendingSourceReloads();
     },
     onUpdate: ({ flows, format_notice }) => {
+      unchangedStreak = 0;
       showFormatNotice(format_notice);
       syncSheets(flows);
       for (const sheet of sheets.filter(Boolean)) {
