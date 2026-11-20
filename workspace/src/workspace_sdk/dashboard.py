@@ -7,7 +7,8 @@ PANELS_ROUTE = r"dashboard-panels/(workflow|[0-9]{1,8})"
 ASSET_ROUTE = r"dashboard-assets/(workflow|[0-9]{1,8})(?:/([A-Za-z0-9._-]+))?"
 SETTINGS_ROUTE = r"dashboard-settings/(workflow|[0-9]{1,8})"
 PANEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
-ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js")
+ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js", "bridge.json")
+DASHBOARD_BRIDGE_VERSION = 1
 MAX_ASSET_BYTES = 256 * 1024
 
 DASHBOARD_RESIZE_GUIDANCE = (
@@ -60,6 +61,8 @@ DASHBOARD_THEME_REFERENCE = {
     "resize_guidance": DASHBOARD_RESIZE_GUIDANCE,
     "bridge": {
         "global": "window.workspaceDashboard",
+        "version": DASHBOARD_BRIDGE_VERSION,
+        "declaration": {"file": "bridge.json", "example": {"versions": [DASHBOARD_BRIDGE_VERSION]}},
         "methods": [
             "subscribe(listener)",
             "openNode(nodeId)",

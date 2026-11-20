@@ -14,6 +14,7 @@ from unicodedata import category, normalize
 from uuid import uuid4
 
 from .node_sources import edit_source_file, read_node_source
+from .project import WORKSPACE_FORMAT_VERSION, workspace_format_notice
 from .ui_settings import load_ui_settings
 
 
@@ -32,7 +33,7 @@ STARTER_NODE = '''def start() -> dict[str, str]:
     return {"message": "Hello from Workspace"}
 '''
 
-STARTER_SOURCES = '[tool.workspace]\nsources = ["nodes"]\n'
+STARTER_SOURCES = 'sources = ["nodes"]\n'
 
 WORKSPACE_AGENT_GUIDE = """# Workspace instructions
 
@@ -45,6 +46,7 @@ WORKSPACE_AGENT_GUIDE = """# Workspace instructions
 
 
 def discover_flows(root: Path) -> list[tuple[str, Path]]:
+    workspace_format_notice(root)
     folder = root / "flows"
     flows = []
     if folder.is_dir():
@@ -52,6 +54,15 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     if (root / "flow.py").is_file():
         flows.insert(0, ("Main", root))
     return flows
+
+
+def workspace_root_for_sheet(root: Path) -> Path:
+    parent = root.parent.parent
+    if root.parent.name == "flows" and (root / "flow.py").is_file() and (
+        (parent / "pyproject.toml").is_file() or (parent / "flow.py").is_file() or (parent / ".venv").is_dir()
+    ):
+        return parent
+    return root
 
 
 def sheet_source_files(root: Path, *, main: bool) -> Iterator[Path]:
@@ -232,7 +243,7 @@ def create_sheet(root: Path, value: object) -> Path:
 
     with ExitStack() as cleanup:
         cleanup.callback(directory.rmdir)
-        write_new_file(directory / "pyproject.toml", STARTER_SOURCES, cleanup)
+        write_new_file(directory / "pyproject.toml", "[tool.workspace]\n" + STARTER_SOURCES, cleanup)
         entrypoint = write_starter_flow(directory, cleanup)
         cleanup.pop_all()
     return entrypoint
@@ -246,6 +257,8 @@ def initialize_workspace(root: Path, *, with_main: bool = False) -> None:
         'version = "0.1.0"\n'
         'requires-python = ">=3.12"\n'
         f'dependencies = ["workspace-sdk=={version("workspace-sdk")}"]\n'
+        '\n[tool.workspace]\n'
+        f'format_version = {WORKSPACE_FORMAT_VERSION}\n'
     )
     root.mkdir(parents=True, exist_ok=True)
     allowed = {".DS_Store", ".venv"} if with_main else {".DS_Store"}
@@ -253,7 +266,7 @@ def initialize_workspace(root: Path, *, with_main: bool = False) -> None:
         raise ValueError(f"Choose an empty folder to initialize a Workspace: {root}")
     files = {
         "setting.json": json.dumps({"port": settings.port, "zoom": settings.zoom}, indent=2) + "\n",
-        "pyproject.toml": project + ("\n" + STARTER_SOURCES if with_main else ""),
+        "pyproject.toml": project + (STARTER_SOURCES if with_main else ""),
         "AGENTS.md": WORKSPACE_AGENT_GUIDE,
     }
     with ExitStack() as cleanup:

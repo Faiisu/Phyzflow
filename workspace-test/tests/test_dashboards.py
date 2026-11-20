@@ -15,6 +15,66 @@ PIPELINE = "Run Parallel Pipeline"
 
 
 class DashboardTests(unittest.TestCase):
+    def test_dashboard_bridge_compatibility_is_local_to_each_panel(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            (root / "flow.py").write_text(
+                'from pathlib import Path\n'
+                'from time import sleep\n'
+                'from workspace_sdk import Flow, Output, Step\n'
+                'def start():\n'
+                '    for _ in range(400):\n'
+                '        if Path(__file__).with_name("finish").exists():\n'
+                '            return 1\n'
+                '        sleep(0.05)\n'
+                '    raise TimeoutError("The test did not release the flow.")\n'
+                'flow = Flow((), (Step("Start", start, {}),), Output("Start"))\n'
+            )
+            workflow = root / "dashboards" / "workflow"
+            panels = {"default": None, "compatible": [2, 1], "incompatible": [2, 3]}
+            for panel_id, versions in panels.items():
+                panel = workflow if panel_id == "default" else workflow / "panels" / panel_id
+                panel.mkdir(parents=True)
+                (panel / "index.html").write_text("<output></output>")
+                (panel / "dashboard.js").write_text("""
+                    workspaceDashboard.subscribe(snapshot => {
+                      document.querySelector("output").textContent =
+                        `${workspaceDashboard.version}: ${snapshot.run?.status ?? "idle"}`;
+                    });
+                """)
+                if versions is not None:
+                    (panel / "bridge.json").write_text(json.dumps({"versions": versions}))
+            with (workflow / "panels" / "incompatible" / "dashboard.js").open("a") as script:
+                script.write('workspaceDashboard.openPanel("default", "Start");\n')
+
+            with local_ui(root, single_flow=True) as (url, _):
+                page.goto(url)
+                page.get_by_role("button", name="Run flow", exact=True).click()
+                try:
+                    expect(page.locator("#status")).to_have_text("Running")
+                    page.get_by_role("button", name="Open all", exact=True).click()
+                    compatible = page.frame_locator('iframe[title="Workflow dashboard · compatible"]')
+                    undeclared = page.frame_locator('iframe[title="Workflow dashboard"]')
+                    incompatible = page.get_by_role("region", name="Workflow dashboard · incompatible")
+                    with self.subTest(combination=panels["incompatible"]):
+                        expected = ", ".join(map(str, panels["incompatible"]))
+                        expect(incompatible.get_by_role("status")).to_have_text(
+                            f"Incompatible Dashboard Bridge. Observed version 1. Supported versions {expected}."
+                        )
+                        expect(incompatible.locator("iframe")).to_have_count(0)
+                        expect(page.get_by_role("region", name="Start dashboard")).to_have_count(0)
+                    for name, frame in (("compatible", compatible), ("default", undeclared)):
+                        with self.subTest(combination=panels[name]):
+                            expect(frame.owner).to_have_attribute("sandbox", "allow-scripts allow-forms")
+                            expect(frame.locator("output")).to_have_text("1: running")
+                finally:
+                    (root / "finish").touch()
+                for name, frame in (("compatible", compatible), ("default", undeclared)):
+                    with self.subTest(combination=panels[name]):
+                        expect(frame.locator("output")).to_have_text("1: succeeded")
+                expect(page.get_by_role("region", name="Start dashboard")).to_have_count(0)
+                expect(page.locator("#status")).to_have_text("Succeeded")
+
     def test_dashboard_moves_resizes_and_restores_from_full_screen(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp)

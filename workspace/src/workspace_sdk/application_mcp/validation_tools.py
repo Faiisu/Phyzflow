@@ -32,7 +32,7 @@ def register_validation_tools(server, access: WorkspaceAccess) -> None:
         with TemporaryDirectory(prefix="phyzflow-check-") as temp_dir:
             result_path = Path(temp_dir) / "result.json"
             worker = Path(__file__).parent.parent / "sheet_worker.py"
-            argv = [str(interpreter), "-I", str(worker), "--check", str(result_path)]
+            argv = [str(interpreter), "-I", str(worker), "--check", str(result_path), str(root)]
             env = {
                 **{key: value for key, value in os.environ.items() if not key.startswith("PHYZFLOW_")},
                 "PATH": f"{interpreter.parent}{os.pathsep}{os.environ.get('PATH', os.defpath)}",

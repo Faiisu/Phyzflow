@@ -4,12 +4,13 @@ import json
 import os
 from shutil import copy2, copytree
 import subprocess
+import tomllib
 import unittest
 from zipfile import ZipFile
 
 from playwright.sync_api import expect
 
-from browser_support import browser_page
+from browser_support import browser_page, local_ui
 from test_application import application, project_python, sign_in
 
 
@@ -44,6 +45,139 @@ def run_sheet(page, name):
 
 
 class AddWorkspaceTests(unittest.TestCase):
+    def test_workspace_format_controls_whether_application_opens_sheets(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state = parent / "state"
+            with application(state) as url:
+                sign_in(page, url, state)
+                for name, declaration, expected in (
+                    ("Supported", "format_version = 1", None),
+                    ("Unsupported", "format_version = 2", "found 2"),
+                    ("Malformed", 'format_version = "1"', "found '1'"),
+                    ("Unspecified", "", None),
+                ):
+                    combination = tomllib.loads(declaration).get("format_version")
+                    with self.subTest(combination=combination):
+                        root = parent / name
+                        sheet = root / "flows" / "Child"
+                        source = write_flow(sheet, "return 73")
+                        imported = sheet / "flow-imported"
+                        source.write_text(
+                            f"from pathlib import Path\nPath({str(imported)!r}).touch()\n"
+                            + source.read_text(encoding="utf-8"),
+                            encoding="utf-8",
+                        )
+                        config = root / "pyproject.toml"
+                        config.write_text("[tool.workspace]\nformat_version = 1\n")
+                        (sheet / "pyproject.toml").write_text("[tool.workspace]\nformat_version = 2\n")
+                        headers = {"Origin": url}
+                        body = {"action": "add", "path": str(root)}
+                        registered = page.request.post(f"{url}/workspaces", data=body, headers=headers)
+                        self.assertEqual(registered.status, 201, registered.text())
+                        address = f"{url}/workspaces/{registered.json()['id']}/"
+                        config.write_text(f"[tool.workspace]\n{declaration}\n")
+                        original = config.read_bytes()
+                        if expected is not None:
+                            response = page.request.get(address)
+                            self.assertEqual(response.status, 400, response.text())
+                            error = response.json()["error"]
+                            self.assertIn(str(config), error)
+                            self.assertIn(expected, error)
+                            self.assertIn("supported version is 1", error)
+                            self.assertFalse(imported.exists())
+                        else:
+                            page.goto(address)
+                            if not declaration:
+                                expect(page.get_by_text("Workspace format is unspecified", exact=False)).to_be_visible()
+                            self.assertEqual(run_sheet(page, "Child"), 73)
+                            self.assertTrue(imported.exists())
+                        self.assertEqual(config.read_bytes(), original)
+
+    def test_mounted_workspace_rejects_new_discovery_and_worker_load_for_unsupported_format(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root, state = parent / "Project", parent / "state"
+            source = write_flow(root / "flows" / "Child", "return 73")
+            config = root / "pyproject.toml"
+            config.write_text("[tool.workspace]\nformat_version = 1\n")
+            with application(state) as url:
+                sign_in(page, url, state)
+                headers = {"Origin": url}
+                registered = page.request.post(f"{url}/workspaces", data={"action": "add", "path": str(root)}, headers=headers)
+                self.assertEqual(registered.status, 201, registered.text())
+                address = f"{url}/workspaces/{registered.json()['id']}/"
+                self.assertEqual(page.request.get(f"{address}workspace").json()["flows"][0]["name"], "Child")
+
+                declaration = b"[tool.workspace]\nformat_version = 2\n"
+                config.write_bytes(declaration)
+                marker = source.with_name("flow-imported")
+                source.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n" + source.read_text())
+                write_flow(root / "flows" / "Later", "return 74")
+                workspace = page.request.get(f"{address}workspace").json()
+                self.assertEqual([entry["name"] for entry in workspace["flows"]], ["Child"])
+                self.assertIn("found 2", workspace["format_notice"])
+                self.assertIn(str(config), workspace["format_notice"])
+                self.assertEqual(
+                    page.request.post(f"{address}flows", data={"name": "Created"}, headers=headers).status, 400,
+                )
+                self.assertFalse((root / "flows" / "Created").exists())
+                for command in ("open", "reload"):
+                    response = page.request.post(f"{address}flows/0/{command}", headers=headers)
+                    self.assertIn("found 2", response.text())
+                    self.assertIn("supported version is 1", response.text())
+                self.assertFalse(marker.exists())
+                self.assertEqual(config.read_bytes(), declaration)
+
+                config.write_text("[tool.workspace]\nformat_version = 1\n")
+                page.goto(address)
+                self.assertEqual(run_sheet(page, "Child"), 73)
+                self.assertTrue(marker.exists())
+                expect(page.get_by_role("tab", name="Later")).to_be_visible()
+
+    def test_editing_the_workspace_format_during_an_active_run_keeps_its_result(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root, state = parent / "Project", parent / "state"
+            finished = root / "finish"
+            write_flow(root, (
+                "from time import monotonic, sleep\n"
+                "    from pathlib import Path\n"
+                "    deadline = monotonic() + 20\n"
+                f"    while not Path({str(finished)!r}).exists() and monotonic() < deadline:\n"
+                "        sleep(.05)\n"
+                "    return 75"
+            ))
+            config = root / "pyproject.toml"
+            config.write_text("[tool.workspace]\nformat_version = 1\n")
+            with application(state) as url:
+                sign_in(page, url, state)
+                add_workspace(page, root)
+                page.get_by_role("link", name=root.name, exact=True).click(timeout=20_000)
+                page.get_by_role("button", name="Run flow").click()
+                tab = page.get_by_role("tab", name="Main")
+                expect(tab).to_contain_text("Running")
+                try:
+                    config.write_text("[tool.workspace]\nformat_version = 2\n")
+                    expect(page.get_by_text("found 2", exact=False)).to_be_visible()
+                    reload = page.request.post(f"{page.url}flows/0/reload", headers={"Origin": url})
+                    self.assertEqual(reload.status, 409)
+                finally:
+                    finished.touch()
+                expect(tab).to_contain_text("Succeeded")
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                self.assertEqual(json.loads(flow.locator("#result pre").inner_text()), 75)
+
+    def test_standalone_workspace_ui_reports_unspecified_format(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            write_flow(root, "return 74")
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                expect(page.get_by_text("Workspace format is unspecified", exact=False)).to_be_visible()
+                self.assertEqual(run_sheet(page, "Main"), 74)
+            self.assertFalse((root / "pyproject.toml").exists())
+
     def test_browse_host_folders_to_create_and_add_workspaces(self):
         with TemporaryDirectory(prefix="Phyzflow projects ", dir=Path.home()) as temp, browser_page() as page:
             parent = Path(temp).resolve()
@@ -78,6 +212,8 @@ class AddWorkspaceTests(unittest.TestCase):
                 dialog.get_by_role("button", name="Create", exact=True).click()
                 expect(page.get_by_role("link", name=new_root.name)).to_be_focused(timeout=20_000)
                 self.assertTrue((new_root / "flow.py").is_file())
+                settings = tomllib.loads((new_root / "pyproject.toml").read_text())["tool"]["workspace"]
+                self.assertEqual(settings["format_version"], 1)
 
                 page.get_by_role("button", name="Add Workspace").click()
                 dialog = page.get_by_role("dialog", name="Add Workspace")

@@ -1,10 +1,40 @@
 """Start a sheet worker using its Workspace interpreter and Phyzflow's SDK."""
 
+from importlib.metadata import PackageNotFoundError, distributions, version
 from importlib.util import module_from_spec, spec_from_file_location
 import json
 from pathlib import Path
 import sys
+from time import monotonic, sleep
+import tomllib
 import traceback
+
+
+SHEET_WORKER_PROTOCOL_VERSION = 1
+
+
+def _loaded_sdk_version(package_file: str) -> str | None:
+    package = Path(package_file).resolve().parent
+    if package.parent.name == "src":
+        config = package.parent.parent / "pyproject.toml"
+        if config.is_file():
+            with config.open("rb") as source:
+                return tomllib.load(source)["project"]["version"]
+    installed = next(distributions(name="workspace-sdk", path=[str(package.parent)]), None)
+    return installed.version if installed is not None else None
+
+
+def _installed_sdk_version() -> str | None:
+    try:
+        return version("workspace-sdk")
+    except PackageNotFoundError:
+        return None
+
+
+def _publish(target: Path, reply: dict) -> None:
+    pending = target.with_suffix(".tmp")
+    pending.write_text(json.dumps(reply), encoding="utf-8")
+    pending.replace(target)
 
 
 def _relative_location(root: Path, filename: str | None) -> str | None:
@@ -50,12 +80,14 @@ if __name__ == "__main__":
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--check":
         from contextlib import redirect_stdout
-        from workspace_sdk.project import ValidationError, load_project
+        from workspace_sdk.project import ValidationError, load_project, workspace_format_notice
+        from workspace_sdk.sheets import workspace_root_for_sheet
 
         target = Path(sys.argv[2])
         pending = target.with_suffix(".tmp")
         root = Path.cwd()
         try:
+            workspace_format_notice(Path(sys.argv[3]) if len(sys.argv) > 3 else workspace_root_for_sheet(root))
             with redirect_stdout(sys.stderr), load_project(root, None) as flow:
                 payload = {"valid": True, "steps": [step.id for step in flow.steps]}
         except ValidationError as error:
@@ -76,19 +108,33 @@ if __name__ == "__main__":
         pending.replace(target)
         raise SystemExit(0)
 
+    if len(sys.argv) < 4 or sys.argv[1] != "--start":
+        raise SystemExit("Expected --start and a startup file path.")
+
+    startup = Path(sys.argv[2])
+    _publish(startup, {
+        "protocol_version": SHEET_WORKER_PROTOCOL_VERSION,
+        "loaded_sdk_version": _loaded_sdk_version(package.__file__),
+        "installed_sdk_version": _installed_sdk_version(),
+    })
+    approved = startup.with_name("approved")
+    deadline = monotonic() + 10
+    while not approved.is_file():
+        if not startup.parent.is_dir() or monotonic() >= deadline:
+            raise SystemExit("Sheet Worker startup was not approved.")
+        sleep(.02)
+
     from workspace_sdk.workspace_ui import serve_flow
 
-    ready = Path(sys.argv[1])
-    pending = ready.with_suffix(".tmp")
+    ready = startup.with_name("ready.json")
 
     def publish(reply):
-        if not ready.parent.is_dir():
-            return
-        pending.write_text(json.dumps(reply), encoding="utf-8")
-        pending.replace(ready)
+        if ready.parent.is_dir():
+            _publish(ready, reply)
 
     serve_flow(
-        Path.cwd(), json.loads(sys.argv[2]), publish,
-        run_token=sys.argv[3] if len(sys.argv) > 3 else None,
-        main=len(sys.argv) > 4 and sys.argv[4] == "1",
+        Path.cwd(), json.loads(sys.argv[3]), publish,
+        run_token=(sys.argv[4] or None) if len(sys.argv) > 4 else None,
+        main=len(sys.argv) > 5 and sys.argv[5] == "1",
+        workspace_root=Path(sys.argv[6]) if len(sys.argv) > 6 else None,
     )
