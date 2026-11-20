@@ -1,5 +1,6 @@
 import unittest
 from typing import cast
+from unittest.mock import patch
 
 import torch
 
@@ -7,6 +8,40 @@ from workspace_sdk import Flow, Output, Step, record_metrics, run
 
 
 class RunnerTests(unittest.TestCase):
+    def test_node_duration_excludes_time_between_generator_resumptions(self):
+        now_ns = 0
+
+        def advance(milliseconds):
+            nonlocal now_ns
+            now_ns += milliseconds * 1_000_000
+
+        def produce():
+            advance(2)
+            yield 1
+            advance(4)
+            yield 2
+            advance(3)
+
+        def consume(values):
+            advance(100)
+            first = next(values)
+            advance(10)
+            return [first, *values]
+
+        flow = Flow(
+            inputs=(),
+            steps=(Step("Produce", produce, {}, track_generator=True),
+                   Step("Consume", consume, {"values": Output("Produce")})),
+            output=Output("Consume"),
+        )
+        events = []
+        with patch("workspace_sdk.runner.perf_counter_ns", side_effect=lambda: now_ns):
+            result = run(flow, {}, events.append)
+
+        self.assertEqual(result.output, [1, 2])
+        durations = {event["step_id"]: event["duration_ms"] for event in events if "duration_ms" in event}
+        self.assertEqual(durations, {"Produce": 9, "Consume": 119})
+
     def test_runner_closes_a_partially_consumed_tracked_generator(self):
         closed = []
 

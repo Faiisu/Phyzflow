@@ -178,7 +178,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   let availablePanels = [];
 
   function layoutKey(scope, panelId) {
-    return `${scope ?? "workflow"}::${panelId || "default"}`;
+    return JSON.stringify([scope, panelId || "default"]);
   }
 
   function scopeKey(scope) {

@@ -34,7 +34,7 @@ flowchart TD
 
 **FLOW-01.** A developer or AI agent declares named steps in Python. A step is a unit of work in the flow, such as `Read Data`, `Validate`, `Transform`, or `Save`. The flow declares how the steps connect.
 
-**FLOW-02.** The application shows execution step by step. A developer can see each step's status and timing and identify the step that raised an error. Step code can report progress and metrics for finer detail during execution.
+**FLOW-02.** The application shows execution step by step. A developer can see each step's status and timing and identify the step that raised an error. Step duration measures elapsed time inside calls to the step, including synchronous work it calls. For tracked generators, duration adds the time spent in each call and excludes pauses between yields and resumptions. Step code can report progress and metrics for finer detail during execution.
 
 **FLOW-03.** Each sheet provides a console view for each run. The console displays the run's standard output and standard error in that sheet, with output from concurrent sheets kept separate.
 

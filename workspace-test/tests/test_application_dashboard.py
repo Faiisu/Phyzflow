@@ -1,6 +1,7 @@
 from pathlib import Path
 from shutil import copytree, ignore_patterns
 from tempfile import TemporaryDirectory
+import json
 import unittest
 
 from anyio.from_thread import start_blocking_portal
@@ -209,6 +210,163 @@ workspaceDashboard.subscribe(({ run, liveMetrics }) => {
 
 
 class ApplicationDashboardTests(unittest.TestCase):
+    def test_visualize_layout_is_shared_per_sheet_and_fits_narrow_screens(self):
+        with TemporaryDirectory() as temp, browser_page(show_scrollbars=True) as page:
+            parent = Path(temp).resolve()
+            root = parent / "PanelLayouts"
+            state = parent / "state"
+            ignore = ignore_patterns(".workspace", "__pycache__", ".venv")
+            copytree(LIVE_COUNTER, root, ignore=ignore)
+            node = root / "dashboards/nodes/Multiply by Ten"
+            (node / "panels/details").mkdir(parents=True)
+            (node / "index.html").rename(node / "panels/details/index.html")
+            (node / "panels/details/dashboard.js").write_text(
+                "document.querySelector('button').onclick = event => { event.target.textContent = 'Checked'; };",
+                encoding="utf-8",
+            )
+            with (node / "panels/details/index.html").open("a", encoding="utf-8") as markup:
+                markup.write("<button>Check dashboard</button>")
+            copytree(LIVE_COUNTER, root / "flows/Other", ignore=ignore)
+
+            def enter(viewer, workspace):
+                viewer.goto(workspace)
+                flow = viewer.frame_locator('iframe[title="Main flow"]')
+                flow.locator("#enter-visualize-mode").click()
+                expect(flow.locator("body")).to_have_class("is-visualize-mode")
+                expect(flow.locator(".graph-scroll")).not_to_have_attribute("data-layout-locked", "")
+                return flow
+
+            def bounds(flow):
+                return flow.locator(".dashboard-panel:not([hidden])").evaluate_all(
+                    """panels => panels.map(({ style }) =>
+                        Object.fromEntries(['left', 'top', 'width', 'height'].map(key => [key, parseInt(style[key], 10)]))
+                    )"""
+                )
+
+            def drag(handle, dx, dy):
+                handle.scroll_into_view_if_needed()
+                box = handle.bounding_box()
+                x = box["x"] + box["width"] / 2
+                y = box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x + dx, y + dy, steps=4)
+                page.mouse.up()
+
+            with application(state) as url:
+                sign_in(page, url, state)
+                added = page.request.post(
+                    f"{url}/workspaces", headers={"Origin": url}, data={"path": str(root), "action": "add"},
+                )
+                self.assertEqual(added.status, 201, added.text())
+                workspace_id = added.json()["id"]
+                workspace = f"{url}/workspaces/{workspace_id}/"
+                endpoint = f"{workspace}flows/0/view/visualize-layout"
+                flow = enter(page, workspace)
+                panels = flow.locator(".dashboard-panel:not([hidden])")
+                expect(panels).to_have_count(2)
+                before = bounds(flow)
+
+                with page.expect_response(
+                    lambda response: response.url.endswith("/visualize-layout") and response.request.method == "POST",
+                ) as moved:
+                    drag(panels.nth(0).locator('[data-dash="handle"]'), 100, 40)
+                self.assertEqual(moved.value.status, 200)
+                after_move = bounds(flow)
+                self.assertEqual(after_move[0]["left"], before[0]["left"] + 100)
+                self.assertEqual(after_move[0]["top"], before[0]["top"] + 40)
+                self.assertGreater(after_move[1]["top"], before[1]["top"])
+
+                page.route("**/visualize-layout", lambda route: route.fulfill(status=503))
+                drag(panels.nth(1).locator('[data-dash="resize"]'), -80, 40)
+                status = flow.locator("#visualize-layout-status")
+                expect(status.get_by_role("status")).to_have_text("Could not save the dashboard layout.")
+                saved = bounds(flow)
+                self.assertEqual(saved[1]["width"], after_move[1]["width"] - 80)
+                self.assertEqual(saved[1]["height"], after_move[1]["height"] + 40)
+                page.unroute("**/visualize-layout")
+                status.get_by_role("button", name="Retry").click()
+                expect(status).to_be_hidden()
+                with page.expect_response(
+                    lambda response: response.url.endswith("/visualize-layout") and response.request.method == "POST",
+                ) as resized:
+                    panels.nth(1).locator('[data-dash="handle"]').press("Shift+ArrowDown")
+                self.assertEqual(resized.value.status, 200)
+                self.assertEqual(bounds(flow)[1]["height"], saved[1]["height"] + 20)
+                saved = bounds(flow)
+
+                keys = [
+                    json.dumps(identity, separators=(",", ":"))
+                    for identity in ([None, "default"], ["Multiply by Ten", "details"])
+                ]
+                expected = {"panels": dict(zip(keys, saved))}
+                self.assertEqual(page.request.get(endpoint).json(), expected)
+                flow.locator("#exit-visualize-mode").click()
+                flow.locator("#enter-visualize-mode").click()
+                expect(flow.locator(".graph-scroll")).not_to_have_attribute("data-layout-locked", "")
+                self.assertEqual(bounds(flow), saved)
+                flow = enter(page, workspace)
+                self.assertEqual(bounds(flow), saved)
+
+                page.set_viewport_size({"width": 390, "height": 800})
+                viewport = flow.locator(".graph-scroll")
+                expect(viewport).to_have_attribute("data-layout-fitted", "")
+                fitted = bounds(flow)
+                width, scroll_width = viewport.evaluate("el => [el.clientWidth, el.scrollWidth]")
+                self.assertEqual(width, scroll_width)
+                self.assertEqual(fitted[1]["left"], fitted[0]["left"])
+                self.assertGreaterEqual(fitted[1]["top"], fitted[0]["top"] + fitted[0]["height"])
+                for rendered, original in zip(fitted, saved):
+                    self.assertLessEqual(rendered["left"] + rendered["width"], width)
+                    self.assertEqual(rendered["height"], original["height"])
+                dashboard = flow.locator(".dashboard-panel:not([hidden])").nth(1).locator("iframe").content_frame
+                dashboard.get_by_role("button", name="Check dashboard").click()
+                expect(dashboard.get_by_role("button", name="Checked")).to_be_visible()
+                page.set_viewport_size({"width": 1440, "height": 900})
+                expect(viewport).not_to_have_attribute("data-layout-fitted", "")
+                self.assertEqual(bounds(flow), saved)
+                self.assertEqual(page.request.get(endpoint).json(), expected)
+
+                page.route("**/visualize-layout", lambda route: route.fulfill(status=503))
+                flow.locator("#exit-visualize-mode").click()
+                flow.locator("#enter-visualize-mode").click()
+                expect(flow.locator("#visualize-layout-status [role='status']")).to_have_text("Could not load the dashboard layout.")
+                expect(viewport).to_have_attribute("data-layout-locked", "")
+                page.unroute("**/visualize-layout")
+                flow.locator("#visualize-layout-status").get_by_role("button", name="Retry").click()
+                expect(viewport).not_to_have_attribute("data-layout-locked", "")
+                self.assertEqual(bounds(flow), saved)
+
+                second = page.context.browser.new_page(viewport={"width": 1440, "height": 900})
+                try:
+                    self.assertEqual(second.request.get(endpoint).status, 401)
+                    sign_in(second, url, state)
+                    self.assertEqual(bounds(enter(second, workspace)), saved)
+                finally:
+                    second.close()
+
+                headers = {"Origin": url}
+                invalid = {"panels": {keys[0]: {**saved[0], "left": 200}, keys[1]: {**saved[1], "width": True}}}
+                self.assertEqual(page.request.post(endpoint, headers=headers, data=invalid).status, 400)
+                self.assertEqual(page.request.get(endpoint).json(), expected)
+                other = f"{workspace}flows/1/view/visualize-layout"
+                self.assertEqual(page.request.get(other).json(), {"panels": {}})
+                other_layout = {"panels": {keys[0]: {**saved[0], "left": 300}}}
+                self.assertEqual(page.request.post(other, headers=headers, data=other_layout).status, 200)
+                self.assertEqual(page.request.get(other).json(), other_layout)
+                self.assertEqual(page.request.get(endpoint).json(), expected)
+                self.assertEqual(page.request.post(f"{workspace}flows/1/delete", headers=headers).status, 200)
+                created = page.request.post(f"{workspace}flows", headers=headers, data={"name": "Other"})
+                self.assertEqual(created.status, 201)
+                self.assertEqual(
+                    page.request.get(f"{workspace}flows/{created.json()['index']}/view/visualize-layout").json(),
+                    {"panels": {}},
+                )
+
+            with application(state) as url:
+                sign_in(page, url, state)
+                self.assertEqual(bounds(enter(page, f"{url}/workspaces/{workspace_id}/")), saved)
+
     def test_mcp_inspect_dashboards_and_author_assets_under_edit_lock(self):
         with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
             parent = Path(temp).resolve()

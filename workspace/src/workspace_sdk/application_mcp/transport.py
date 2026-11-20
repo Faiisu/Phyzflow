@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, contextmanager, suppress
 from threading import Event
 
 from ..dashboard import DASHBOARD_RESIZE_GUIDANCE
+from ..mcp_flow_guidance import FLOW_AUTHORING_GUIDANCE
 
 from .access import WorkspaceAccess, request_identity
 from .tools import register_workspace_tools
@@ -28,6 +29,9 @@ def mcp_transport(access: WorkspaceAccess):
     server = MCPServer(
         "Phyzflow",
         instructions=(
+            f"{FLOW_AUTHORING_GUIDANCE}"
+            "After editing, call validate_flow and compare its step IDs with the planned graph. "
+            "Call run_flow with a representative input and verify the result with inspect_execution.\n\n"
             "Before creating or editing a dashboard panel, call inspect_dashboards for its layout and theme contract. "
             f"{DASHBOARD_RESIZE_GUIDANCE}"
         ),

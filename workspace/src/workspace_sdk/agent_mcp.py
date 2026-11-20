@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from .agent_remote import RemoteClient, private_token
+from .mcp_flow_guidance import FLOW_AUTHORING_GUIDANCE
 
 
 def create_mcp_server(client):
@@ -14,7 +15,15 @@ def create_mcp_server(client):
     from pydantic import Field
 
     text = Annotated[str, Field(strict=True, min_length=1)]
-    server = MCPServer('Workspace Edge development')
+    server = MCPServer(
+        'Workspace Edge development',
+        instructions=(
+            f"{FLOW_AUTHORING_GUIDANCE}"
+            "After editing, call validate_flow and wait for the job to succeed using get_job. "
+            "Call run_flow with a representative input, then use get_job to verify the result "
+            "and compare its steps with the planned graph."
+        ),
+    )
 
     @server.tool()
     def list_devices() -> dict:

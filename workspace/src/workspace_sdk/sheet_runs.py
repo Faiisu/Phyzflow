@@ -40,6 +40,28 @@ class RunStateStore:
                 "PRIMARY KEY (workspace_id, sheet_path))"
             )
 
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS visualize_layouts ("
+                "workspace_id TEXT NOT NULL, sheet_path TEXT NOT NULL, panel_key TEXT NOT NULL, bounds TEXT NOT NULL, "
+                "PRIMARY KEY (workspace_id, sheet_path, panel_key))"
+            )
+
+    def load_visualize_layout(self, workspace_id: str, sheet_path: str) -> dict:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT panel_key, bounds FROM visualize_layouts WHERE workspace_id = ? AND sheet_path = ?",
+                (workspace_id, sheet_path),
+            ).fetchall()
+        return {key: json.loads(bounds) for key, bounds in rows}
+
+    def save_visualize_layout(self, workspace_id: str, sheet_path: str, panels: dict) -> None:
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT INTO visualize_layouts (workspace_id, sheet_path, panel_key, bounds) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(workspace_id, sheet_path, panel_key) DO UPDATE SET bounds = excluded.bounds",
+                ((workspace_id, sheet_path, key, json.dumps(bounds)) for key, bounds in panels.items()),
+            )
+
     def record_graph(self, workspace_id: str, sheet_path: str, graph: dict) -> None:
         steps = [{**step, "description": ""} for step in graph["steps"]]
         with self._lock, self._db:
@@ -140,11 +162,16 @@ class RunStateStore:
                 "DELETE FROM sheet_graphs WHERE workspace_id = ? AND sheet_path = ?",
                 (workspace_id, sheet_path),
             )
+            self._db.execute(
+                "DELETE FROM visualize_layouts WHERE workspace_id = ? AND sheet_path = ?",
+                (workspace_id, sheet_path),
+            )
 
     def delete_workspace(self, workspace_id: str) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM sheet_states WHERE workspace_id = ?", (workspace_id,))
             self._db.execute("DELETE FROM sheet_graphs WHERE workspace_id = ?", (workspace_id,))
+            self._db.execute("DELETE FROM visualize_layouts WHERE workspace_id = ?", (workspace_id,))
 
     def close(self) -> None:
         with self._lock:

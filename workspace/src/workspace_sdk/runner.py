@@ -146,7 +146,10 @@ def run(
         emit("running", **location, **argument_metadata)
         reasons: list[str] | None = [] if include_metadata else None
         metrics: dict[str, dict[str, int | float]] | None = {} if include_metadata else None
+        execution_ns = 0
+
         def invoke(function, /, *args, **kwargs):
+            nonlocal execution_ns
             reason_scope = active_reasons.set(reasons)
             metrics_scope = active_metrics.set(metrics)
             output_scope = active_output.set(
@@ -163,9 +166,12 @@ def run(
             )
             settings_scope = active_settings.set(values or None)
             checkpoint_scope = active_checkpoint.set(apply_pending if controlled is not None else None)
+            started = perf_counter_ns() if on_event is not None else None
             try:
                 return function(*args, **kwargs)
             finally:
+                if started is not None:
+                    execution_ns += perf_counter_ns() - started
                 active_reasons.reset(reason_scope)
                 active_metrics.reset(metrics_scope)
                 active_output.reset(output_scope)
@@ -175,10 +181,6 @@ def run(
                 active_checkpoint.reset(checkpoint_scope)
 
         context = copy_context() if step.track_generator else None
-        started = perf_counter_ns() if on_event is not None else None
-
-        def duration() -> dict[str, float]:
-            return {"duration_ms": (perf_counter_ns() - started) / 1_000_000} if started is not None else {}
 
         def finish(status: str, **details: Any) -> None:
             pending_generators.pop(step.id, None)
@@ -191,17 +193,17 @@ def run(
                 details["reasons"] = reasons.copy()
             if metrics:
                 details["metrics"] = metrics.copy()
+            if on_event is not None:
+                details["duration_ms"] = execution_ns / 1_000_000
             emit(status, **location, **details)
 
         def complete(value: Any) -> None:
-            elapsed = duration()
             metadata: dict[str, Any] = {"output": summarize(value)} if include_metadata else {}
             if collect_samples:
                 metadata["output_sample"] = capture_sample(value)
-            finish("succeeded", **elapsed, **metadata)
+            finish("succeeded", **metadata)
 
         def fail(error: Exception) -> None:
-            elapsed = duration()
             unsuccessful.add(step.id)
             trace = traceback.TracebackException.from_exception(error)
             diagnostics: dict[str, Any] = {}
@@ -214,7 +216,7 @@ def run(
                 frame = trace.stack[-1]
                 location.update(file=frame.filename, line=frame.lineno)
             finish("failed", error_type=type(error).__name__, traceback="".join(trace.format()),
-                   **elapsed, **diagnostics)
+                   **diagnostics)
 
         try:
             value = (context.run(invoke, step.function, **arguments) if context is not None
@@ -235,7 +237,7 @@ def run(
             except Exception as error:
                 fail(error)
             else:
-                finish("stopped", **duration())
+                finish("stopped")
 
         def tracked_values() -> Iterator[Any]:
             while True:
