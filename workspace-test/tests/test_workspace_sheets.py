@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from shutil import copytree
 import subprocess
+import tomllib
 import sys
 from tempfile import TemporaryDirectory
 from time import sleep
@@ -163,6 +164,8 @@ class WorkspaceSheetTests(unittest.TestCase):
                 return subprocess.run([cli, *arguments], cwd=root, capture_output=True, text=True, check=check)
 
             command("init", "--with-main")
+            config = tomllib.loads((root / "pyproject.toml").read_text())
+            self.assertEqual(config["tool"]["workspace"]["format_version"], 1)
             self.assertEqual(
                 json.loads(command("sheets").stdout),
                 [{"name": "Main", "file": str(root / "flow.py")}],
@@ -242,6 +245,8 @@ class WorkspaceSheetTests(unittest.TestCase):
 
             self.assertIn("does not exist", command("sheets", check=False).stderr)
             command("init")
+            config = tomllib.loads((root / "pyproject.toml").read_text())
+            self.assertEqual(config["tool"]["workspace"]["format_version"], 1)
             self.assertEqual(json.loads((root / "setting.json").read_text())["port"], 18080)
             metadata = (root / "pyproject.toml").read_bytes()
             self.assertIn(b"workspace-sdk==", metadata)
@@ -249,6 +254,8 @@ class WorkspaceSheetTests(unittest.TestCase):
             self.assertNotEqual(command("init", check=False).returncode, 0)
             self.assertEqual((root / "pyproject.toml").read_bytes(), metadata)
             source = Path(command("new-sheet", "First Flow").stdout.strip())
+            sheet_config = tomllib.loads((source.parent / "pyproject.toml").read_text())
+            self.assertNotIn("format_version", sheet_config["tool"]["workspace"])
             starter = source.read_text()
             self.assertNotEqual(command("new-sheet", "first flow", check=False).returncode, 0)
             self.assertNotEqual(command("new-sheet", "../outside", check=False).returncode, 0)

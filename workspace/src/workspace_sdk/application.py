@@ -29,6 +29,7 @@ from .application_mcp import (
     MCP_BODY_LIMIT, MCP_REQUEST_HEADERS, MCP_RESPONSE_HEADERS, TOKEN_PATH,
     McpTokens, WorkspaceAccess, mcp_transport,
 )
+from .project import workspace_format_notice
 from .sheet_runs import RunStateStore
 from .sheets import discover_flows, initialize_workspace
 from .ui_settings import (
@@ -165,6 +166,7 @@ def create_workspace(root: Path) -> None:
 def add_workspace(root: Path) -> None:
     if not root.is_dir():
         raise ValueError("Choose an existing project folder.")
+    workspace_format_notice(root)
     ensure_workspace_environment(root)
 
 
@@ -226,9 +228,11 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
             if workspace_id in deleting:
                 raise RuntimeError("This Workspace is being deleted.")
             if workspace_id not in mounted:
+                format_notice = workspace_format_notice(root)
                 interpreter = verified_workspace_interpreter(root) if os.name == "nt" else workspace_interpreter(root)
                 mounted[workspace_id] = workspace_routes(
                     root, discover_flows(root), load_ui_settings(root, port),
+                    format_notice=format_notice,
                     interpreter=interpreter,
                     workspace_id=workspace_id,
                     run_state=run_state,

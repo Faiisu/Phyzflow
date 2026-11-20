@@ -17,8 +17,41 @@ from .node_settings import NodeSetting, parse_setting_defaults
 from .node_sources import node_settings_path, read_node_source
 
 
+WORKSPACE_FORMAT_VERSION = 1
+
+
 class ValidationError(ValueError):
     """A project cannot be loaded or its declared flow cannot be run."""
+
+
+def read_workspace_settings(config_path: Path) -> dict:
+    if not config_path.is_file():
+        return {}
+    with config_path.open("rb") as config:
+        tool = tomllib.load(config).get("tool", {})
+    settings = tool.get("workspace", {}) if isinstance(tool, dict) else None
+    if not isinstance(settings, dict):
+        raise ValueError(f"tool.workspace must be a table (found {settings!r}).")
+    return settings
+
+
+def workspace_format_notice(root: Path) -> str | None:
+    config_path = root / "pyproject.toml"
+    declaration = "tool.workspace.format_version"
+    supported = f"The supported version is {WORKSPACE_FORMAT_VERSION}."
+    try:
+        settings = read_workspace_settings(config_path)
+    except (OSError, ValueError) as error:
+        raise ValidationError(f"Workspace format: {config_path}: {error} {supported}") from error
+    if "format_version" not in settings:
+        return f"Workspace format is unspecified in {config_path} ({declaration}). {supported}"
+    value = settings["format_version"]
+    if type(value) is not int or value != WORKSPACE_FORMAT_VERSION:
+        reason = "expected an integer" if type(value) is not int else "unsupported version"
+        raise ValidationError(
+            f"Workspace format: {config_path}: {declaration} found {value!r} ({reason}). {supported}"
+        )
+    return None
 
 
 def source_location(function: Callable) -> tuple[str | None, int | None]:
@@ -131,19 +164,12 @@ def load_setting_defaults(
 
 def check_source(root: Path, flow_path: Path) -> dict[Path, tuple[CodeType, str]]:
     config_path = root / "pyproject.toml"
-    sources = []
-    if config_path.is_file():
-        try:
-            with config_path.open("rb") as config:
-                tool = tomllib.load(config).get("tool", {})
-            settings = tool.get("workspace", {}) if isinstance(tool, dict) else None
-            if not isinstance(settings, dict):
-                raise ValidationError(f"Source configuration: {config_path}: tool.workspace must be a table.")
-            sources = settings.get("sources", [])
-        except (OSError, tomllib.TOMLDecodeError) as error:
-            raise ValidationError(f"Source configuration: {config_path}: {error}") from error
-        if not isinstance(sources, list) or not all(isinstance(item, str) for item in sources):
-            raise ValidationError(f"Source configuration: {config_path}: sources must be an array of paths.")
+    try:
+        sources = read_workspace_settings(config_path).get("sources", [])
+    except (OSError, ValueError) as error:
+        raise ValidationError(f"Source configuration: {config_path}: {error}") from error
+    if not isinstance(sources, list) or not all(isinstance(item, str) for item in sources):
+        raise ValidationError(f"Source configuration: {config_path}: sources must be an array of paths.")
 
     files = {flow_path}
     for entry in sources:

@@ -69,7 +69,7 @@ def validate_visualize_layout(panels: object) -> dict:
 
 
 def workspace_dispatch(
-    root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
+    root, sheets, sheets_lock, *, format_notice, interpreter, is_closing, discovered_sheets,
     create_workspace_sheet, delete_workspace_sheet, run_all_sheets,
 ):
     class Routes:
@@ -472,6 +472,7 @@ def workspace_dispatch(
                 self.request.send_json({
                     "name": root.name, "flows": flows, "run_all": interpreter is not None,
                     "edit_running_source": interpreter is not None,
+                    "format_notice": format_notice,
                 })
                 return
             view = self.view_route()
