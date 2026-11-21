@@ -96,6 +96,8 @@ Use the Live Counter dashboard as the first template. Review a generated panel b
 
 Open all Workspace panels together in the full-window Visualize layout. Reuse its placement, dragging, resizing, narrow-window behavior, and saved layout. Let the user toggle panels and enter browser full screen for the dashboard or for one panel.
 
+**DASH-04.** Create a Workspace, Workflow, or Node dashboard from starter source in the Panels or Visualize drawer. Open the source editor or confirm source removal from each panel's title bar. Saving a source file reloads the preview and rejects changes based on an outdated file revision. Removing a panel deletes its dashboard assets and closes that panel.
+
 ## Run types and lifecycle
 
 **RUN-01.** The application can execute all three Python workload patterns below. Flow code owns workload rules such as input and output handling, schedules and triggers, branching on errors, retries, and checkpointing.
@@ -172,6 +174,7 @@ These scenarios describe observable expectations for release acceptance.
 | FLOW-06 | Rename a running sheet from the toolbar and confirm its run ID and dashboard source path stay the same. Rename through MCP and verify the updated name after reopening the Workspace. Try a duplicate name and verify it is rejected. |
 | DASH-01, DASH-02 | Ask an AI agent to author a panel for a flow metric. Open it in the Workspace and verify the values it displays and its conformance to the current application's theme and interaction conventions. |
 | DASH-03 | Open a Workspace dashboard with multiple panels and verify that they appear together in the Visualize layout. Resize a panel, reopen the dashboard, and verify that the size is restored. Test full screen for the dashboard and one panel. Compare saved durations and observe live metrics while two source sheets run concurrently. Stop or remove one source sheet and verify that the other keeps updating. Verify the source sheet and run IDs, that a reference to another Workspace yields no value, and that existing workflow and node panels still work. |
+| DASH-04 | Add a dashboard from an empty Workspace dashboard and try its example preview. Edit the HTML and save it, verify the changed preview and file, then cancel and confirm removal in separate attempts. Check that removing an Overview preserves additional panels. Add a Node dashboard from the Flow Editor and verify its files are stored under that node. |
 | MCP-01, MCP-02 | Verify that each flow-development command is available through MCP. Run representative commands against a Workspace allowed by the deployed instance and one it denies. Verify that the Phyzflow application specification is protected from edits through MCP. |
 | MCP-03 | Grant and revoke a Workspace permission in the web app. Verify that the MCP identity gains access after the grant and that its next request is denied after revocation. |
 | MCP-04, MCP-05 | Use an authenticated remote MCP client to round-trip a large binary file and verify SHA-256. Exercise file revisions, project dotfiles, cross-Sheet moves, Trash recovery, interrupted transfers, revocation, and protected paths. |

@@ -1,3 +1,4 @@
+import { initDashboardEditor } from "./dashboard-editor.js";
 import { createLiveSync, fetchConditionalJSON } from "./live-sync.js";
 
 const primaryBoard = document.querySelector("#dashboard");
@@ -278,6 +279,37 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     workspaceFeed.setActive(false);
     workspaceFeed.start();
   }
+  let listVersion = 0;
+  const scopes = workspace ? [{ nodeId: null, key: "workspace", title: "Workspace" }] : [
+    { nodeId: null, key: "workflow", title: "Workflow" },
+    ...graph.map((node, index) => ({ nodeId: node.id, key: String(index), title: node.id })),
+  ];
+  const dashboardEditor = initDashboardEditor({
+    scopes,
+    request(nodeId, data) {
+      const path = workspace ? "../dashboard-source" : `dashboard-source/${scopeKey(nodeId)}`;
+      return fetchJSON(path, "Could not access dashboard source.", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+    },
+    async onCreate(nodeId, panelId) {
+      if (workspace) document.querySelector("#panel-switcher").open = false;
+      await refreshVisualizeList();
+      const entry = availablePanels.find(item => item.nodeId === nodeId && item.panelId === panelId);
+      openSinglePanel(nodeId, panelId, entry?.label);
+    },
+    onSave({ nodeId, panelId }) {
+      findPanel(nodeId, panelId)?.loadDashboard();
+      refreshVisualizeList();
+    },
+    onRemove({ nodeId, panelId }) {
+      findPanel(nodeId, panelId)?.close();
+      refreshVisualizeList();
+      document.querySelector(workspace ? "#panel-switcher summary" : '[aria-controls="panel-visualize"]').focus();
+    },
+  });
 
   function layoutKey(scope, panelId) {
     return JSON.stringify([scope, panelId || "default"]);
@@ -488,6 +520,8 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
 
+    element.querySelector('[data-dash="edit"]').onclick = () => dashboardEditor.edit(panel);
+    element.querySelector('[data-dash="remove"]').onclick = () => dashboardEditor.remove(panel);
     closeBtn.addEventListener("click", () => {
       const opener = panel.opener;
       panel.close();
@@ -552,7 +586,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       syncVisualizeDrawer();
       return existing;
     }
-    const panel = createPanel();
+    const panel = primaryBoard.hidden && primaryBoard._panelInstance || createPanel();
     panel.setScope(nodeId, panelId, panelLabel);
     syncVisualizeDrawer();
     return panel;
@@ -561,10 +595,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
   async function refreshVisualizeList(openOnLoad = false) {
     const list = document.querySelector("#visualize-list");
     if (!list) return;
-    const scopes = workspace ? [{ nodeId: null, key: "workspace", title: "Workspace" }] : [
-      { nodeId: null, key: "workflow", title: "Workflow" },
-      ...graph.map((node, index) => ({ nodeId: node.id, key: String(index), title: node.id })),
-    ];
+    const version = ++listVersion;
     const results = await Promise.allSettled(
       scopes.map(async item => {
         const path = workspace ? "../workspace-dashboard" : `dashboard-panels/${item.key}`;
@@ -572,6 +603,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
         return { ...item, panels: data.panels ?? [] };
       }),
     );
+    if (version !== listVersion) return;
     const groups = results
       .filter(res => res.status === "fulfilled" && res.value.panels.length > 0)
       .map(res => res.value);
@@ -582,7 +614,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
 
     if (workspace) {
       const message = results[0].status === "rejected" ? results[0].reason.message
-        : groups.length ? "" : "Add a panel in dashboards/workspace to display Workspace data.";
+        : groups.length ? "" : "Use Panels → Add dashboard to create your first panel.";
       workspace.status.textContent = message;
       workspace.status.hidden = !message;
     }
@@ -698,7 +730,8 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     else setVisualizeMode(false);
   });
   window.addEventListener("keydown", event => {
-    if (event.key === "Escape" && document.body.classList.contains("is-visualize-mode") && !document.fullscreenElement) {
+    if (event.key === "Escape" && !document.querySelector("#dashboard-editor").open
+      && document.body.classList.contains("is-visualize-mode") && !document.fullscreenElement) {
       if (workspace) workspace.exit();
       else setVisualizeMode(false);
     }

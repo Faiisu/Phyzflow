@@ -108,11 +108,11 @@ def node_source_path(root: Path, filename: str | None, relative: str) -> Path:
     return path
 
 
-def read_node_source(path: Path) -> bytes:
+def read_node_source(path: Path, max_bytes: int = MAX_SOURCE_BYTES) -> bytes:
     with path.open("rb") as stream:
-        content = stream.read(MAX_SOURCE_BYTES + 1)
-    if len(content) > MAX_SOURCE_BYTES:
-        raise ValueError("The editor supports source files up to 128 KiB.")
+        content = stream.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise ValueError(f"The editor supports source files up to {max_bytes // 1024} KiB.")
     return content
 
 
@@ -122,9 +122,10 @@ def source_revision(content: bytes) -> str:
 
 def edit_source_file(
     path: Path, source: str | None, revision: str | None, *, initial: str | None = None,
+    max_bytes: int = MAX_SOURCE_BYTES,
 ) -> dict[str, str]:
     try:
-        content = read_node_source(path)
+        content = read_node_source(path, max_bytes)
     except FileNotFoundError:
         if initial is None or path.resolve() != path:
             raise
@@ -150,8 +151,8 @@ def edit_source_file(
     if "\r\n" in text and "\n" not in text.replace("\r\n", ""):
         source = source.replace("\r\n", "\n").replace("\n", "\r\n")
     updated = source.encode(encoding)
-    if len(updated) > MAX_SOURCE_BYTES:
-        raise ValueError("The editor supports source files up to 128 KiB.")
+    if len(updated) > max_bytes:
+        raise ValueError(f"The editor supports source files up to {max_bytes // 1024} KiB.")
     if updated == content and current_revision != "missing":
         return {"revision": source_revision(content)}
     if python_source:
@@ -178,7 +179,7 @@ def edit_source_file(
                     raise SourceChanged from None
             else:
                 pending.chmod(S_IMODE(path.stat().st_mode))
-                if path.resolve() != path or read_node_source(path) != content:
+                if path.resolve() != path or read_node_source(path, max_bytes) != content:
                     raise SourceChanged
                 pending.replace(path)
         finally:

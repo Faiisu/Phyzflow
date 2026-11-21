@@ -99,7 +99,7 @@ def _scope_directory(root: Path, step_id: str | None) -> Path:
 
 def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False) -> list[dict[str, str]]:
     resolved_root = root.resolve()
-    directory = resolved_root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(resolved_root, step_id)
+    directory = dashboard_directory(resolved_root, step_id, None, workspace=workspace)
     return [
         {"id": entry["id"], "label": entry["label"]}
         for entry in _scope_panel_entries(resolved_root, directory)
@@ -107,16 +107,20 @@ def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False
     ]
 
 
-def dashboard_assets(
-    root: Path, step_id: str | None, panel_id: str | None = None, *, workspace: bool = False,
-    manifest_only: bool = False,
-) -> dict[str, str]:
+def dashboard_directory(root: Path, step_id: str | None, panel_id: str | None, *, workspace: bool) -> Path:
     directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
     if panel_id is not None and panel_id != "default":
         if panel_id in (".", "..") or not PANEL_ID_PATTERN.fullmatch(panel_id):
             raise PermissionError("Invalid dashboard panel identifier.")
         directory = directory / "panels" / panel_id
+    return directory
 
+
+def dashboard_assets(
+    root: Path, step_id: str | None, panel_id: str | None = None, *, workspace: bool = False,
+    manifest_only: bool = False,
+) -> dict[str, str]:
+    directory = dashboard_directory(root, step_id, panel_id, workspace=workspace)
     if manifest_only and not _regular_file(directory / "index.html"):
         raise FileNotFoundError("index.html")
     assets = {}

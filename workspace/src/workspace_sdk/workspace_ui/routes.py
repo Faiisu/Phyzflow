@@ -15,6 +15,7 @@ from ..dashboard import (
     dashboard_assets,
     dashboard_panels,
 )
+from ..dashboard_editor import send_dashboard_edit
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
 from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
@@ -63,6 +64,7 @@ WORKSPACE_ASSETS = {
     "/dashboard/canvas-layout.js": FLOW_VIEW_ASSETS["/canvas-layout.js"],
     "/dashboard/dashboard-ui.js": FLOW_VIEW_ASSETS["/dashboard-ui.js"],
     "/dashboard/live-sync.js": FLOW_VIEW_ASSETS["/live-sync.js"],
+    "/dashboard/dashboard-editor.js": FLOW_VIEW_ASSETS["/dashboard-editor.js"],
     "/dashboard/prism-syntax.js": FLOW_VIEW_ASSETS["/prism-syntax.js"],
 }
 
@@ -610,6 +612,17 @@ def workspace_dispatch(
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            if self.path == "/dashboard-source":
+                if self.request.headers.get_content_type() != "application/json":
+                    self.request.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                    return
+                try:
+                    data = self.request.read_json_dict()
+                except (ValueError, UnicodeError):
+                    self.request.send_json({"error": "Send a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
+                    return
+                send_dashboard_edit(self.request, root, None, data, workspace=True)
                 return
             if self.path == WORKSPACE_VISUALIZE_LAYOUT:
                 self.visualize_layout()

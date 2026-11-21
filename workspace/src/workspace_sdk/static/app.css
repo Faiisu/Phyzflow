@@ -57,7 +57,7 @@ button:disabled { cursor: default; opacity: .52; }
   z-index: 6;
   border-color: rgba(255, 130, 110, 0.32);
 }
-.dashboard-actions { display: flex; align-items: center; gap: .25rem; flex: none; }
+.dashboard-actions { display: flex; flex-wrap: wrap; justify-content: end; align-items: center; gap: .25rem; }
 .dashboard-panel .dock-heading {
   min-height: 30px;
   padding: .22rem .45rem .22rem .68rem;
@@ -66,7 +66,7 @@ button:disabled { cursor: default; opacity: .52; }
   cursor: grab;
   user-select: none;
 }
-.dashboard-panel .dock-heading h2 { font-size: .73rem; font-weight: 600; color: #d1d5db; }
+.dashboard-panel .dock-heading h2 { font-size: .73rem; font-weight: 600; color: #d1d5db; overflow-wrap: anywhere; }
 .dashboard-panel.is-moving .dock-heading { cursor: grabbing; }
 .dashboard-panel.is-moving iframe, .dashboard-panel.is-resizing iframe { pointer-events: none; }
 .graph-scroll.is-dragging-dashboard { user-select: none; }
@@ -160,7 +160,7 @@ button:disabled { cursor: default; opacity: .52; }
 .node-source-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .4rem; padding: .25rem 0 .45rem; }
 #node-source-name { overflow-wrap: anywhere; font: .76rem/1.4 var(--mono); }
 .code-editor { position: relative; }
-#node-source-input, #node-source-highlight {
+#node-source-input, #node-source-highlight, #dashboard-editor-source {
   display: block;
   padding: .7rem;
   border: 1px solid var(--line);
@@ -784,7 +784,7 @@ body.is-visualize-mode .dashboard-panel .dock-heading {
   min-height: 28px;
   padding: .2rem .55rem;
 }
-body.is-visualize-mode:not(.is-workspace-dashboard) .dashboard-panel :is(.dashboard-controls, .dashboard-actions) {
+body.is-visualize-mode:not(.is-workspace-dashboard) .dashboard-panel :is(.dashboard-controls, [data-dash="fullscreen"], [data-dash="close"]) {
   display: none !important;
 }
 
@@ -903,3 +903,26 @@ body:not(.is-visualize-mode) #visualize-layout-status,
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+#dashboard-editor {
+  width: min(42rem, calc(100% - 2rem));
+  max-height: calc(100% - 2rem);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--dock);
+  color: var(--ink);
+  padding: 1rem;
+}
+#dashboard-editor::backdrop { background: #0009; }
+#dashboard-editor h2 { margin: 0; font-size: .95rem; overflow-wrap: anywhere; }
+#dashboard-editor label { display: block; margin-block: .55rem .3rem; }
+#dashboard-editor :is(input, select) {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: .35rem;
+  background: var(--canvas);
+  color: var(--ink);
+}
+#dashboard-editor-source { width: 100%; height: min(48vh, 27rem); margin-top: .6rem; resize: vertical; }
+#dashboard-editor [role="status"] { color: var(--muted); font-size: .8rem; }

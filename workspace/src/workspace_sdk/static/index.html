@@ -21,6 +21,8 @@
             <div class="dock-heading" data-dash="handle" tabindex="0" aria-label="Move or resize dashboard" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight">
               <h2 id="dashboard-heading" data-dash="heading">Dashboard</h2>
               <div class="dashboard-actions">
+                <button type="button" data-dash="edit" class="text-button" aria-haspopup="dialog">Edit dashboard</button>
+                <button type="button" data-dash="remove" class="text-button" aria-haspopup="dialog">Remove dashboard</button>
                 <button type="button" id="fullscreen-dashboard" data-dash="fullscreen" class="text-button">Full screen</button>
                 <button type="button" id="close-dashboard" data-dash="close" class="close-panel" aria-label="Close dashboard">×</button>
               </div>
@@ -72,6 +74,7 @@
         <button type="button" class="close-panel" data-close-panel="visualize" aria-label="Close Visualize">×</button>
       </div>
       <div class="visualize-actions">
+        <button type="button" id="add-dashboard" class="text-button" aria-haspopup="dialog" hidden>Add dashboard</button>
         <button type="button" id="visualize-open-all" class="text-button" disabled>Open all</button>
         <button type="button" id="visualize-close-all" class="text-button" disabled>Close all</button>
         <button type="button" id="enter-visualize-mode" class="text-button" disabled>Visualize mode</button>
@@ -238,5 +241,33 @@
     <span role="status"></span>
     <button type="button" class="text-button" hidden>Retry</button>
   </div>
+  <dialog id="dashboard-editor" aria-labelledby="dashboard-editor-heading">
+    <form>
+      <div class="node-source-toolbar">
+        <h2 id="dashboard-editor-heading"></h2>
+        <button type="button" class="close-panel" data-editor="close" aria-label="Close dashboard editor">×</button>
+      </div>
+      <div data-editor="create" hidden>
+        <label for="dashboard-editor-scope">Scope</label>
+        <select id="dashboard-editor-scope"></select>
+        <label for="dashboard-editor-id">Panel ID</label>
+        <input id="dashboard-editor-id" pattern="[A-Za-z0-9._\-]+" placeholder="run-status" autocomplete="off">
+      </div>
+      <div data-editor="edit" hidden>
+        <label for="dashboard-editor-file">Source file</label>
+        <select id="dashboard-editor-file">
+          <option>index.html</option>
+          <option>style.css</option>
+          <option>dashboard.js</option>
+          <option>bridge.json</option>
+          <option>setting.js</option>
+        </select>
+        <textarea id="dashboard-editor-source" aria-label="Source code" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      </div>
+      <p data-editor="remove" hidden></p>
+      <p data-editor="status" role="status"></p>
+      <button type="submit" class="primary-button"></button>
+    </form>
+  </dialog>
 </body>
 </html>

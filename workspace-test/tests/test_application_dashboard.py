@@ -210,6 +210,114 @@ workspaceDashboard.subscribe(({ run, liveMetrics }) => {
 
 
 class ApplicationDashboardTests(unittest.TestCase):
+    def test_dashboard_editor_creates_edits_and_removes_panel_assets(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root = parent / "DashboardEditor"
+            state = parent / "state"
+            copytree(LIVE_COUNTER, root, ignore=ignore_patterns(".workspace", "__pycache__", ".venv"))
+            with application(state) as url:
+                sign_in(page, url, state)
+                added = page.request.post(
+                    f"{url}/workspaces", headers={"Origin": url}, data={"path": str(root), "action": "add"},
+                )
+                self.assertEqual(added.status, 201, added.text())
+                workspace_url = f"{url}/workspaces/{added.json()['id']}"
+                page.goto(f"{workspace_url}/")
+                page.get_by_role("button", name="Dashboard", exact=True).click()
+                board = page.frame_locator('iframe[title="Workspace Dashboard"]')
+                board.locator("#panel-switcher summary").click()
+                board.get_by_role("button", name="Add dashboard").click()
+                editor = board.locator("#dashboard-editor")
+                editor.get_by_label("Panel ID").fill("run-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                directory = root / "dashboards/workspace/panels/run-status"
+                panel = board.get_by_role("region", name="run status", exact=True)
+                frame = panel.frame_locator("iframe")
+                expect(frame.get_by_role("heading", name="Dashboard")).to_be_visible()
+                self.assertTrue((directory / "bridge.json").is_file())
+                endpoint = f"{workspace_url}/dashboard-source"
+                create = {"action": "create", "panel": "run-status"}
+                duplicate = page.request.post(endpoint, headers={"Origin": url}, data=create)
+                self.assertEqual(duplicate.status, 400)
+                self.assertIn("already exists", duplicate.json()["error"])
+                elsewhere = page.request.post(
+                    endpoint, headers={"Origin": "https://example.invalid"},
+                    data={"action": "remove", "panel": "run-status"},
+                )
+                self.assertEqual(elsewhere.status, 403)
+                traversal = page.request.post(
+                    endpoint, headers={"Origin": url},
+                    data={"action": "read", "panel": "run-status", "name": "../index.html"},
+                )
+                self.assertEqual(traversal.status, 400)
+
+                panel.get_by_role("button", name="Edit dashboard").click()
+                source = editor.get_by_role("textbox", name="Source code")
+                expect(source).to_have_value((directory / "index.html").read_text(encoding="utf-8"))
+                editor.get_by_label("Source file").select_option("dashboard.js")
+                expect(source).to_have_value((directory / "dashboard.js").read_text(encoding="utf-8"))
+                editor.get_by_label("Source file").select_option("index.html")
+                expect(source).to_have_value((directory / "index.html").read_text(encoding="utf-8"))
+                markup = '<h1>Edited dashboard</h1><p role="status"></p>'
+                source.fill(markup)
+                editor.get_by_role("button", name="Save", exact=True).click()
+                expect(editor.get_by_role("status")).to_have_text("Saved.")
+                expect(frame.get_by_role("heading", name="Edited dashboard")).to_have_count(1)
+                self.assertEqual((directory / "index.html").read_text(encoding="utf-8"), markup)
+
+                (directory / "index.html").write_text("<h1>External edit</h1>", encoding="utf-8")
+                source.fill("<h1>Stale edit</h1>")
+                editor.get_by_role("button", name="Save", exact=True).click()
+                expect(editor.get_by_role("status")).to_contain_text("changed on disk")
+                page.once("dialog", lambda confirm: confirm.accept())
+                editor.get_by_role("button", name="Close dashboard editor").click()
+                panel.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Close dashboard editor").click()
+                self.assertTrue((directory / "index.html").is_file())
+
+                default = directory.parents[1]
+                (default / "index.html").write_text("<h1>Overview</h1>", encoding="utf-8")
+                (default / "README.md").write_text("Dashboard notes", encoding="utf-8")
+                board.get_by_role("button", name="Back to sheets").click()
+                page.get_by_role("button", name="Dashboard", exact=True).click()
+                overview = board.get_by_role("region", name="Overview", exact=True)
+                overview.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Remove dashboard", exact=True).click()
+                expect(overview).to_have_count(0)
+                self.assertFalse((default / "index.html").exists())
+                self.assertTrue((default / "README.md").is_file())
+                self.assertTrue((directory / "index.html").exists())
+
+                panel.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Remove dashboard", exact=True).click()
+                expect(panel).to_have_count(0)
+                self.assertFalse(directory.exists())
+                board.get_by_role("button", name="Back to sheets").click()
+
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                flow.get_by_role("button", name="Add dashboard").click()
+                editor = flow.locator("#dashboard-editor")
+                editor.get_by_label("Scope").select_option(label="Multiply by Ten")
+                editor.get_by_label("Panel ID").fill("node-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                node_panel = flow.get_by_role("region", name="Multiply by Ten dashboard · node status")
+                expect(node_panel.frame_locator("iframe").get_by_role("heading", name="Dashboard")).to_be_visible()
+                node_dir = root / "dashboards/nodes/Multiply by Ten/panels/node-status"
+                self.assertTrue((node_dir / "index.html").is_file())
+                node_panel.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Remove dashboard", exact=True).click()
+                expect(node_panel).to_have_count(0)
+                self.assertFalse(node_dir.exists())
+
+                flow.get_by_role("button", name="Add dashboard").click()
+                editor.get_by_label("Scope").select_option(label="Workflow")
+                editor.get_by_label("Panel ID").fill("workflow-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                workflow = flow.get_by_role("region", name="Workflow dashboard · workflow status")
+                expect(workflow.frame_locator("iframe").get_by_role("heading", name="Dashboard")).to_be_visible()
+                self.assertTrue((root / "dashboards/workflow/panels/workflow-status/index.html").is_file())
+
     def test_visualize_layout_is_shared_per_sheet_and_fits_narrow_screens(self):
         with TemporaryDirectory() as temp, browser_page(show_scrollbars=True) as page:
             parent = Path(temp).resolve()
