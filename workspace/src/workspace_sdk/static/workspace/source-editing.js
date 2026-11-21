@@ -158,9 +158,9 @@ export function initSourceEditing({
     return lock;
   };
 
-  window.phyzflowReleaseEditLock = frameWindow => {
+  window.phyzflowReleaseEditLock = (frameWindow, options) => {
     const sheet = findSheetByWindow(frameWindow);
-    if (sheet) void releaseSheetEdit(sheet, frameWindow);
+    if (sheet) return releaseSheetEdit(sheet, frameWindow, options);
   };
 
   window.phyzflowRecoveryNodeBase = frameWindow => {

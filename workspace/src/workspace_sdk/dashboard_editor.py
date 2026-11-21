@@ -7,6 +7,7 @@ from threading import Lock
 
 from .dashboard import ASSET_NAMES, DASHBOARD_BRIDGE_VERSION, MAX_ASSET_BYTES, dashboard_directory
 from .node_sources import edit_source_file
+from .sheet_locks import SheetEditLease, SheetLockedError
 
 
 SOURCE_ROUTE = r"dashboard-source/(workflow|[0-9]{1,8})"
@@ -101,7 +102,10 @@ def _edit(root: Path, step_id: str | None, data: dict, *, workspace: bool) -> di
         return edit_source_file(path, source, revision, initial="", max_bytes=MAX_ASSET_BYTES)
 
 
-def send_dashboard_edit(request, root: Path, step_id: str | None, data: dict, *, workspace: bool = False) -> None:
+def send_dashboard_edit(
+    request, root: Path, step_id: str | None, data: dict, *,
+    workspace: bool = False, sheet_lease: SheetEditLease | None = None,
+) -> None:
     def perform():
         try:
             return _edit(root, step_id, data, workspace=workspace)
@@ -110,4 +114,16 @@ def send_dashboard_edit(request, root: Path, step_id: str | None, data: dict, *,
         except FileExistsError:
             raise ValueError("A dashboard with that panel ID already exists.") from None
 
-    request.send_source_edit(perform, not_found_error="This dashboard panel is unavailable.")
+    def edit_with_lease():
+        if sheet_lease is None or data.get("action") not in ("create", "save", "remove"):
+            return perform()
+        session_id = request.headers.get("X-Phyzflow-Edit-Session")
+
+        def mutate():
+            if session_id is None:
+                raise SheetLockedError("Open the sheet for editing first.", snapshot=sheet_lease.status())
+            return perform()
+
+        return sheet_lease.write_locked("web", session_id, mutate)
+
+    request.send_source_edit(edit_with_lease, not_found_error="This dashboard panel is unavailable.")

@@ -29,7 +29,7 @@ def serve_flow(
         snapshot_sources = sheet_source_files(root, main=main) if run_token is not None else ()
         with load_project(root, sources, snapshot_sources=snapshot_sources) as flow:
             serve(
-                flow, root, 0, sources, zoom=zoom, run_token=run_token,
+                flow, root, 0, sources, zoom=zoom, run_token=run_token, workspace_managed=True,
                 on_ready=lambda address, graph: publish({"url": address, "steps": graph, "output": flow.output.step_id}),
             )
     except ValidationError as error:
