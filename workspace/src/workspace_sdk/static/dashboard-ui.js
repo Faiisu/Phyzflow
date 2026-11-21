@@ -216,13 +216,18 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     { nodeId: null, key: "workflow", title: "Workflow" },
     ...graph.map((node, index) => ({ nodeId: node.id, key: String(index), title: node.id })),
   ];
+  const acquireEdit = !workspace && window.parent !== window && window.parent.phyzflowAcquireEditLock;
   const dashboardEditor = initDashboardEditor({
     scopes,
-    request(nodeId, data) {
+    acquireEdit: acquireEdit ? () => acquireEdit(window) : null,
+    releaseEdit: options => window.parent.phyzflowReleaseEditLock(window, options),
+    request(nodeId, data, editSessionId) {
       const path = workspace ? "../dashboard-source" : `dashboard-source/${scopeKey(nodeId)}`;
+      const headers = { "Content-Type": "application/json" };
+      if (editSessionId) headers["X-Phyzflow-Edit-Session"] = editSessionId;
       return fetchJSON(path, "Could not access dashboard source.", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(data),
       });
     },

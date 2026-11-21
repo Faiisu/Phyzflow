@@ -1,4 +1,4 @@
-export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemove }) {
+export function initDashboardEditor({ scopes, request, acquireEdit, releaseEdit, onCreate, onSave, onRemove }) {
   const dialog = document.querySelector("#dashboard-editor");
   const form = dialog.querySelector("form");
   const field = name => dialog.querySelector(`[data-editor="${name}"]`);
@@ -12,6 +12,10 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
   const add = document.querySelector("#add-dashboard");
   let mode, target, saved, revision, selectedFile;
   let busy = false;
+  let editSessionId = null;
+  let editLockError = "";
+  let pendingRelease;
+  let leaving = false;
 
   scopes.forEach(({ title }, index) => scope.add(new Option(title, String(index))));
 
@@ -26,10 +30,22 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
   function sync() {
     file.disabled = busy;
     source.disabled = busy || revision === null;
+    source.readOnly = Boolean(editLockError);
     id.disabled = busy;
     scope.disabled = busy || scopes.length === 1;
-    submit.disabled = busy || (mode === "edit" && !dirty());
+    submit.disabled = busy || Boolean(editLockError) || (mode === "edit" && !dirty());
     field("close").disabled = busy;
+  }
+
+  function release(keepalive = false) {
+    if (!editSessionId) return;
+    editSessionId = null;
+    pendingRelease = releaseEdit({ keepalive });
+  }
+
+  function close() {
+    dialog.close();
+    release();
   }
 
   async function loadFile() {
@@ -43,7 +59,7 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
       const result = await request(target.nodeId, { action: "read", panel: target.panelId, name: selectedFile });
       revision = result.revision;
       saved = source.value = result.source;
-      status.textContent = revision === "missing" ? "Save to create this file." : "";
+      status.textContent = editLockError || (revision === "missing" ? "Save to create this file." : "");
     } catch (error) {
       status.textContent = error.message;
     } finally {
@@ -52,7 +68,7 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
     }
   }
 
-  function open(nextMode, title, label, panel = null) {
+  async function open(nextMode, title, label, panel = null) {
     mode = nextMode;
     target = panel && {
       nodeId: panel.scope, panelId: panel.panelId, label: panel.panelLabel || panel.panelId,
@@ -66,21 +82,68 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
     scope.value = "0";
     file.value = "index.html";
     revision = null;
+    editLockError = "";
+    busy = Boolean(acquireEdit);
     sync();
     dialog.showModal();
+    if (acquireEdit) {
+      status.textContent = "Opening sheet for editing…";
+      try {
+        await pendingRelease;
+        const lock = await acquireEdit();
+        editSessionId = lock.sessionId;
+        if (!lock.ok) editLockError = `Read-only · ${lock.error}`;
+      } catch {
+        editLockError = "Read-only · Could not open the sheet for editing.";
+      }
+      busy = false;
+      if (leaving) {
+        release(true);
+        return;
+      }
+    }
+    if (mode === "edit") {
+      await loadFile();
+    } else {
+      status.textContent = editLockError;
+      sync();
+      if (mode === "create") id.focus();
+      else field("close").focus();
+    }
   }
 
   add.hidden = false;
   add.addEventListener("click", () => {
-    open("create", "Add dashboard", "Create dashboard");
-    id.focus();
+    void open("create", "Add dashboard", "Create dashboard");
   });
 
+  window.addEventListener("workspace-edit-lock", ({ detail: { editLock } }) => {
+    if (!editSessionId || editLock?.session_id === editSessionId) return;
+    editSessionId = null;
+    editLockError = editLock?.locked
+      ? `Read-only · This sheet is locked for editing by ${editLock.owner}.`
+      : "Read-only · This editing session is no longer active.";
+    status.textContent = editLockError;
+    sync();
+  });
+  window.addEventListener("pagehide", () => {
+    leaving = true;
+    release(true);
+  });
+  window.addEventListener("pageshow", () => {
+    if (leaving && acquireEdit && dialog.open && !editSessionId) {
+      editLockError ||= "Read-only · Reopen the dashboard editor to edit this sheet.";
+      status.textContent = editLockError;
+      sync();
+    }
+    leaving = false;
+  });
   field("close").addEventListener("click", () => {
-    if (canDiscard()) dialog.close();
+    if (canDiscard()) close();
   });
   dialog.addEventListener("cancel", event => {
-    if (busy || !canDiscard()) event.preventDefault();
+    event.preventDefault();
+    if (!busy && canDiscard()) close();
   });
   source.addEventListener("input", sync);
   file.addEventListener("change", () => {
@@ -98,17 +161,17 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
       if (mode === "create") {
         const nodeId = scopes[Number(scope.value)].nodeId;
         const panelId = id.value;
-        await request(nodeId, { action: "create", panel: panelId });
-        dialog.close();
-        onCreate(nodeId, panelId);
+        await request(nodeId, { action: "create", panel: panelId }, editSessionId);
+        await onCreate(nodeId, panelId);
+        close();
       } else if (mode === "remove") {
-        await request(target.nodeId, { action: "remove", panel: target.panelId });
-        dialog.close();
+        await request(target.nodeId, { action: "remove", panel: target.panelId }, editSessionId);
+        close();
         onRemove(target);
       } else {
         const result = await request(target.nodeId, {
           action: "save", panel: target.panelId, name: selectedFile, revision, source: source.value,
-        });
+        }, editSessionId);
         revision = result.revision;
         saved = source.value;
         status.textContent = "Saved.";
@@ -124,13 +187,11 @@ export function initDashboardEditor({ scopes, request, onCreate, onSave, onRemov
 
   return {
     edit(panel) {
-      open("edit", "Edit dashboard", "Save", panel);
-      loadFile();
+      void open("edit", "Edit dashboard", "Save", panel);
     },
     remove(panel) {
-      open("remove", "Remove dashboard", "Remove dashboard", panel);
+      void open("remove", "Remove dashboard", "Remove dashboard", panel);
       field("remove").textContent = `Permanently remove the source files for “${target.label}”?`;
-      field("close").focus();
     },
   };
 }

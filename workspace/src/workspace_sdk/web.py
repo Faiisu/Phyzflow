@@ -148,7 +148,7 @@ def sample_input(root: Path) -> dict:
 def serve(
     flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
     *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str, list[dict]], None] | None = None,
-    run_token: str | None = None,
+    run_token: str | None = None, workspace_managed: bool = False,
 ) -> None:
     graph = []
     steps = ordered_steps(flow)
@@ -360,7 +360,7 @@ def serve(
                 return
             source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
             settings_route = re.fullmatch(f"/{SETTINGS_ROUTE}", self.path)
-            dashboard_route = re.fullmatch(f"/{DASHBOARD_SOURCE_ROUTE}", self.path)
+            dashboard_route = re.fullmatch(f"/{DASHBOARD_SOURCE_ROUTE}", self.path) if not workspace_managed else None
             if self.path not in ("/run", "/console-logs") and not any((source_route, settings_route, dashboard_route)):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
