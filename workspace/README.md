@@ -147,45 +147,6 @@ In `dashboard.js`, call `window.workspaceDashboard.subscribe(render)`. The callb
 
 The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a node dashboard on the same run.
 
-## Build a dashboard from multiple sheets
-
-Put `index.html`, `dashboard.js`, and optional `style.css` in `dashboards/workspace/` at the Workspace root. To add another panel, put its files in `dashboards/workspace/panels/<panel-id>/`. Open **Dashboard** in the Workspace toolbar to see all configured panels together on a full-window Visualize canvas. Use **Panels** to show, hide, or refresh panels and to enter browser full screen. Drag a panel by its title or resize it from its lower-right corner. Focus the title and use the arrow keys to move it or hold **Shift** to resize. The installed application saves the Workspace layout. Select **Back to sheets** to return to the flows.
-
-Use the [Dashboard Editor guide](../docs/dashboard-editor.md) to create a starter panel, edit its source files, or remove it.
-
-Call `inspect_dashboards` with `sheet: null` to inspect only Workspace panels and their Bridge contract through MCP. Read the returned asset paths with `read_workspace_text` and save changes with `write_workspace_text` using the file revision. Read the assets back and call `inspect_dashboards` again to verify the saved panel. Use the browser for visual verification when requested.
-
-Declare the panel's inputs in `bridge.json`. Give each source a unique ID and use the sheet directory relative to the Workspace root. Use `.` for Main and `flows/<sheet-folder>` for a secondary sheet.
-
-```json
-{
-  "versions": [1],
-  "sources": [
-    {"id": "main-duration", "sheet": ".", "field": "duration_ms"},
-    {"id": "hand-duration", "sheet": "flows/Hand Detection", "field": "duration_ms"},
-    {
-      "id": "hand-count",
-      "sheet": "flows/Hand Detection",
-      "mode": "live",
-      "metric": {"step": "Detect Hands", "group": "Detection", "name": "Count"}
-    },
-    {
-      "id": "camera",
-      "sheet": "flows/Hand Detection",
-      "mode": "live",
-      "frame": {"step": "Detect Hands"}
-    }
-  ]
-}
-```
-
-- Select one field (`status`, `started_at`, `finished_at`, or `duration_ms`), one metric (`step`, `group`, and `name`), or one frame (`step`) per source. Metric names must match those reported by the flow. Declare up to 32 sources per panel.
-- The default mode, `latest`, reads the most recent saved run and the metrics reported with `record_metrics`. In `live` mode, `status`, `started_at`, and metrics reported with `publish_metrics` are available while the run is active. Use `latest` for the finished time and recorded duration.
-- Frame sources require `mode: "live"`. Declare up to four per panel. Each source receives the latest JPEG data URL from its step's `publish_frame(jpeg_bytes)` call, with the frame's timestamp. Assign an available value to an image element's `src`. Encode any annotations in the JPEG before publishing it. Frames are cleared when the run ends and are excluded from saved runs. The Workspace app and its sheet worker must both support frame sources.
-- Call `workspaceDashboard.subscribe(({ sources }) => { /* render */ })` in `dashboard.js`. Each source has `id`, `sheet`, `state`, and `value`. Phyzflow adds `sheet_name` when it resolves the sheet, and `run_id` and `timestamp` when a run is available. The `state` is `available`, `no_data`, `sheet_unavailable`, or `source_unavailable`. Treat a `null` value as missing.
-
-See the [multi-sheet dashboard example](../workspace-test/sheets-demo/dashboards/workspace/) for a responsive duration comparison and live metric cards. Add `workspace-test/sheets-demo` as a Workspace in the installed app, start **Run All**, and open **Dashboard**. The Live Counter publishes continuously. Telemetry Control Room reports its duration after it finishes.
-
 ### Add a control
 
 Declare a `NodeSetting` in Python, include the same object in the node's `Step.settings` mapping, and call its `get()` method in the node. The default determines the supported value type. Numeric settings can declare a minimum and maximum. Use settings for operational values visible in the dashboard.
@@ -193,6 +154,14 @@ Declare a `NodeSetting` in Python, include the same object in the node's `Step.s
 On **Save**, call `workspaceDashboard.setSetting(nodeId, name, value, "next")` and await the result. A successful response has status `saved`. Workspace locally persists the value and snapshots saved settings when the next UI or CLI run starts. Invalid requests return `rejected` with a message.
 
 For a setting declared with `live=True`, the dashboard can send mode `"live"` when viewing an active node. The response includes an ID and status `queued`, or a terminal result if the node already responded. Call `apply_node_settings()` in the node at a safe point before reading the setting for subsequent work. Match the response ID to `settingChanges` to display `applied` or `rejected`. An applied change includes the run ID and timestamp and lasts for that run.
+
+## Build a dashboard from multiple sheets
+
+Open **Dashboard** in the Workspace toolbar and use **Panels** to add existing Workflow or Node panels from your sheets. Each placement shows its source sheet. Add several panels to view their runs side by side, including when their Flow Editors are closed.
+
+Drag a panel by its title or resize it from its lower-right corner. Focus the title and use the arrow keys to move it, or hold **Shift** to resize. The installed application saves the selected panels and their layout. Use **Panels** to show, hide, or remove placements. Removing a placement leaves its source files in the sheet.
+
+Select **Open source sheet** to edit a panel or change its settings in the Flow Editor. Follow the [Dashboard Editor guide](../docs/dashboard-editor.md) to create new panels.
 
 ## Inspect a project through a local agent
 

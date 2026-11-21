@@ -1,30 +1,19 @@
 # Edit dashboard panels in Phyzflow
 
-Open a Workspace in the [local Phyzflow application](../README.md#start-the-local-application). Use the Workspace dashboard for a panel that reads across sheets, or open a sheet in the Flow Editor to create a panel for that workflow or one of its nodes.
-
-```mermaid
-flowchart TD
-    Open["Open a Workspace"] --> Scope{"Where should the panel appear?"}
-    Scope -->|"Workspace dashboard"| Panels["Open Dashboard, then Panels"]
-    Scope -->|"Workflow or node"| Visualize["Open a sheet, then Visualize"]
-    Panels --> Action{"Choose an action"}
-    Visualize --> Action
-    Action -->|"Add dashboard"| Create["Enter a panel ID and create the panel"]
-    Action -->|"Edit dashboard"| Save["Select a source file and save"]
-    Action -->|"Remove dashboard"| Remove["Confirm permanent removal"]
-    Create --> Preview["Check the dashboard preview"]
-    Save --> Preview
-    Remove --> Check["Check that the panel disappears"]
-```
+Open a Workspace in the [local Phyzflow application](../README.md#start-the-local-application). Dashboard panels are authored in the Flow Editor of their source sheet. The Workspace Dashboard displays placements of existing Sheet panels.
 
 ## Create a panel
 
-1. For a Workspace panel, select **Dashboard** on the Workspace toolbar and open **Panels**. In the Flow Editor, open **Visualize** for the current sheet. If the drawer is hidden, open the panel switcher and select **Visualize**.
-2. Select **Add dashboard**. In the Flow Editor, set **Scope** to **Workflow** or select a node by name.
+1. Open the source sheet in the Flow Editor and select **Visualize**. If the drawer is hidden, open the panel switcher and select **Visualize**.
+2. Select **Add dashboard**. Set **Scope** to **Workflow** or choose a node by name.
 3. Enter a **Panel ID**, such as `run-status`, and select **Create dashboard**. Use letters, digits, periods, underscores, or hyphens, with at least one letter or digit. Each ID must be unique within its scope. The ID `default` is reserved for the Overview.
-4. Verify that the new panel opens with a **Dashboard** heading and **Waiting for data…** before a run is available. The Workspace example follows the live status of **Main**. Run **Main** and open the dashboard while the run is active to see the status update. Workflow and node examples display the status from the sheet's run snapshot.
+4. Verify that the new panel opens with a **Dashboard** heading and **Waiting for data…** before a run is available. Run the sheet and verify that its status updates.
 
-Phyzflow creates `index.html`, `style.css`, `dashboard.js`, and `bridge.json` together. Use [the Dashboard Bridge reference for Workspace panels](../workspace/README.md#build-a-dashboard-from-multiple-sheets) or [the reference for workflow and node panels](../workspace/README.md#build-a-dashboard-for-a-workflow-or-node) to change the data the panel displays.
+Phyzflow creates `index.html`, `style.css`, `dashboard.js`, and `bridge.json` together. Use the [Dashboard Bridge reference](../workspace/README.md#build-a-dashboard-for-a-workflow-or-node) to change the data the panel displays.
+
+## Add a panel to the Workspace Dashboard
+
+Open **Dashboard** from the Workspace toolbar. Open **Panels** and select the existing Sheet panel to add it to the board. Select **Open source sheet** to make file or settings changes in the Flow Editor. Use **Remove placement** to take a panel off the board and leave its source files in the sheet.
 
 ## Edit a panel
 
@@ -37,15 +26,14 @@ If Phyzflow reports that the file changed on disk, copy any edits you want to ke
 ## Remove a panel
 
 1. Select **Remove dashboard** on the panel title bar.
-2. Check the panel name in the confirmation, then select **Remove dashboard** again to permanently delete its dashboard assets. Verify that the preview closes and the panel disappears from **Panels** or **Visualize**.
+2. Check the panel name in the confirmation, then select **Remove dashboard** again to permanently delete its dashboard assets. Verify that the preview closes and the panel disappears from **Visualize**.
 
-To hide a panel, use its **Close dashboard** button when visible or toggle the panel from **Panels** or **Visualize**. Removing the Overview deletes its dashboard assets in the scope folder and preserves panels in the `panels/` subfolder.
+To hide a panel, use its **Close dashboard** button when visible or toggle the panel from **Visualize**. Removing the Overview deletes its dashboard assets in the scope folder and preserves panels in the `panels/` subfolder.
 
 ## Find the source files on disk
 
 | Scope | Folder for a panel created in the editor |
 | --- | --- |
-| Workspace | `dashboards/workspace/panels/<panel-id>/` from the Workspace root |
 | Workflow | `dashboards/workflow/panels/<panel-id>/` from the sheet folder |
 | Node | `dashboards/nodes/<step-id>/panels/<panel-id>/` from the sheet folder |
 
