@@ -1,3 +1,4 @@
+from base64 import b64decode
 import json
 from pathlib import Path
 from shutil import copytree
@@ -32,6 +33,33 @@ def measure():
 
 
 flow = Flow((), (Step("Measure", measure, {}),), Output("Measure"))
+'''
+
+
+CAMERA_FLOW = '''from pathlib import Path
+from time import sleep
+
+from workspace_sdk import Flow, Output, Step, publish_frame, publish_output
+
+root = Path(__file__).parent
+
+
+def other_camera():
+    publish_frame((root / "other.jpg").read_bytes())
+
+
+def camera():
+    frame = (root / "camera.jpg").read_bytes()
+    for _ in range(500):
+        publish_output({"preview": "private-preview"})
+        publish_frame(frame)
+        if (root / "finish").exists():
+            return
+        sleep(.05)
+    raise TimeoutError("The test did not release the camera.")
+
+
+flow = Flow((), (Step("Other Camera", other_camera, {}), Step("Live Camera", camera, {})), Output("Live Camera"))
 '''
 
 
@@ -195,3 +223,95 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 board.get_by_role("button", name="Back to sheets").click()
                 expect(dialog).to_be_hidden()
                 expect(dashboard).to_be_focused()
+
+
+    def test_workspace_panels_receive_only_declared_live_frames(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state, root = parent / "state", parent / "workspace"
+            with application(state) as url:
+                workspace = create_workspace(page, url, state, root)
+                second = create_sheet(root, "Second Camera").parent
+                images = page.evaluate('''() => ["#ff0000", "#00ff00", "#0000ff"].map(color => {
+                    const image = document.createElement("canvas");
+                    image.width = image.height = 8;
+                    const context = image.getContext("2d");
+                    context.fillStyle = color;
+                    context.fillRect(0, 0, 8, 8);
+                    return image.toDataURL("image/jpeg");
+                })''')
+                for sheet, image in zip((root, second), images[:2], strict=True):
+                    (sheet / "flow.py").write_text(CAMERA_FLOW, encoding="utf-8")
+                    (sheet / "camera.jpg").write_bytes(b64decode(image.split(",")[1]))
+                    (sheet / "other.jpg").write_bytes(b64decode(images[2].split(",")[1]))
+
+                panels = root / "dashboards/workspace"
+                for name, sheet in (("camera-1", "."), ("camera-2", "flows/Second Camera")):
+                    panel = panels / "panels" / name
+                    panel.mkdir(parents=True)
+                    (panel / "index.html").write_text('<img alt="Live camera" hidden>', encoding="utf-8")
+                    (panel / "dashboard.js").write_text(
+                        """workspaceDashboard.subscribe(({sources: [source]}) => {
+  const image = document.querySelector("img");
+  image.hidden = !source.value;
+  if (source.value) image.src = source.value;
+  else image.removeAttribute("src");
+});""", encoding="utf-8",
+                    )
+                    (panel / "bridge.json").write_text(json.dumps({"versions": [1], "sources": [
+                        {"id": "jpeg", "sheet": sheet, "mode": "live", "frame": {"step": "Live Camera"}},
+                    ]}), encoding="utf-8")
+                (panels / "index.html").write_text("Overview", encoding="utf-8")
+                (panels / "bridge.json").write_text(json.dumps({"versions": [1], "sources": [
+                    {"id": "status", "sheet": ".", "mode": "live", "field": "status"},
+                ]}), encoding="utf-8")
+
+                workspace.click()
+                workspace_url = page.url.rstrip("/")
+
+                def response(panel):
+                    return page.request.get(f"{workspace_url}/workspace-dashboard/{panel}/data")
+
+                def source(panel):
+                    return response(panel).json()["sources"][0]
+
+                manifest = panels / "panels/camera-1/bridge.json"
+                valid = manifest.read_text(encoding="utf-8")
+                manifest.write_text(valid.replace('"live"', '"latest"'), encoding="utf-8")
+                self.assertEqual(response("camera-1").status, 400)
+                manifest.write_text(valid, encoding="utf-8")
+                self.assertEqual(source("camera-1")["state"], "no_data")
+
+                page.get_by_role("button", name="Dashboard", exact=True).click()
+                board = page.get_by_role("dialog", name="Workspace dashboard").frame_locator(
+                    'iframe[title="Workspace Dashboard"]'
+                )
+                first = board.frame_locator('iframe[title="camera 1"]').locator("img")
+                second_image = board.frame_locator('iframe[title="camera 2"]').locator("img")
+                expect(first).to_be_hidden()
+                self.assertEqual(page.request.post(f"{workspace_url}/run-all", headers={"Origin": url}).status, 202)
+                for index, (name, image) in enumerate((("camera-1", first), ("camera-2", second_image))):
+                    expect(image).to_have_attribute("src", images[index], timeout=20_000)
+                    self.assertTrue(image.evaluate("image => image.naturalWidth === 8"))
+                    snapshot = response(name).text()
+                    self.assertNotIn(images[2], snapshot)
+                    self.assertNotIn("private-preview", snapshot)
+                    self.assertEqual(source(name)["state"], "available")
+                    self.assertTrue(source(name)["timestamp"])
+                self.assertNotEqual(source("camera-1")["run_id"], source("camera-2")["run_id"])
+                self.assertNotIn("data:image", response("default").text())
+                self.assertEqual(page.locator('iframe[title="Second Camera flow"]').count(), 0)
+                with page.context.browser.new_context() as anonymous:
+                    endpoint = f"{workspace_url}/workspace-dashboard/camera-1/data"
+                    self.assertEqual(anonymous.request.get(endpoint).status, 401)
+
+                self.assertEqual(page.request.post(
+                    f"{workspace_url}/flows/1/stop", headers={"Origin": url}
+                ).status, 200)
+                expect(second_image).not_to_have_attribute("src", images[1])
+                expect(first).to_have_attribute("src", images[0])
+                (root / "finish").touch()
+                expect(first).not_to_have_attribute("src", images[0])
+                self.assertEqual(source("camera-1")["state"], "no_data")
+                for run in (root / ".workspace/runs").rglob("*.json"):
+                    self.assertNotIn(images[0].split(",")[1], run.read_text(encoding="utf-8"))

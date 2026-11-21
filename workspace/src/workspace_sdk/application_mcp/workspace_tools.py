@@ -59,7 +59,11 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
         except (SheetLockedError, OSError, RuntimeError, ValueError) as error:
             raise ToolError(str(error) or f"Could not rename sheet {sheet!r}.") from None
 
-    @server.tool(description="Inspect dashboard panels, asset paths, theme contract, and resize guidance. Pass null to inspect only Workspace panels.")
+    @server.tool(description=(
+        "Inspect dashboard panels, asset paths, theme contract, and resize guidance through MCP. "
+        "Pass sheet: null for the Workspace Dashboard or a sheet name for its Workflow and Node panels. "
+        "Use the MCP file tools to edit the returned assets. A browser URL is not required."
+    ))
     def inspect_dashboards(workspace_id: str, sheet: str | None = "Main") -> dict:
         if sheet is None:
             root = access.workspace(workspace_id)

@@ -11,12 +11,26 @@ ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js", "bridge.
 WORKSPACE_DASHBOARD_DIRECTORY = Path("dashboards/workspace")
 DASHBOARD_BRIDGE_VERSION = 1
 MAX_ASSET_BYTES = 256 * 1024
+MAX_WORKSPACE_FRAME_SOURCES = 4
+
+DASHBOARD_AUTHORING_GUIDANCE = (
+    "Use the connected Phyzflow MCP tools to inspect, edit, and verify dashboard files. "
+    "Find the Workspace ID with list_workspaces if needed. For a Workspace Dashboard, call "
+    "inspect_dashboards with sheet: null. Use the returned Workspace-relative paths with "
+    "read_workspace_text and write_workspace_text, passing the read revision or 'missing' for a new file. "
+    "For a Workflow or Node Dashboard, pass the named sheet to inspect_dashboards and use read_file and write_file. "
+    "Read the saved files back and call inspect_dashboards again to verify panel discovery. "
+    "Dashboard-only edits do not require running or inspecting unrelated flows. "
+    "Do not search for a web UI URL or open a browser during MCP dashboard authoring. "
+    "Use a browser for visual checks only if the user explicitly asks for them."
+)
 
 DASHBOARD_RESIZE_GUIDANCE = (
     "Design every dashboard panel to respond to its own available width and height. "
     "As the user resizes the panel, reflow the layout, resize charts, and keep primary values and controls visible. "
     "Let secondary details scroll when needed. "
-    "Verify the panel by dragging its resize handles in Phyzflow while keeping the browser window size fixed."
+    "If the user explicitly requests browser verification, drag the panel's resize handles in Phyzflow "
+    "while keeping the browser window size fixed."
 )
 
 DASHBOARD_THEME_REFERENCE = {
@@ -99,7 +113,7 @@ def _scope_directory(root: Path, step_id: str | None) -> Path:
 
 def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False) -> list[dict[str, str]]:
     resolved_root = root.resolve()
-    directory = resolved_root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(resolved_root, step_id)
+    directory = dashboard_directory(resolved_root, step_id, None, workspace=workspace)
     return [
         {"id": entry["id"], "label": entry["label"]}
         for entry in _scope_panel_entries(resolved_root, directory)
@@ -107,16 +121,20 @@ def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False
     ]
 
 
-def dashboard_assets(
-    root: Path, step_id: str | None, panel_id: str | None = None, *, workspace: bool = False,
-    manifest_only: bool = False,
-) -> dict[str, str]:
+def dashboard_directory(root: Path, step_id: str | None, panel_id: str | None, *, workspace: bool) -> Path:
     directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
     if panel_id is not None and panel_id != "default":
         if panel_id in (".", "..") or not PANEL_ID_PATTERN.fullmatch(panel_id):
             raise PermissionError("Invalid dashboard panel identifier.")
         directory = directory / "panels" / panel_id
+    return directory
 
+
+def dashboard_assets(
+    root: Path, step_id: str | None, panel_id: str | None = None, *, workspace: bool = False,
+    manifest_only: bool = False,
+) -> dict[str, str]:
+    directory = dashboard_directory(root, step_id, panel_id, workspace=workspace)
     if manifest_only and not _regular_file(directory / "index.html"):
         raise FileNotFoundError("index.html")
     assets = {}
@@ -223,9 +241,17 @@ def inspect_workspace_dashboards(root: Path) -> dict:
             "version": DASHBOARD_BRIDGE_VERSION,
             "methods": ["subscribe(listener)"],
             "snapshot_fields": ["scope", "sources"],
+            "frame_sources": {
+                "mode": "live",
+                "max_per_panel": MAX_WORKSPACE_FRAME_SOURCES,
+                "value": "JPEG data URL from the selected step's latest publish_frame call",
+            },
             "declaration_example": {
                 "versions": [DASHBOARD_BRIDGE_VERSION],
-                "sources": [{"id": "main-duration", "sheet": ".", "field": "duration_ms"}],
+                "sources": [
+                    {"id": "main-duration", "sheet": ".", "field": "duration_ms"},
+                    {"id": "camera", "sheet": "flows/Vision AI", "mode": "live", "frame": {"step": "Camera"}},
+                ],
             },
         },
     }

@@ -17,7 +17,7 @@ drawer.querySelector('[data-close-panel="visualize"]').addEventListener("click",
 });
 menu.querySelector(".panel-menu").replaceWith(drawer);
 menu.addEventListener("keydown", event => {
-  if (event.key !== "Escape" || !menu.open) return;
+  if (event.key !== "Escape" || !menu.open || document.querySelector("#dashboard-editor").open) return;
   menu.open = false;
   menu.querySelector("summary").focus();
   event.stopPropagation();

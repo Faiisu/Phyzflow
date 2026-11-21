@@ -126,9 +126,11 @@ Open a node’s **Execution** tab to see its status and timing. While the node r
 
 ## Build a dashboard for a workflow or node
 
+To edit dashboard files in the browser, follow the [Dashboard Editor guide](../docs/dashboard-editor.md).
+
 Write or have an AI agent generate `index.html`, optionally with `style.css`, `setting.js`, and `dashboard.js`, in the workflow's `dashboards/workflow/` or `dashboards/nodes/<step-id>/` folder. Use the exact step ID for ordinary folder names, including spaces. Percent-encode reserved path characters and non-ASCII characters using UTF-8, and encode the entire name for `.` and `..` as `%2E` and `%2E%2E`. Workspace loads the companion files automatically and executes `setting.js` before `dashboard.js`. Use inline assets, data images, or browser APIs such as canvas. The browser policy restricts resource loads and navigation and isolates the frame from Workspace's page.
 
-Open **Visualize** in the workflow toolbar or the node inspector. Choose a saved run or **Live run**. Click **Reload dashboard** to load file changes without restarting the flow. The live view reconnects to an active run after a browser refresh, restoring node status and the latest previews, metrics, and frames. Saved runs remain available after reopening Workspace. See [Telemetry Control Room](../workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md) for a working example.
+Select the panel in the **Visualize** drawer or use **Visualize** in the node inspector. Choose a saved run or **Live run**. Click **Reload dashboard** to load file changes without restarting the flow. The live view reconnects to an active run after a browser refresh, restoring node status and the latest previews, metrics, and frames. Saved runs remain available after reopening Workspace. See [Telemetry Control Room](../workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md) for a working example.
 
 Drag the dashboard title bar to move it on the graph and drag the lower-right corner to resize it. Focus the title bar and use the arrow keys to move or hold **Shift** with an arrow key to resize. Select **Full screen** to expand the dashboard, then **Exit full screen** to return to its previous position and size.
 
@@ -149,7 +151,9 @@ The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a n
 
 Put `index.html`, `dashboard.js`, and optional `style.css` in `dashboards/workspace/` at the Workspace root. To add another panel, put its files in `dashboards/workspace/panels/<panel-id>/`. Open **Dashboard** in the Workspace toolbar to see all configured panels together on a full-window Visualize canvas. Use **Panels** to show, hide, or refresh panels and to enter browser full screen. Drag a panel by its title or resize it from its lower-right corner. Focus the title and use the arrow keys to move it or hold **Shift** to resize. The installed application saves the Workspace layout. Select **Back to sheets** to return to the flows.
 
-Call `inspect_dashboards` with `sheet: null` to inspect Workspace panels and their Bridge contract through MCP.
+Use the [Dashboard Editor guide](../docs/dashboard-editor.md) to create a starter panel, edit its source files, or remove it.
+
+Call `inspect_dashboards` with `sheet: null` to inspect only Workspace panels and their Bridge contract through MCP. Read the returned asset paths with `read_workspace_text` and save changes with `write_workspace_text` using the file revision. Read the assets back and call `inspect_dashboards` again to verify the saved panel. Use the browser for visual verification when requested.
 
 Declare the panel's inputs in `bridge.json`. Give each source a unique ID and use the sheet directory relative to the Workspace root. Use `.` for Main and `flows/<sheet-folder>` for a secondary sheet.
 
@@ -164,13 +168,20 @@ Declare the panel's inputs in `bridge.json`. Give each source a unique ID and us
       "sheet": "flows/Hand Detection",
       "mode": "live",
       "metric": {"step": "Detect Hands", "group": "Detection", "name": "Count"}
+    },
+    {
+      "id": "camera",
+      "sheet": "flows/Hand Detection",
+      "mode": "live",
+      "frame": {"step": "Detect Hands"}
     }
   ]
 }
 ```
 
-- Select one field (`status`, `started_at`, `finished_at`, or `duration_ms`) or one metric (`step`, `group`, and `name`) per source. Metric names must match those reported by the flow. Declare up to 32 sources per panel.
+- Select one field (`status`, `started_at`, `finished_at`, or `duration_ms`), one metric (`step`, `group`, and `name`), or one frame (`step`) per source. Metric names must match those reported by the flow. Declare up to 32 sources per panel.
 - The default mode, `latest`, reads the most recent saved run and the metrics reported with `record_metrics`. In `live` mode, `status`, `started_at`, and metrics reported with `publish_metrics` are available while the run is active. Use `latest` for the finished time and recorded duration.
+- Frame sources require `mode: "live"`. Declare up to four per panel. Each source receives the latest JPEG data URL from its step's `publish_frame(jpeg_bytes)` call, with the frame's timestamp. Assign an available value to an image element's `src`. Encode any annotations in the JPEG before publishing it. Frames are cleared when the run ends and are excluded from saved runs. The Workspace app and its sheet worker must both support frame sources.
 - Call `workspaceDashboard.subscribe(({ sources }) => { /* render */ })` in `dashboard.js`. Each source has `id`, `sheet`, `state`, and `value`. Phyzflow adds `sheet_name` when it resolves the sheet, and `run_id` and `timestamp` when a run is available. The `state` is `available`, `no_data`, `sheet_unavailable`, or `source_unavailable`. Treat a `null` value as missing.
 
 See the [multi-sheet dashboard example](../workspace-test/sheets-demo/dashboards/workspace/) for a responsive duration comparison and live metric cards. Add `workspace-test/sheets-demo` as a Workspace in the installed app, start **Run All**, and open **Dashboard**. The Live Counter publishes continuously. Telemetry Control Room reports its duration after it finishes.
