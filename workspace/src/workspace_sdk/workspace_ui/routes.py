@@ -8,7 +8,13 @@ import re
 import sqlite3
 from urllib.parse import unquote
 
-from ..dashboard import DASHBOARD_BRIDGE_VERSION, WORKSPACE_DASHBOARD_DIRECTORY, dashboard_assets, dashboard_panels
+from ..dashboard import (
+    DASHBOARD_BRIDGE_VERSION,
+    WORKSPACE_DASHBOARD_DIRECTORY,
+    dashboard_assets,
+    dashboard_panels,
+    sheet_panel_catalog,
+)
 from ..dashboard_editor import send_dashboard_edit
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
@@ -17,6 +23,7 @@ from ..project import ValidationError, workspace_format_notice
 from ..sheet_locks import SheetLockedError
 from ..sheets import (
     can_delete_sheet,
+    discover_flows,
     edit_sheet_flow_source,
     editable_sheet_python_files,
 )
@@ -485,6 +492,9 @@ def workspace_dispatch(
                 return
             if self.path == WORKSPACE_VISUALIZE_LAYOUT:
                 self.visualize_layout()
+                return
+            if self.path == "/dashboard/panel-catalog":
+                self.request.send_json({"panels": sheet_panel_catalog(root, discover_flows(root))})
                 return
             if self.path == "/workspace-dashboard":
                 self.request.send_json({"panels": dashboard_panels(root, None, workspace=True)})

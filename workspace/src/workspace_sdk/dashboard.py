@@ -7,6 +7,7 @@ PANELS_ROUTE = r"dashboard-panels/(workflow|[0-9]{1,8})"
 ASSET_ROUTE = r"dashboard-assets/(workflow|[0-9]{1,8})(?:/([A-Za-z0-9._-]+))?"
 SETTINGS_ROUTE = r"dashboard-settings/(workflow|[0-9]{1,8})"
 PANEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+DEFAULT_PANEL_ID = "default"
 ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js", "bridge.json")
 WORKSPACE_DASHBOARD_DIRECTORY = Path("dashboards/workspace")
 DASHBOARD_BRIDGE_VERSION = 1
@@ -111,6 +112,19 @@ def _scope_directory(root: Path, step_id: str | None) -> Path:
     return directory / "nodes" / name
 
 
+def _additional_panel_id(panel_id: str) -> bool:
+    return panel_id not in (".", "..", DEFAULT_PANEL_ID) and bool(PANEL_ID_PATTERN.fullmatch(panel_id))
+
+
+def dashboard_directory(root: Path, step_id: str | None, panel_id: str | None, *, workspace: bool) -> Path:
+    directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
+    if panel_id is not None and panel_id != DEFAULT_PANEL_ID:
+        if not _additional_panel_id(panel_id):
+            raise PermissionError("Invalid dashboard panel identifier.")
+        directory = directory / "panels" / panel_id
+    return directory
+
+
 def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False) -> list[dict[str, str]]:
     resolved_root = root.resolve()
     directory = dashboard_directory(resolved_root, step_id, None, workspace=workspace)
@@ -119,15 +133,6 @@ def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False
         for entry in _scope_panel_entries(resolved_root, directory)
         if entry["ready"]
     ]
-
-
-def dashboard_directory(root: Path, step_id: str | None, panel_id: str | None, *, workspace: bool) -> Path:
-    directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
-    if panel_id is not None and panel_id != "default":
-        if panel_id in (".", "..") or not PANEL_ID_PATTERN.fullmatch(panel_id):
-            raise PermissionError("Invalid dashboard panel identifier.")
-        directory = directory / "panels" / panel_id
-    return directory
 
 
 def dashboard_assets(
@@ -186,18 +191,35 @@ def _scope_panel_entries(root: Path, base: Path) -> list[dict]:
     if not _regular_dir(base):
         return []
     panels: list[dict] = []
-    default_entry = _panel_entry(root, base, "default", "Overview")
+    default_entry = _panel_entry(root, base, DEFAULT_PANEL_ID, "Overview")
     if default_entry is not None:
         panels.append(default_entry)
     panels_dir = base / "panels"
     if _regular_dir(panels_dir):
         for sub in sorted(panels_dir.iterdir(), key=lambda p: p.name):
-            if sub.name in (".", "..") or not PANEL_ID_PATTERN.fullmatch(sub.name):
+            if not _additional_panel_id(sub.name):
                 continue
             label = sub.name.replace("-", " ").replace("_", " ").strip() or sub.name
             entry = _panel_entry(root, sub, sub.name, label)
             if entry is not None:
                 panels.append(entry)
+    return panels
+
+
+def sheet_panel_catalog(root: Path, sheets: list[tuple[str, Path]]) -> list[dict]:
+    panels = []
+    for name, sheet in sheets:
+        details = inspect_sheet_dashboards(sheet)
+        sheet_path = sheet.relative_to(root).as_posix()
+        scopes = [{"step_id": None, "panels": details["workflow"]}, *details["nodes"]]
+        for scope in scopes:
+            panels.extend({
+                "sheet": sheet_path,
+                "sheet_name": name,
+                "scope": scope["step_id"],
+                "id": entry["id"],
+                "label": entry["label"],
+            } for entry in scope["panels"] if entry["ready"])
     return panels
 
 
@@ -207,14 +229,19 @@ def inspect_sheet_dashboards(root: Path) -> dict:
     workflow: list[dict] = []
     nodes: list[dict] = []
     if _regular_dir(dashboards_dir):
-        workflow = _scope_panel_entries(resolved_root, dashboards_dir / "workflow")
+        workflow = _scope_panel_entries(resolved_root, _scope_directory(resolved_root, None))
         nodes_dir = dashboards_dir / "nodes"
         if _regular_dir(nodes_dir):
             for sub in sorted(nodes_dir.iterdir(), key=lambda p: p.name):
+                if not sub.name.isascii():
+                    continue
+                step_id = unquote(sub.name)
+                if sub != _scope_directory(resolved_root, step_id):
+                    continue
                 panels = _scope_panel_entries(resolved_root, sub)
                 if panels:
                     nodes.append({
-                        "step_id": unquote(sub.name),
+                        "step_id": step_id,
                         "directory": sub.relative_to(resolved_root).as_posix(),
                         "panels": panels,
                     })
