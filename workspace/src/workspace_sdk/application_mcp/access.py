@@ -157,11 +157,8 @@ def resolve_workspace_sheet(access: WorkspaceAccess, workspace_id: str, sheet: s
     root = access.workspace(workspace_id)
     ensure_not_protected(root, access.protected_folders)
     match = find_sheet(root, sheet)
-    if match is None or not available_root(match) or (match / "flow.py").is_symlink():
+    if match is None:
         raise ToolError(f"Unknown sheet {sheet!r}.")
-    if match != root:
-        if (root / "flows").is_symlink() or not match.resolve().is_relative_to(root):
-            raise ToolError("Sheet path is outside the Workspace.")
     ensure_not_protected(match, access.protected_folders)
     try:
         resolver = access.sheet_resolver(workspace_id)
