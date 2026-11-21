@@ -70,7 +70,11 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
             result = {"theme_reference": DASHBOARD_THEME_REFERENCE}
         else:
             root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
-            result = {"sheet": sheet, **inspect_sheet_dashboards(flow_sheet.root)}
+            result = {
+                "sheet": sheet,
+                "sheet_path": flow_sheet.root.relative_to(root).as_posix(),
+                **inspect_sheet_dashboards(flow_sheet.root),
+            }
         return {**result, "workspace": inspect_workspace_dashboards(root)}
 
     @server.tool(description="Open a sheet for exclusive editing or read-only inspection.")
