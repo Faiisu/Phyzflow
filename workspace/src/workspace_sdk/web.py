@@ -18,6 +18,7 @@ from .console import ConsoleLogStore, capture_console
 from .dashboard import (
     ASSET_ROUTE, DASHBOARD_BRIDGE_VERSION, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels,
 )
+from .dashboard_editor import SOURCE_ROUTE as DASHBOARD_SOURCE_ROUTE, send_dashboard_edit
 from .flow import Flow, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
@@ -37,6 +38,7 @@ FLOW_VIEW_ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/canvas-layout.js": ("canvas-layout.js", "text/javascript; charset=utf-8"),
     "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
+    "/dashboard-editor.js": ("dashboard-editor.js", "text/javascript; charset=utf-8"),
     "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
     "/live-sync.js": ("live-sync.js", "text/javascript; charset=utf-8"),
     "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
@@ -48,7 +50,7 @@ FLOW_VIEW_ASSETS = {
 FLOW_VIEW_ASSET_PATTERN = "|".join(re.escape(path) for path in FLOW_VIEW_ASSETS if path != "/")
 FLOW_VIEW_SUBPATH_PATTERN = (
     rf"({FLOW_VIEW_ASSET_PATTERN}|/(?:project|"
-    r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
+    rf"dashboard-(?:panels|settings)/(?:workflow|[0-9]{{1,8}})|{DASHBOARD_SOURCE_ROUTE}|"
     r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
     r"live-run(?:\?[A-Za-z0-9_=&-]+)?|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|console-logs(?:/[0-9a-f]{32})?|run)?)"
 )
@@ -94,12 +96,12 @@ def is_flow_view_route(method: str, subpath: str) -> bool:
     if _FLOW_VIEW_SUBPATH_RE.fullmatch(subpath) is None:
         return False
     if method == "GET":
-        return subpath != "/run" and not subpath.startswith("/node-source/")
+        return subpath != "/run" and not subpath.startswith(("/node-source/", "/dashboard-source/"))
     if method == "POST":
         return (
             subpath == "/run"
             or subpath == "/console-logs"
-            or subpath.startswith(("/node-source/", "/dashboard-settings/"))
+            or subpath.startswith(("/node-source/", "/dashboard-settings/", "/dashboard-source/"))
         )
     return False
 
@@ -687,7 +689,8 @@ def serve(
                 return
             source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
             settings_route = re.fullmatch(f"/{SETTINGS_ROUTE}", self.path)
-            if self.path not in ("/run", "/console-logs") and source_route is None and settings_route is None:
+            dashboard_route = re.fullmatch(f"/{DASHBOARD_SOURCE_ROUTE}", self.path)
+            if self.path not in ("/run", "/console-logs") and not any((source_route, settings_route, dashboard_route)):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -697,6 +700,15 @@ def serve(
                 inputs = self.read_json_dict()
             except (ValueError, UnicodeError):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
+                return
+            if dashboard_route is not None:
+                scope = dashboard_route[1]
+                try:
+                    step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
+                except IndexError:
+                    self.send_json({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
+                else:
+                    send_dashboard_edit(self, root, step_id, inputs)
                 return
             if source_route is not None:
                 self.edit_source(int(source_route[1]), inputs)

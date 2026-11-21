@@ -126,9 +126,11 @@ Open a node’s **Execution** tab to see its status and timing. While the node r
 
 ## Build a dashboard for a workflow or node
 
+To edit dashboard files in the browser, follow the [Dashboard Editor guide](../docs/dashboard-editor.md).
+
 Write or have an AI agent generate `index.html`, optionally with `style.css`, `setting.js`, and `dashboard.js`, in the workflow's `dashboards/workflow/` or `dashboards/nodes/<step-id>/` folder. Use the exact step ID for ordinary folder names, including spaces. Percent-encode reserved path characters and non-ASCII characters using UTF-8, and encode the entire name for `.` and `..` as `%2E` and `%2E%2E`. Workspace loads the companion files automatically and executes `setting.js` before `dashboard.js`. Use inline assets, data images, or browser APIs such as canvas. The browser policy restricts resource loads and navigation and isolates the frame from Workspace's page.
 
-Open **Visualize** in the workflow toolbar or the node inspector. Choose a saved run or **Live run**. Click **Reload dashboard** to load file changes without restarting the flow. The live view reconnects to an active run after a browser refresh, restoring node status and the latest previews, metrics, and frames. Saved runs remain available after reopening Workspace. See [Telemetry Control Room](../workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md) for a working example.
+Select the panel in the **Visualize** drawer or use **Visualize** in the node inspector. Choose a saved run or **Live run**. Click **Reload dashboard** to load file changes without restarting the flow. The live view reconnects to an active run after a browser refresh, restoring node status and the latest previews, metrics, and frames. Saved runs remain available after reopening Workspace. See [Telemetry Control Room](../workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md) for a working example.
 
 Drag the dashboard title bar to move it on the graph and drag the lower-right corner to resize it. Focus the title bar and use the arrow keys to move or hold **Shift** with an arrow key to resize. Select **Full screen** to expand the dashboard, then **Exit full screen** to return to its previous position and size.
 
@@ -148,6 +150,8 @@ The workflow overview can call `workspaceDashboard.openNode(nodeId)` to open a n
 ## Build a dashboard from multiple sheets
 
 Put `index.html`, `dashboard.js`, and optional `style.css` in `dashboards/workspace/` at the Workspace root. To add another panel, put its files in `dashboards/workspace/panels/<panel-id>/`. Open **Dashboard** in the Workspace toolbar to see all configured panels together on a full-window Visualize canvas. Use **Panels** to show, hide, or refresh panels and to enter browser full screen. Drag a panel by its title or resize it from its lower-right corner. Focus the title and use the arrow keys to move it or hold **Shift** to resize. The installed application saves the Workspace layout. Select **Back to sheets** to return to the flows.
+
+Use the [Dashboard Editor guide](../docs/dashboard-editor.md) to create a starter panel, edit its source files, or remove it.
 
 Call `inspect_dashboards` with `sheet: null` to inspect Workspace panels and their Bridge contract through MCP.
 
