@@ -4,7 +4,7 @@ from ..dashboard import DASHBOARD_THEME_REFERENCE, inspect_sheet_dashboards, ins
 from ..sheet_locks import SheetLockedError
 from ..sheets import discover_flows
 from ..workspace_environment import install_workspace_packages
-from .access import WorkspaceAccess, available_root, ensure_not_protected, resolve_workspace_sheet
+from .access import WorkspaceAccess, ensure_not_protected, resolve_workspace_sheet
 
 
 def register_sheet_tools(server, access: WorkspaceAccess) -> None:
@@ -21,7 +21,6 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
         sheets = [
             {"name": name, "entrypoint": (sheet / "flow.py").relative_to(root).as_posix()}
             for name, sheet in discover_flows(root)
-            if available_root(sheet) and not (sheet / "flow.py").is_symlink()
         ]
         return {"id": workspace_id, "name": root.name, "sheets": sheets}
 

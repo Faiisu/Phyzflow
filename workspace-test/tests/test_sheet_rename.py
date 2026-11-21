@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from test_application import application
 from test_application_dashboard import create_workspace_and_token
 from test_application_lifecycle import wait_for
 from test_application_mcp import mcp_client, output
-from workspace_sdk.sheets import create_sheet
+from workspace_sdk.sheets import create_sheet, find_sheet_by_path
 
 
 class SheetRenameTests(unittest.TestCase):
@@ -25,6 +26,18 @@ class SheetRenameTests(unittest.TestCase):
                 workspace_id, token = create_workspace_and_token(page, url, state, root)
                 flow = create_sheet(root, "Telemetry")
                 create_sheet(root, "Other")
+                cli = [sys.executable, "-c", "from workspace_sdk.cli import main; raise SystemExit(main())",
+                       "--project", str(root)]
+                self.assertEqual(find_sheet_by_path(root, "."), root)
+                self.assertEqual(find_sheet_by_path(root, "flows/Telemetry"), flow.parent)
+                outside = parent / "outside"
+                outside.mkdir()
+                (outside / "flow.py").touch()
+                self.assertIsNone(find_sheet_by_path(root, "../outside"))
+                self.assertIsNone(find_sheet_by_path(root, outside))
+                if os.name != "nt":
+                    (root / "flows" / "Outside").symlink_to(outside, target_is_directory=True)
+                    self.assertIsNone(find_sheet_by_path(root, "flows/Outside"))
                 flow.write_text('''from pathlib import Path
 from time import sleep
 
@@ -76,10 +89,15 @@ flow = Flow((), (Step("Measure", measure, {}),), Output("Measure"))
                 expect(page.locator('iframe[title="Live Telemetry flow"]')).to_have_attribute("src", frame_source)
                 self.assertEqual(run_status()["run_id"], run_id)
                 self.assertEqual(run_status()["status"], "running")
-                self.assertTrue(flow.is_file())
+                listed = json.loads(subprocess.check_output([*cli, "sheets"], text=True))
+                self.assertIn({"name": "Live Telemetry", "file": str(flow)}, listed)
+                self.assertNotIn("Outside", {item["name"] for item in listed})
 
                 (flow.parent / "finish").touch()
                 wait_for(lambda: run_status()["status"] == "succeeded")
+                result = subprocess.run([*cli, "run", "--sheet", "Live Telemetry", "{}"],
+                                        capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(result.stdout), 42)
                 sources = page.request.get(f"{workspace}/workspace-dashboard/default/data").json()["sources"]
                 self.assertEqual((sources[0]["sheet_name"], sources[0]["value"], sources[0]["run_id"]),
                                  ("Live Telemetry", "succeeded", run_id))
@@ -88,8 +106,12 @@ flow = Flow((), (Step("Measure", measure, {}),), Output("Measure"))
                     def invoke(tool, **arguments):
                         return portal.call(client.call_tool, tool, {"workspace_id": workspace_id, **arguments})
 
+                    listed = output(invoke("inspect_workspace"))["sheets"]
+                    self.assertIn({"name": "Live Telemetry", "entrypoint": "flows/Telemetry/flow.py"}, listed)
+                    self.assertTrue(invoke("open_sheet", sheet="Outside", mode="read").is_error)
                     opened = invoke("open_sheet", sheet="Live Telemetry", mode="edit")
                     self.assertFalse(opened.is_error, opened.content)
+                    self.assertEqual(output(opened)["entrypoint"], "flows/Telemetry/flow.py")
                     session = output(opened)["session_id"]
                     rename.click()
                     name.fill("Blocked rename")
@@ -104,14 +126,19 @@ flow = Flow((), (Step("Measure", measure, {}),), Output("Measure"))
                     self.assertTrue(invoke("create_sheet", name="signals").is_error)
                     self.assertTrue(invoke("rename_sheet", sheet="Signals", name="Main").is_error)
                     self.assertFalse(invoke("rename_sheet", sheet="Main", name="Primary").is_error)
-                    self.assertFalse(invoke("inspect_dashboards", sheet="Main").is_error)
+                    opened = invoke("open_sheet", sheet="Main", mode="read")
+                    self.assertEqual(output(opened)["entrypoint"], "flow.py")
 
                 expect(page.get_by_role("tab", name="Signals", exact=True)).to_be_visible()
                 page.reload()
                 expect(page.get_by_role("tab", name="Primary", exact=True)).to_be_visible()
                 expect(page.get_by_role("tab", name="Signals", exact=True)).to_be_visible()
-                listed = subprocess.check_output(
-                    [sys.executable, "-c", "from workspace_sdk.cli import main; raise SystemExit(main())",
-                     "--project", str(root), "sheets"], text=True,
-                )
-                self.assertIn({"name": "Signals", "file": str(flow)}, json.loads(listed))
+                self.assertEqual(find_sheet_by_path(root, "."), root)
+                self.assertEqual(find_sheet_by_path(root, "flows/Telemetry"), flow.parent)
+                self.assertIsNone(find_sheet_by_path(root, "flows/Signals"))
+                listed = json.loads(subprocess.check_output([*cli, "sheets"], text=True))
+                self.assertIn({"name": "Signals", "file": str(flow)}, listed)
+                self.assertIn({"name": "Primary", "file": str(root / "flow.py")}, listed)
+                result = subprocess.run([*cli, "run", "--sheet", "Main", "{}"],
+                                        capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(result.stdout), {"message": "Hello from Workspace"})

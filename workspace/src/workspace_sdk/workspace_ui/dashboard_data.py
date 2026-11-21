@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from ..dashboard import MAX_WORKSPACE_FRAME_SOURCES, PANEL_ID_PATTERN
 from ..evidence import checked_metrics
 from ..history import RunHistory
+from ..sheets import find_sheet_by_path
 
 
 RUN_FIELDS = ("status", "started_at", "finished_at", "duration_ms")
@@ -94,11 +95,9 @@ def read_live_dashboard(sheet, path: str) -> dict | None:
 
 def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
     available = {
-        sheet.root.relative_to(root).as_posix(): sheet
+        sheet.root: sheet
         for sheet in sheets
-        if sheet is not None and not sheet.closing and sheet.root.is_relative_to(root)
-        and (sheet.root / "flow.py").is_file() and not (sheet.root / "flow.py").is_symlink()
-        and sheet.root.resolve() == sheet.root
+        if sheet is not None and not sheet.closing
     }
     frame_steps = {}
     for source in sources:
@@ -110,7 +109,7 @@ def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
         reference = source["sheet"]
         result = {"id": source["id"], "sheet": reference, "state": "sheet_unavailable", "value": None}
         results.append(result)
-        sheet = available.get(reference)
+        sheet = available.get(find_sheet_by_path(root, reference))
         if sheet is None:
             continue
         result["sheet_name"] = sheet.title
