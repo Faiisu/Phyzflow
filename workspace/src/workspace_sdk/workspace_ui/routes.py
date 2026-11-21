@@ -15,7 +15,7 @@ from ..dashboard import (
     dashboard_panels,
     sheet_panel_catalog,
 )
-from ..dashboard_editor import send_dashboard_edit
+from ..dashboard_editor import SOURCE_ROUTE as DASHBOARD_SOURCE_ROUTE, send_dashboard_edit
 from ..execution import FlowBusy, sheet_lock
 from ..node_settings import parse_setting_defaults
 from ..node_sources import edit_source_file, node_files, node_settings_path, node_source_path
@@ -278,6 +278,32 @@ def workspace_dispatch(
                 return None
             sheet = sheets[index]
             return (sheet, int(route[2] or "0"), route[3]) if sheet is not None else None
+
+        def sheet_dashboard_source(self, sheet: FlowSheet, revision: int, scope: str) -> None:
+            if self.request.headers.get_content_type() != "application/json":
+                self.request.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            try:
+                data = self.request.read_json_dict()
+            except (ValueError, UnicodeError):
+                self.request.send_json({"error": "Send a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
+                return
+            with sheet.lock:
+                if sheet.closing or sheet.workspace_closing():
+                    self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Workspace is shutting down.")
+                    return
+                if revision != sheet.revision:
+                    self.request.send_error(HTTPStatus.CONFLICT, "The flow has been reloaded. Refresh its sheet.")
+                    return
+                if not sheet.worker_ready() or sheet.recovery_graph is None:
+                    self.request.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Open the flow first.")
+                    return
+                try:
+                    step_id = None if scope == "workflow" else sheet.recovery_graph["steps"][int(scope)]["id"]
+                except IndexError:
+                    self.request.send_json({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
+                    return
+                send_dashboard_edit(self.request, sheet.root, step_id, data, sheet_lease=sheet.edit_lease)
 
         def visualize_layout(self, index: int | None = None) -> None:
             sheet = sheets[index] if index is not None and index < len(sheets) else None
@@ -718,6 +744,9 @@ def workspace_dispatch(
                 return
             view = self.view_route()
             if view is not None and is_flow_view_route("POST", view[2]):
+                if dashboard := re.fullmatch(f"/{DASHBOARD_SOURCE_ROUTE}", view[2]):
+                    self.sheet_dashboard_source(view[0], view[1], dashboard[1])
+                    return
                 if interpreter is not None and view[2] == "/run":
                     self.run_sheet(view[0], view[1])
                     return
