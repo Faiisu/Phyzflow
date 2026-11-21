@@ -1142,6 +1142,106 @@ class ApplicationDashboardTests(unittest.TestCase):
                     "rgb(134, 199, 255)",
                 )
 
+    def test_sheet_dashboard_identity_matches_mcp_and_flow_editor(self):
+        with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
+            parent = Path(temp).resolve()
+            root = parent / "PanelCatalog"
+            other = root / "flows/Other"
+            state = parent / "state"
+            for sheet in (root, other):
+                copytree(LIVE_COUNTER, sheet, ignore=ignore_patterns(".workspace", "__pycache__", ".venv"))
+            node_id = "Multiply by Ten"
+            workflow = "dashboards/workflow"
+            node = f"dashboards/nodes/{node_id}"
+            for sheet, path, heading in (
+                (root, f"{workflow}/index.html", "Workflow overview"),
+                (root, f"{workflow}/panels/default/index.html", "Reserved workflow collision"),
+                (root, f"{workflow}/panels/shared/index.html", "Main workflow panel"),
+                (root, f"{node}/panels/default/index.html", "Reserved node collision"),
+                (root, f"{node}/panels/shared/index.html", "Main node panel"),
+                (root, "dashboards/nodes/%4Dultiply by Ten/panels/alias/index.html", "Noncanonical node"),
+                (other, f"{workflow}/panels/shared/index.html", "Other workflow panel"),
+            ):
+                asset = sheet / path
+                asset.parent.mkdir(parents=True, exist_ok=True)
+                asset.write_text(f"<h1>{heading}</h1>", encoding="utf-8")
+            incomplete = root / workflow / "panels/incomplete"
+            incomplete.mkdir()
+            (incomplete / "style.css").write_text("main { color: red; }", encoding="utf-8")
+            notes = root / workflow / "README.md"
+            notes.write_text("Dashboard notes", encoding="utf-8")
+
+            with application(state) as url:
+                sign_in(page, url, state)
+                added = page.request.post(
+                    f"{url}/workspaces", headers={"Origin": url}, data={"path": str(root), "action": "add"},
+                )
+                self.assertEqual(added.status, 201, added.text())
+                workspace_id = added.json()["id"]
+                token = issue_token(page, url, "Inspector", [workspace_id])
+                with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
+                    def inspect(sheet):
+                        return output(call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=sheet))
+
+                    main = inspect("Main")
+                    remote = inspect("Other")
+                    self.assertEqual([(p["id"], p["ready"]) for p in main["workflow"]], [
+                        ("default", True), ("incomplete", False), ("shared", True),
+                    ])
+                    self.assertEqual([group["step_id"] for group in main["nodes"]], [node_id])
+                    self.assertEqual([p["id"] for p in main["nodes"][0]["panels"]], ["default", "shared"])
+                    self.assertEqual(main["nodes"][0]["panels"][1]["assets"], [f"{node}/panels/shared/index.html"])
+                    self.assertEqual(remote["workflow"][1]["assets"], [f"{workflow}/panels/shared/index.html"])
+                    self.assertEqual((main["sheet_path"], remote["sheet_path"]), (".", "flows/Other"))
+
+                    workspace_url = f"{url}/workspaces/{workspace_id}"
+                    catalog_url = f"{workspace_url}/dashboard/panel-catalog"
+                    response = page.request.get(catalog_url)
+                    self.assertEqual(response.status, 200, response.text())
+                    catalog = response.json()["panels"]
+                    self.assertCountEqual(
+                        [(p["sheet"], p["sheet_name"], p["scope"], p["label"]) for p in catalog if p["id"] == "shared"],
+                        [(".", "Main", None, "shared"), (".", "Main", node_id, "shared"),
+                         ("flows/Other", "Other", None, "shared")],
+                    )
+                    self.assertFalse({"incomplete", "alias"} & {p["id"] for p in catalog})
+
+                    page.goto(f"{workspace_url}/")
+                    flow = page.frame_locator('iframe[title="Main flow"]')
+                    overview_button = flow.locator('[data-vis-node=""][data-vis-panel="default"]')
+                    expect(overview_button).to_have_count(1)
+                    expect(flow.locator('[data-vis-panel="incomplete"]')).to_have_count(0)
+
+                    for scope, region, heading in (
+                        ("", "Workflow dashboard · shared", "Main workflow panel"),
+                        (node_id, f"{node_id} dashboard · shared", "Main node panel"),
+                    ):
+                        flow.locator(f'[data-vis-node="{scope}"][data-vis-panel="shared"]').click()
+                        board = flow.get_by_role("region", name=region, exact=True)
+                        expect(board.frame_locator("iframe").get_by_role("heading", name=heading)).to_be_visible()
+
+                    overview_button.click()
+                    overview = flow.get_by_role("region", name="Workflow dashboard", exact=True)
+                    expect(overview.frame_locator("iframe").get_by_role("heading", name="Workflow overview")).to_be_visible()
+                    overview.get_by_role("button", name="Remove dashboard").click()
+                    flow.locator("#dashboard-editor").get_by_role("button", name="Remove dashboard", exact=True).click()
+                    expect(overview).to_have_count(0)
+                    expect(overview_button).to_have_count(0)
+                    self.assertEqual([panel["id"] for panel in inspect("Main")["workflow"]], ["incomplete", "shared"])
+                    self.assertFalse((root / workflow / "index.html").exists())
+                    self.assertTrue((root / workflow / "panels/default/index.html").is_file())
+                    self.assertTrue(notes.is_file())
+                    expect(flow.get_by_role("heading", name="Workflow dashboard · shared")).to_be_visible()
+                    self.assertFalse(any(p["sheet"] == "." and p["scope"] is None and p["id"] == "default"
+                                         for p in page.request.get(catalog_url).json()["panels"]))
+
+                    page.get_by_role("tab", name="Other").click()
+                    flow = page.frame_locator('iframe[title="Other flow"]')
+                    flow.locator('[data-vis-node=""][data-vis-panel="shared"]').click()
+                    expect(flow.frame_locator("#dashboard-preview iframe").get_by_role(
+                        "heading", name="Other workflow panel",
+                    )).to_be_visible()
+
     def test_live_counter_example_inspects_and_renders_with_injected_shared_theme(self):
         with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
             parent = Path(temp).resolve()

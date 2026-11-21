@@ -50,11 +50,30 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     workspace_format_notice(root)
     folder = root / "flows"
     flows = []
-    if folder.is_dir():
-        flows = [(sheet_name(path, path.name), path) for path in sorted(folder.iterdir()) if (path / "flow.py").is_file()]
-    if (root / "flow.py").is_file():
+    if folder.is_dir() and folder.resolve() == folder.absolute():
+        flows = [(sheet_name(path, path.name), path) for path in sorted(folder.iterdir()) if _is_sheet_directory(path)]
+    if _is_sheet_directory(root):
         flows.insert(0, (sheet_name(root, "Main"), root))
     return flows
+
+
+def _is_sheet_directory(path: Path) -> bool:
+    if not path.is_dir() or path.resolve() != path.absolute():
+        return False
+    entrypoint = path / "flow.py"
+    return not entrypoint.is_symlink() and entrypoint.is_file()
+
+
+def find_sheet_by_path(root: Path, relative: str | Path) -> Path | None:
+    if not relative or "\x00" in str(relative):
+        return None
+    relative = Path(relative)
+    if relative.anchor or ".." in relative.parts:
+        return None
+    path = root / relative
+    if (path == root or path.parent == root / "flows") and _is_sheet_directory(path):
+        return path
+    return None
 
 
 def find_sheet(root: Path, name: str) -> Path | None:
