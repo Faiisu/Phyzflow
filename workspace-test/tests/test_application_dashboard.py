@@ -1037,7 +1037,7 @@ class ApplicationDashboardTests(unittest.TestCase):
         from workspace_sdk.dashboard import DASHBOARD_THEME_REFERENCE
         from workspace_sdk.web import STATIC
 
-        theme_css = (STATIC / "dashboard-ui.js").read_text(encoding="utf-8")
+        theme_css = (STATIC / "dashboard-bridge.js").read_text(encoding="utf-8")
         for group in DASHBOARD_THEME_REFERENCE["tokens"].values():
             for token in group:
                 self.assertIn(token, theme_css)
