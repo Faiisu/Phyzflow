@@ -199,7 +199,8 @@ export function mountDashboardFrame(preview, assets, title, { subscribeOnly = fa
   const session = {
     signal,
     send(message) {
-      if (ready && !signal.aborted) frame.contentWindow?.postMessage(message, "*");
+      const settingResult = !subscribeOnly && message.type === "dashboard-setting-result";
+      if (!signal.aborted && (ready || settingResult)) frame.contentWindow?.postMessage(message, "*");
     },
     close() {
       controller.abort();
@@ -212,7 +213,7 @@ export function mountDashboardFrame(preview, assets, title, { subscribeOnly = fa
       if (ready) return;
       ready = true;
       onReady?.(session);
-    } else if (ready && !subscribeOnly) {
+    } else if (!subscribeOnly) {
       onMessage?.(event.data, session);
     }
   }, { signal });

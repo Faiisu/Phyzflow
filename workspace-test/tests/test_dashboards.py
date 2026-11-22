@@ -75,6 +75,117 @@ class DashboardTests(unittest.TestCase):
                 expect(page.get_by_role("region", name="Start dashboard")).to_have_count(0)
                 expect(page.locator("#status")).to_have_text("Succeeded")
 
+    def test_workflow_and_node_panels_keep_live_data_with_the_current_frame(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            (root / "flow.py").write_text(
+                "from pathlib import Path\n"
+                "from time import sleep\n"
+                "from workspace_sdk import Flow, NodeSetting, Output, Step, apply_node_settings, publish_metrics\n"
+                "limit = NodeSetting(2, minimum=1, maximum=8, live=True)\n"
+                "def prepare():\n"
+                "    publish_metrics('Progress', {'limit': 1})\n"
+                "    return 1\n"
+                "def work(prepared):\n"
+                "    while not Path('finish').exists():\n"
+                "        apply_node_settings()\n"
+                "        publish_metrics('Progress', {'limit': limit.get()})\n"
+                "        sleep(0.05)\n"
+                "    return prepared\n"
+                "flow = Flow((), (Step('Prepare', prepare, {}),\n"
+                "    Step('Work', work, {'prepared': Output('Prepare')}, settings={'Limit': limit})), Output('Work'))\n"
+            )
+            for folder in ("workflow", "nodes/Work"):
+                panel = root / "dashboards" / folder
+                panel.mkdir(parents=True)
+                (panel / "index.html").write_text("""
+                    <output id="snapshot"></output><output id="saved"></output>
+                    <output id="result">Waiting</output><output id="changes"></output>
+                    <output id="initial"></output>
+                    <button id="open">Open Work</button><button id="save">Save 3</button>
+                    <button id="apply">Apply 4</button>
+                """)
+                (panel / "dashboard.js").write_text("""
+                    const display = (id, text) => { document.querySelector(id).textContent = text; };
+                    workspaceDashboard.subscribe(snapshot => {
+                      const keys = Object.keys(snapshot.liveMetrics).sort().join(",");
+                      const limit = snapshot.liveMetrics.Work?.Progress?.limit;
+                      display("#snapshot", [snapshot.scope, snapshot.run?.status, keys, limit].join(" / "));
+                      display("#saved", snapshot.settings.Work?.Limit?.value ?? "");
+                      display("#changes", snapshot.settingChanges.map(change => change.status).join(","));
+                    });
+                    document.querySelector("#open").onclick = () => workspaceDashboard.openNode("Work");
+                    document.querySelector("#save").onclick = () => workspaceDashboard.setSetting("Work", "Limit", 3);
+                    document.querySelector("#apply").onclick = async () => {
+                      const result = await workspaceDashboard.setSetting("Work", "Limit", 4, "live");
+                      display("#result", result.status);
+                    };
+                    workspaceDashboard.setSetting("Work", "Limit", 99).then(result => {
+                      display("#initial", result.status);
+                    });
+                    window.addEventListener("message", event => {
+                      if (event.data?.type === "dashboard-setting-result" && event.data.result.status === "saved") {
+                        display("#result", "Unexpected save");
+                      }
+                    });
+                """)
+
+            pending = {}
+
+            def hold_initial_settings(route):
+                request = route.request
+                first_read = request.method == "GET" and "GET" not in pending
+                delayed_save = request.method == "POST" and request.post_data_json["value"] == 3
+                if first_read or delayed_save:
+                    response = route.fetch()
+                    pending[request.method] = (route, response)
+                    return
+                route.continue_()
+
+            with local_ui(root, single_flow=True) as (url, _):
+                page.route("**/dashboard-settings/workflow", hold_initial_settings)
+                page.goto(url)
+                page.get_by_role("button", name="Run flow", exact=True).click()
+                try:
+                    page.locator('[data-vis-node=""][data-vis-panel="default"]').click()
+                    workflow = page.get_by_role("region", name="Workflow dashboard")
+                    frame = workflow.frame_locator("iframe")
+                    expect(frame.locator("#snapshot")).to_have_text("workflow / running / Prepare,Work / 2")
+                    expect(frame.locator("#initial")).to_have_text("rejected")
+                    with page.expect_event(
+                        "requestfailed", predicate=lambda request: request.url.endswith("/dashboard-settings/workflow"),
+                        timeout=5000,
+                    ):
+                        workflow.get_by_role("button", name="Reload dashboard").click()
+                    expect(frame.locator("#snapshot")).to_have_text("workflow / running / Prepare,Work / 2")
+                    expect(frame.locator("#saved")).to_have_text("2")
+                    frame.get_by_role("button", name="Save 3").click()
+                    frame.get_by_role("button", name="Open Work").click()
+
+                    node = page.get_by_role("region", name="Work dashboard")
+                    frame = node.frame_locator("iframe")
+                    expect(frame.locator("#snapshot")).to_have_text("node / running / Work / 2")
+                    expect(frame.locator("#saved")).to_have_text("3")
+                    route, response = pending["POST"]
+                    self.assertEqual(response.json()["status"], "saved")
+                    with page.expect_response(lambda response: response.url.endswith("/dashboard-settings/1")):
+                        route.fulfill(response=response)
+                    expect(frame.locator("#saved")).to_have_text("3")
+                    expect(frame.locator("#result")).to_have_text("Waiting")
+                    frame.get_by_role("button", name="Apply 4").click()
+                    expect(frame.locator("#result")).to_have_text(re.compile(r"queued|applied"))
+                    expect(frame.locator("#changes")).to_have_text("applied")
+                    expect(frame.locator("#snapshot")).to_have_text("node / running / Work / 4")
+
+                    node.get_by_role("button", name="Close dashboard").click()
+                    expect(node).to_have_count(0)
+                    page.locator('[data-vis-node="Work"][data-vis-panel="default"]').click()
+                    expect(frame.locator("#snapshot")).to_have_text("node / running / Work / 4")
+                    expect(frame.locator("#result")).to_have_text("Waiting")
+                finally:
+                    (root / "finish").touch()
+                expect(frame.locator("#snapshot")).to_have_text("node / succeeded / Work / 4")
+
     def test_dashboard_moves_resizes_and_restores_from_full_screen(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp)
@@ -267,8 +378,7 @@ class DashboardTests(unittest.TestCase):
             page.route("https://outside.test/**", lambda route: route.fulfill(body="Network reached"))
             with local_ui(project, single_flow=True) as (url, _):
                 page.goto(url)
-                page.get_by_role("button", name="Inspect Start").click()
-                page.locator("#visualize-node").click()
+                page.locator('[data-vis-node="Start"][data-vis-panel="default"]').click()
                 frame = page.frame_locator("#dashboard-preview iframe")
                 expect(frame.locator("h1")).to_have_text("Original")
                 expect(frame.locator("h1")).to_have_css("color", "rgb(7, 8, 9)")
