@@ -9,7 +9,7 @@ from .file_paths import (
     mutate_files, open_file, relative_path, require_file, revision as file_revision, verify_revision,
 )
 from .file_transfers import CHUNK_BYTES, FileTransfers, publish_file
-from .upload_paths import UPLOAD_DIRECTORY, file_folder, file_name, folder_entries
+from .upload_paths import UPLOAD_DIRECTORY, create_upload_folder, file_folder, file_name, folder_entries
 
 PAGE_SIZE = 200
 
@@ -30,21 +30,20 @@ def register_file_tools(server, access, transfers: FileTransfers) -> None:
             "next_after": entries[PAGE_SIZE - 1]["name"] if len(entries) > PAGE_SIZE else None,
         }
 
-    @server.tool(description="Create a folder in Workspace Files under an existing Files folder.")
+    @server.tool(description="Create a new folder under an existing Workspace Files folder without overwriting. For a folder upload, create its directories from parent to child, then upload their files.")
     @file_errors
     def create_workspace_upload_folder(workspace_id: str, name: str, path: str = ".") -> dict:
         with access.file_gate:
             root = access.workspace(workspace_id)
             relative = relative_path(path, directory=True) / file_name(name)
             ensure_not_protected(root / UPLOAD_DIRECTORY / relative, access.protected_folders)
-            folder = file_folder(root, path, create=True)
             try:
-                (folder / name).mkdir(mode=0o700)
+                create_upload_folder(root, path, name)
             except FileExistsError:
                 raise ValueError("A file or folder with this name already exists.") from None
         return {"path": relative.as_posix()}
 
-    @server.tool(description="Begin an upload to Workspace Files using a Files-relative path. Use write_workspace_chunk and finish_workspace_transfer. Existing files are preserved.")
+    @server.tool(description="Begin uploading one file to Workspace Files using a Files-relative path. Create parent folders first with create_workspace_upload_folder. Use write_workspace_chunk and finish_workspace_transfer. Existing files are preserved.")
     @file_errors
     def begin_workspace_upload(workspace_id: str, path: str, size: int, sha256: str) -> dict:
         return transfers.begin(workspace_id, path, "upload", "missing", size, sha256, upload_area=True)

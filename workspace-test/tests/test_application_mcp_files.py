@@ -116,7 +116,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
 
             competing = self.ok(call, "begin_workspace_upload", **granted, path=f"{folder}/competing.bin",
                                 size=0, sha256=sha256(b"").hexdigest())["transfer_id"]
-            dialog.locator('input[type="file"]').set_input_files({
+            dialog.locator("#workspace-file-input").set_input_files({
                 "name": "competing.bin", "mimeType": "application/octet-stream", "buffer": b"browser upload",
             })
             expect(dialog.get_by_text("competing.bin", exact=True)).to_be_visible()
@@ -135,6 +135,56 @@ class ApplicationMcpFilesTests(unittest.TestCase):
             self.failed(call, "list_workspace_uploads", "Workspace access denied", **granted)
             self.failed(call, "finish_workspace_transfer", "Workspace access denied", transfer_id=pending)
             self.assertFalse((saved.parent / "pending.bin").exists())
+
+    def test_streaming_client_uploads_nested_and_empty_folders(self):
+        with installed_workspace() as (parent, _, root, workspace_id, url, token, call, revoke):
+            source = parent / "Local folder"
+            (source / "nested/empty").mkdir(parents=True)
+            content = bytes(range(256)) * 2049
+            (source / "nested/capture.bin").write_bytes(content)
+            collection = "Incoming"
+            self.ok(call, "create_workspace_upload_folder", workspace_id=workspace_id, name=collection)
+            destination = f"{collection}/Transferred"
+            command = [
+                sys.executable, "-m", "workspace_sdk.application_mcp.file_client",
+                "--url", url, "--workspace-id", workspace_id, "upload", "--uploads", str(source),
+            ]
+
+            def upload(path):
+                return subprocess.run(
+                    [*command, path], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token},
+                    capture_output=True, text=True, timeout=25,
+                )
+
+            uploaded = upload(destination)
+            self.assertEqual(uploaded.returncode, 0, uploaded.stderr)
+            self.assertEqual(json.loads(uploaded.stdout), {"path": destination, "folders": 3, "files": 1})
+            saved = root / ".workspace/files" / destination
+            self.assertEqual((saved / "nested/capture.bin").read_bytes(), content)
+            self.assertTrue((saved / "nested/empty").is_dir())
+            listing = self.ok(call, "list_workspace_uploads", workspace_id=workspace_id, path=f"{destination}/nested")
+            self.assertEqual({entry["name"] for entry in listing["entries"]}, {"capture.bin", "empty"})
+
+            (source / "new.txt").write_text("Do not merge")
+            duplicate = upload(destination)
+            self.assertNotEqual(duplicate.returncode, 0)
+            self.assertIn("already exists", duplicate.stderr)
+            self.assertFalse((saved / "new.txt").exists())
+
+            if sys.platform != "win32":
+                link = source / "linked"
+                link.symlink_to(parent, target_is_directory=True)
+                rejected = upload(f"{collection}/Unsafe")
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("Symbolic links", rejected.stderr)
+                self.assertFalse((saved.parent / "Unsafe").exists())
+                link.unlink()
+
+            revoke()
+            denied = upload(f"{collection}/Denied")
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("Workspace access denied", denied.stderr)
+            self.assertFalse((saved.parent / "Denied").exists())
 
     def test_installed_file_operations_and_sheet_leases(self):
         with installed_workspace() as (_, _, root, workspace_id, _, _, call, _):

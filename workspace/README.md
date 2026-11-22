@@ -62,6 +62,16 @@ python -m workspace_sdk.application_mcp.file_client --url http://127.0.0.1:18080
 
 Upload is create-only by default. Use `--revision REVISION` to replace a known version. Use `--session SHEET_PATH=SESSION_ID` when the affected Sheet is locked. Downloads create a new local file and verify size and SHA-256 before publishing it.
 
+In **Files**, use **Choose folder** to upload a folder tree into the current folder, or drop a folder onto the current listing or a listed folder. Use drag and drop to include empty folders since the browser folder picker returns a list of files.
+
+To upload a folder tree, including empty folders, into **Files** with the MCP client:
+
+```sh
+python -m workspace_sdk.application_mcp.file_client --url http://127.0.0.1:18080 --workspace-id WORKSPACE_ID upload --uploads ./samples samples
+```
+
+The destination is the new folder's path relative to **Files**. Its parent must already exist. The client creates each directory with `create_workspace_upload_folder` and streams each file with `begin_workspace_upload`. An existing destination is preserved. If an upload stops midway, completed entries remain visible in **Files**.
+
 Clients using tools directly call `begin_workspace_transfer` with `workspace_id`, `path`, and `direction` (`upload` or `download`). Uploads also provide `revision`, `size`, and a lowercase hexadecimal `sha256`. Pass the returned `transfer_id` to `write_workspace_chunk` with `offset` and Base64 `data`, or to `read_workspace_chunk` with `offset` and an optional byte `count`. Continue at the returned `next_offset`. Retry the last chunk at the same offset after a lost response. Call `finish_workspace_transfer` once all bytes have been transferred, passing `session_ids` for locked upload targets. It returns the verified digest, byte size, and revision. Repeat finalization with the same transfer ID if its response was lost. Use `cancel_workspace_transfer` to discard a pending transfer.
 
 Each chunk carries up to 512 KiB of file bytes. The server stages the upload on the destination filesystem and reserves 256 MiB of free disk space. Available space and the filesystem determine the maximum file size. A 1 GiB file uses 2,048 chunk calls in each direction. A token can have one upload and one download active, with up to 32 active transfers per installation. Transfers expire after 15 minutes of inactivity. Restarting the server discards pending transfers. Each call checks the current Workspace grant and the server checks the destination revision again at upload commit.

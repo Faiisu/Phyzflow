@@ -30,6 +30,12 @@ def file_name(name: object) -> str:
     return name
 
 
+def create_upload_folder(root: Path, path: str, name: str) -> None:
+    folder = file_folder(root, path, create=True)
+    assert folder is not None
+    (folder / name).mkdir(mode=0o700)
+
+
 def folder_entries(folder: Path | None) -> list[dict]:
     if folder is None:
         return []

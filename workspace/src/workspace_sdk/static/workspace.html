@@ -61,9 +61,11 @@
       <ul id="workspace-files-list" aria-label="Folder contents"></ul>
       <p id="workspace-files-empty" hidden>This folder is empty.</p>
       <div class="workspace-files-drop-hint">
-        <p>Drop files here or on a folder</p>
+        <p>Drop files or folders here or on a folder</p>
         <button type="button" id="choose-workspace-files" class="secondary-action" disabled>Choose files</button>
+        <button type="button" id="choose-workspace-folder" class="secondary-action" disabled>Choose folder</button>
         <input type="file" id="workspace-file-input" multiple hidden>
+        <input type="file" id="workspace-folder-input" webkitdirectory hidden>
       </div>
     </div>
     <form id="workspace-folder-form">

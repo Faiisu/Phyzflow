@@ -14,10 +14,11 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 
-from .file_paths import atomic_move
+from .file_paths import atomic_move, open_file, path_info, relative_path
+from .upload_paths import file_name
 
 
-async def call_tool(client: Client, name: str, *, retry: bool = False, **arguments) -> dict:
+async def call_tool(client: Client, name: str, /, *, retry: bool = False, **arguments) -> dict:
     try:
         result = await client.call_tool(name, arguments)
     except (MCPError, httpx2.RequestError):
@@ -29,12 +30,12 @@ async def call_tool(client: Client, name: str, *, retry: bool = False, **argumen
     return result.structured_content if result.structured_content is not None else json.loads(result.content[0].text)
 
 
-async def upload(client: Client, args) -> dict:
-    with args.local_path.open("rb") as stream:
+async def upload_file(client: Client, args, local_path: Path, remote_path: str, info=None) -> dict:
+    with (local_path.open("rb") if info is None else open_file(local_path, info)) as stream:
         size = os.fstat(stream.fileno()).st_size
         checksum = file_digest(stream, "sha256").hexdigest()
         stream.seek(0)
-        start_arguments = {"workspace_id": args.workspace_id, "path": args.remote_path, "size": size, "sha256": checksum}
+        start_arguments = {"workspace_id": args.workspace_id, "path": remote_path, "size": size, "sha256": checksum}
         if args.uploads:
             started = await call_tool(client, "begin_workspace_upload", **start_arguments)
         else:
@@ -65,6 +66,40 @@ async def upload(client: Client, args) -> dict:
             if not finished:
                 with suppress(ValueError, MCPError, httpx2.RequestError):
                     await call_tool(client, "cancel_workspace_transfer", transfer_id=identity)
+
+
+async def upload(client: Client, args) -> dict:
+    if not args.local_path.is_dir():
+        return await upload_file(client, args, args.local_path, args.remote_path)
+    if not args.uploads:
+        raise ValueError("Use upload --uploads to send a folder to Workspace Files.")
+
+    destination = relative_path(args.remote_path)
+    file_name(destination.name)
+    pending = [(args.local_path, destination)]
+    plan = []
+    while pending:
+        local_path, remote_path = pending.pop()
+        kind, info = path_info(local_path)
+        if info is None:
+            raise FileNotFoundError("An upload source is no longer available.")
+        plan.append((local_path, remote_path, info if kind == "file" else None))
+        if kind == "directory":
+            children = sorted(local_path.iterdir(), reverse=True)
+            pending.extend((child, remote_path / file_name(child.name)) for child in children)
+
+    folders = files = 0
+    for local_path, remote_path, info in plan:
+        if info is None:
+            await call_tool(
+                client, "create_workspace_upload_folder", workspace_id=args.workspace_id,
+                path=remote_path.parent.as_posix(), name=remote_path.name,
+            )
+            folders += 1
+        else:
+            await upload_file(client, args, local_path, remote_path.as_posix(), info)
+            files += 1
+    return {"path": destination.as_posix(), "folders": folders, "files": files}
 
 
 async def download(client: Client, args) -> dict:
@@ -128,14 +163,14 @@ def session_argument(value: str) -> tuple[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Stream a local file over Phyzflow MCP.")
+    parser = argparse.ArgumentParser(description="Transfer files and upload folders over Phyzflow MCP.")
     parser.add_argument("--url", required=True, help="Phyzflow base URL.")
     parser.add_argument("--workspace-id", required=True)
     commands = parser.add_subparsers(required=True)
     put = commands.add_parser("upload")
     put.add_argument("local_path", type=Path)
     put.add_argument("remote_path")
-    put.add_argument("--uploads", action="store_true", help="Upload to Workspace Files using a Files-relative path.")
+    put.add_argument("--uploads", action="store_true", help="Upload a file or folder to a new path in Workspace Files.")
     put.add_argument("--revision", default="missing")
     put.add_argument("--session", type=session_argument, action="append", default=[])
     put.set_defaults(operation=upload)

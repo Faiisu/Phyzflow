@@ -7,7 +7,7 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import parse_qs
 
 from ..application_mcp.file_paths import STAGING_PREFIX, atomic_move
-from ..application_mcp.upload_paths import file_folder, file_name, folder_entries
+from ..application_mcp.upload_paths import create_upload_folder, file_folder, file_name, folder_entries
 from ..web import UIRequestHandler
 
 
@@ -60,11 +60,12 @@ def send_workspace_files(request: UIRequestHandler, root: Path, route: str, quer
             name = file_name(name)
         with lock:
             available()
-            folder = file_folder(root, path, create=request.command == "POST")
             if route == "/files/folders":
-                (folder / name).mkdir(mode=0o700)
+                create_upload_folder(root, path, name)
             elif route == "/files":
-                entries = folder_entries(folder)
+                entries = folder_entries(file_folder(root, path))
+            else:
+                folder = file_folder(root, path, create=True)
 
         if request.command == "GET":
             request.send_json({"entries": entries})

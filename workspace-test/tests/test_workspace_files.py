@@ -54,7 +54,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 saved = root / ".workspace/files/Input & samples/capture #1.bin"
                 self.assertEqual(saved.read_bytes(), content)
 
-                picker = dialog.locator('input[type="file"]')
+                picker = dialog.locator("#workspace-file-input")
                 picker.set_input_files({"name": saved.name, "mimeType": "application/octet-stream", "buffer": b"duplicate"})
                 expect(dialog.get_by_role("alert")).to_contain_text("already exists")
                 self.assertEqual(saved.read_bytes(), content)
@@ -74,6 +74,48 @@ class WorkspaceFilesTests(unittest.TestCase):
                 dialog.get_by_role("button", name="Input & samples", exact=True).click()
                 expect(dialog.get_by_text("capture #1.bin", exact=True)).to_be_visible()
                 self.assertEqual(saved.read_bytes(), content)
+
+    def test_folder_picker_and_drop_keep_the_directory_tree_without_merging_duplicates(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state, root = parent / "state", parent / "Example"
+            selected = parent / "Flight data"
+            (selected / "raw").mkdir(parents=True)
+            (selected / "raw/capture.bin").write_bytes(b"\x00\xff")
+            (selected / "notes.txt").write_text("Original")
+            with application(state) as url:
+                create_workspace(page, url, state, root).click()
+                page.get_by_role("button", name="Files", exact=True).click()
+                dialog = page.get_by_role("dialog", name="Workspace files")
+                with page.expect_file_chooser() as chooser:
+                    dialog.get_by_role("button", name="Choose folder").click()
+                chooser.value.set_files(selected)
+                expect(dialog.get_by_role("status")).to_have_text("2 folders and 2 files uploaded.")
+                saved = root / ".workspace/files/Flight data"
+                self.assertEqual((saved / "raw/capture.bin").read_bytes(), b"\x00\xff")
+                self.assertEqual((saved / "notes.txt").read_text(), "Original")
+
+                (selected / "new.txt").write_text("Collision")
+                dialog.locator("#workspace-folder-input").set_input_files(selected)
+                expect(dialog.get_by_role("alert")).to_contain_text("already exists")
+                self.assertFalse((saved / "new.txt").exists())
+
+                dropped = parent / "Dropped"
+                (dropped / "empty").mkdir(parents=True)
+                (dropped / "capture.txt").write_text("data")
+                target = dialog.get_by_role("button", name=selected.name, exact=True)
+                expect(target).to_be_enabled()
+                box = target.bounding_box()
+                self.assertIsNotNone(box)
+                devtools = page.context.new_cdp_session(page)
+                for event in ("dragEnter", "dragOver", "drop"):
+                    devtools.send("Input.dispatchDragEvent", {
+                        "type": event, "x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2,
+                        "data": {"items": [], "files": [str(dropped)], "dragOperationsMask": 1},
+                    })
+                expect(dialog.get_by_role("status")).to_have_text("2 folders and 1 file uploaded.")
+                self.assertTrue((saved / "Dropped/empty").is_dir())
+                self.assertEqual((saved / "Dropped/capture.txt").read_text(), "data")
 
     def test_standalone_workspace_rejects_unsafe_and_interrupted_uploads(self):
         with TemporaryDirectory() as temp, browser_page() as page:

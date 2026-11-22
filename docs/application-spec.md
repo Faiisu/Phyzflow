@@ -16,7 +16,7 @@ If work remains running after the stop attempt, keep the Workspace registered an
 
 Use Python 3.12 and a `.venv` directory at the Workspace root. Create it with uv if it is missing. If an added folder already has a working Python 3.12 `.venv`, reuse it. If it is broken or uses a different Python version, show the detected problem and leave the directory intact so the user can repair or move it before trying again.
 
-**WS-04.** Open **Files** from the Workspace toolbar to browse the dedicated file area at `.workspace/files/` on the host. Create folders and upload files by dropping them into the current folder or onto a listed folder. The file picker uploads to the current folder. Show completed uploads in the file listing and preserve existing entries when an upload uses a duplicate name.
+**WS-04.** Open **Files** from the Workspace toolbar to browse the dedicated file area at `.workspace/files/` on the host. Create folders and upload files or folder trees by dropping them into the current folder or onto a listed folder. The file and folder pickers upload to the current folder. Preserve nested paths and any empty folders reported by the browser. Show completed uploads in the file listing and preserve existing entries when an upload uses a duplicate name.
 
 ```mermaid
 flowchart TD
@@ -60,7 +60,7 @@ Opening a sheet and saving Python source keep the graph and editors available. R
 
 **MCP-05.** Transfer files as opaque bytes in MCP chunks. Limit each chunk to 512 KiB decoded and determine upload capacity from the destination filesystem and available disk space. Publish an upload only after verifying its size, SHA-256, destination revision, and permissions. Provide a streaming client and reclaim staged files on cancellation, idle expiry, and service restart.
 
-**MCP-06.** A client with a Workspace grant can list the dedicated Files area with `list_workspace_uploads`, create folders with `create_workspace_upload_folder`, and start a no-overwrite upload with `begin_workspace_upload`. Paths are relative to Files. Use the existing transfer commands for chunks, completion, and cancellation. The streaming client supports this destination with `upload --uploads`. The general project file commands continue to protect `.workspace/`.
+**MCP-06.** A client with a Workspace grant can list the dedicated Files area with `list_workspace_uploads`, create folders with `create_workspace_upload_folder`, and start a no-overwrite upload with `begin_workspace_upload`. Paths are relative to Files. Use the existing transfer commands for chunks, completion, and cancellation. The streaming client supports uploading files and folder trees, including empty folders, to this destination with `upload --uploads`. The general project file commands continue to protect `.workspace/`.
 
 **EDIT-01.** Opening a sheet for editing acquires an exclusive editing lock for that sheet. While the lock is held, other authorized users can open the sheet in read-only mode. Editing through the UI or MCP is exclusive, and other sheets can be opened and edited independently.
 
@@ -186,6 +186,7 @@ These scenarios describe observable expectations for release acceptance.
 | MCP-03 | Grant and revoke a Workspace permission in the web app. Verify that the MCP identity gains access after the grant and that its next request is denied after revocation. |
 | MCP-04, MCP-05 | Use an authenticated remote MCP client to round-trip a large binary file and verify SHA-256. Exercise file revisions, project dotfiles, cross-Sheet moves, Trash recovery, interrupted transfers, revocation, and protected paths. |
 | MCP-06, WS-04 | Use a granted MCP token to create a folder and upload a binary file, then verify that the same file appears in the browser Files listing and preserves its bytes. Verify duplicate rejection, grant revocation, and protection of paths outside Files. |
+| MCP-06, WS-04 | Upload a nested folder through the browser picker and drop a folder containing an empty directory onto a listed folder. Upload a folder tree with the MCP streaming client, then verify its paths and file contents with the Files listing. Verify that a duplicate destination is preserved and a revoked grant blocks the upload. |
 | AUTH-01 | Install two independent instances. Verify that each has one `admin` account and a distinct initial password. Verify that an incorrect password is rejected and that the correct password still works after reboot. Sign in to issue an MCP token scoped to a Workspace. |
 | EDIT-01 | Open a sheet for editing. Verify that another authorized user can view it read-only and cannot edit it through the UI or MCP. Verify that the other user can edit a different unlocked sheet. |
 | EDIT-02 | Finish an MCP editing operation, then repeat with a failure and a cancellation. Verify that its processes close cleanly and that the lock is released when the sheet closes. Verify that a run handed off to the Workspace follows the Workspace lifecycle. |
