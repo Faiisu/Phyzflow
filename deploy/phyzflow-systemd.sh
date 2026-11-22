@@ -67,7 +67,15 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-systemd-analyze verify "$unit_dir/$unit"
+if systemd-analyze --help | grep -q -- '--recursive-errors'; then
+    set -- --recursive-errors=no
+fi
+verify_log="$unit_dir/verify.log"
+if ! systemd-analyze "$@" verify "$unit_dir/$unit" > "$verify_log" 2>&1; then
+    cat "$verify_log" >&2
+    exit 1
+fi
+grep -F -- "$unit" "$verify_log" >&2 || :
 sudo install -m 0644 "$unit_dir/$unit" "/etc/systemd/system/$unit"
 sudo systemctl daemon-reload
 sudo systemctl restart "$unit"
