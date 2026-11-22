@@ -146,18 +146,50 @@ function openPanel(placement) {
 
   function followPlacement(session) {
     const { signal } = session;
-    let timer;
+    let timer = null;
     let snapshot;
-    signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+    let lastFingerprint = null;
+    let unchangedStreak = 0;
+    let inFlight = false;
+    function clearTimer() {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+    function onVisibilityChange() {
+      if (signal.aborted) return;
+      if (document.hidden) {
+        clearTimer();
+      } else if (!inFlight && timer === null) {
+        unchangedStreak = 0;
+        void poll();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    signal.addEventListener("abort", () => {
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }, { once: true });
     async function poll() {
+      if (signal.aborted || document.hidden || inFlight) return;
+      inFlight = true;
       try {
         const data = await fetchJSON(`placement-assets/${placement.id}/data`, "Could not load dashboard data.", { signal });
         if (signal.aborted) return;
+        const fp = `${data?.mode ?? ""}:${data?.run?.id ?? ""}:${data?.run?.status ?? ""}:${data?.timestamp ?? ""}`;
+        if (data?.mode !== "live" && fp === lastFingerprint) {
+          unchangedStreak += 1;
+        } else {
+          unchangedStreak = 0;
+          lastFingerprint = fp;
+        }
         snapshot = data;
         message.textContent = "";
         session.send({ type: "dashboard-data", snapshot });
       } catch (error) {
         if (signal.aborted) return;
+        unchangedStreak = 0;
         message.textContent = error.message;
         if (error.status === 404) {
           panel.placement = { ...panel.placement, available: false };
@@ -169,8 +201,13 @@ function openPanel(placement) {
             ...snapshot, run: null, timestamp: null, liveFrames: {}, liveMetrics: {},
           } });
         }
+      } finally {
+        inFlight = false;
       }
-      timer = setTimeout(poll, 500);
+      if (!signal.aborted && !document.hidden) {
+        const delay = snapshot?.mode === "live" || unchangedStreak < 8 ? 500 : 1500;
+        timer = setTimeout(poll, delay);
+      }
     }
     void poll();
   }
@@ -309,7 +346,9 @@ async function refreshPanels(change) {
       if (panel) panel.update(placement);
       else if (!closed.has(placement.id)) openPanel(placement);
     }
-    catalog = (await fetchJSON("panel-catalog", "Could not list source panels.")).panels;
+    catalog = Array.isArray(result.catalog)
+      ? result.catalog
+      : (await fetchJSON("panel-catalog", "Could not list source panels.")).panels;
   } catch (error) {
     errorMessage = error.message;
   } finally {

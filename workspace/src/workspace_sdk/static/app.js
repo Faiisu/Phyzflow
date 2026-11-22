@@ -108,13 +108,18 @@ compactPanelLayout.addEventListener("change", syncPanelLayout);
 
 
 try {
-  const [response, consoleResponse] = await Promise.all([
-    fetch("project"),
-    recoveryView ? null : fetch("console-logs").catch(() => null),
-  ]);
+  const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
-  const consoleData = consoleResponse?.ok ? await consoleResponse.json().catch(() => null) : null;
+  let consoleData = null;
+  if (!recoveryView) {
+    if (project.console_logs !== undefined) {
+      consoleData = project.console_logs;
+    } else {
+      const consoleResponse = await fetch("console-logs").catch(() => null);
+      consoleData = consoleResponse?.ok ? await consoleResponse.json().catch(() => null) : null;
+    }
+  }
   run.loadConsole(consoleData);
   editor.loadProject(project);
   const { canvasLayout } = graph;

@@ -171,27 +171,28 @@ class FrontendSyncOptimizationTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             (root / "flow.py").write_text(SIMPLE_FLOW, encoding="utf-8")
-            panels_dir = root / "dashboards" / "workspace" / "panels"
+            panels_dir = root / "dashboards" / "workflow" / "panels"
             for name in ("alpha", "beta"):
                 panel = panels_dir / name
                 panel.mkdir(parents=True)
                 (panel / "index.html").write_text(f"<h1>{name}</h1><output></output>", encoding="utf-8")
                 (panel / "bridge.json").write_text(
-                    json.dumps({
-                        "versions": [1],
-                        "sources": [{"id": "status", "sheet": ".", "mode": "latest", "field": "status"}],
-                    }),
-                    encoding="utf-8",
-                )
-                (panel / "dashboard.js").write_text(
-                    'workspaceDashboard.subscribe(({sources}) => {\n'
-                    '  document.querySelector("output").textContent = sources[0].state;\n'
-                    '});\n',
+                    json.dumps({"versions": [1]}),
                     encoding="utf-8",
                 )
             with local_ui(root) as (url, _):
+                post_status, _, post_raw = http_post(
+                    f"{url}/dashboard/placements",
+                    {"action": "add", "sheet": ".", "scope": None, "id": "alpha"},
+                )
+                self.assertEqual(post_status, 200)
+                post_payload = json.loads(post_raw)
+                self.assertEqual(len(post_payload["placements"]), 1)
+                self.assertEqual({item["id"] for item in post_payload["catalog"]}, {"alpha", "beta"})
+                placement_id = post_payload["placements"][0]["id"]
+
                 status, headers, raw = http_get(
-                    f"{url}/workspace-dashboard/data?panels=alpha,beta,missing-panel",
+                    f"{url}/dashboard/placement-assets/{placement_id}/data",
                     {"Accept-Encoding": "gzip"},
                 )
                 self.assertEqual(status, 200)
@@ -200,13 +201,11 @@ class FrontendSyncOptimizationTests(unittest.TestCase):
                 payload = json.loads(
                     gzip.decompress(raw) if headers.get("Content-Encoding") == "gzip" else raw
                 )
-                self.assertEqual(payload["scope"], "workspace")
-                self.assertFalse(payload["live_active"])
-                self.assertEqual(set(payload["panels"]), {"alpha", "beta"})
-                self.assertIn("missing-panel", payload["errors"])
+                self.assertEqual(payload["scope"], "workflow")
+                self.assertEqual(payload["panelId"], "alpha")
 
                 status_304, _, empty = http_get(
-                    f"{url}/workspace-dashboard/data?panels=alpha,beta,missing-panel",
+                    f"{url}/dashboard/placement-assets/{placement_id}/data",
                     {"If-None-Match": etag},
                 )
                 self.assertEqual(status_304, 304)
@@ -245,11 +244,16 @@ class FrontendSyncOptimizationTests(unittest.TestCase):
                 page.on("response", lambda resp: responses.append((resp.url, resp.status)))
                 page.goto(url)
                 first_view = page.frame_locator('iframe[title="Main flow"]')
-                expect(first_view.get_by_role("button", name="Inspect Ping")).to_be_visible()
+                expect(first_view.get_by_role("button", name="Inspect Ping")).to_be_visible(timeout=15_000)
 
                 page.get_by_role("tab", name="Second").click()
                 second_view = page.frame_locator('iframe[title="Second flow"]')
-                expect(second_view.get_by_role("button", name="Inspect Work")).to_be_visible()
+                expect(second_view.get_by_role("button", name="Inspect Work")).to_be_visible(timeout=15_000)
+                expect(second_view.locator('[data-vis-node=""][data-vis-panel="beta"]')).to_be_visible()
+                initial_console_calls = [entry for entry in responses if "/console-logs" in entry[0]]
+                initial_panel_calls = [entry for entry in responses if "/dashboard-panels" in entry[0]]
+                self.assertEqual(initial_console_calls, [])
+                self.assertEqual(initial_panel_calls, [])
 
                 page.wait_for_timeout(400)
                 responses.clear()
@@ -269,6 +273,8 @@ class FrontendSyncOptimizationTests(unittest.TestCase):
                 board = dialog.frame_locator('iframe[title="Workspace Dashboard"]')
                 expect(board.frame_locator('iframe[title="Second · Workflow · Overview"]').locator("output")).to_have_text("idle")
                 expect(board.frame_locator('iframe[title="Second · Workflow · beta"]').locator("output")).to_have_text("idle")
+                catalog_calls = [entry for entry in responses if "/dashboard/panel-catalog" in entry[0]]
+                self.assertEqual(catalog_calls, [])
 
                 page.wait_for_timeout(300)
                 responses.clear()

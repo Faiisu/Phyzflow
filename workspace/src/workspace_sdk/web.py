@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .console import ConsoleLogStore, capture_console
 from .dashboard import (
-    ASSET_ROUTE, DASHBOARD_BRIDGE_VERSION, MAX_WORKSPACE_FRAME_SOURCES, PANELS_ROUTE, SETTINGS_ROUTE,
+    ASSET_ROUTE, DASHBOARD_BRIDGE_VERSION, PANELS_ROUTE, SETTINGS_ROUTE,
     dashboard_assets, dashboard_panels,
 )
 from .dashboard_editor import SOURCE_ROUTE as DASHBOARD_SOURCE_ROUTE, send_dashboard_edit
@@ -52,7 +52,7 @@ FLOW_VIEW_ASSETS = {
 FLOW_VIEW_ASSET_PATTERN = "|".join(re.escape(path) for path in FLOW_VIEW_ASSETS if path != "/")
 FLOW_VIEW_SUBPATH_PATTERN = (
     rf"({FLOW_VIEW_ASSET_PATTERN}|/(?:project|"
-    rf"dashboard-(?:panels|settings)/(?:workflow|[0-9]{{1,8}})|{DASHBOARD_SOURCE_ROUTE}|"
+    rf"dashboard-panels(?:/(?:workflow|[0-9]{{1,8}}))?|dashboard-settings/(?:workflow|[0-9]{{1,8}})|{DASHBOARD_SOURCE_ROUTE}|"
     r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
     r"live-run(?:\?[A-Za-z0-9_=&-]+)?|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|console-logs(?:/[0-9a-f]{32})?|run)?)"
 )
@@ -333,25 +333,6 @@ class LiveRunBuffer:
                     if key[1] == "live_frame":
                         del self._live_events[key]
 
-    def dashboard_live(self) -> dict | None:
-        with self._lock:
-            started = self._live_events.get((None, "running")) if self._run_status == "running" else None
-            if started is None:
-                return None
-            run = started[1]
-            metrics, metric_times = {}, {}
-            for (step, _), (_, event) in self._live_events.items():
-                if event.get("run_id") == run["run_id"] and "live_metrics" in event:
-                    metrics.setdefault(step, {}).update(event["live_metrics"])
-                    metric_times.setdefault(step, {}).update(dict.fromkeys(event["live_metrics"], event["time"]))
-            return {
-                "id": run["run_id"],
-                "status": "running",
-                "started_at": run["time"],
-                "metrics": metrics,
-                "metric_times": metric_times,
-            }
-
     def _saved_console_fingerprint(self) -> str:
         try:
             today = self._console_logs.current_date().isoformat()
@@ -570,28 +551,20 @@ def serve(
         def scoped_steps(self, scope):
             return steps if scope == "workflow" else (steps[int(scope)],)
 
-        def dashboard_live_frames(self, query: str) -> None:
+        def all_dashboard_panels(self) -> dict[str, list[dict]]:
+            return {
+                "workflow": dashboard_panels(root, None),
+                **{str(index): dashboard_panels(root, step.id) for index, step in enumerate(steps)},
+            }
+
+        def initial_console_logs(self) -> dict | None:
             try:
-                parameters = parse_qs(query, strict_parsing=True, max_num_fields=MAX_WORKSPACE_FRAME_SOURCES)
-                frame_steps = parameters["step"]
-                if parameters.keys() != {"step"} or any(len(step) > 512 for step in frame_steps):
-                    raise ValueError
-            except (KeyError, ValueError):
-                self.send_json({"error": "Invalid live dashboard frame selection."}, HTTPStatus.BAD_REQUEST)
-                return
-            data = None
-            with live_buffer._lock:
-                started = live_buffer._live_events.get((None, "running")) if live_buffer._run_status == "running" else None
-                if started is not None:
-                    run = started[1]
-                    frames = {}
-                    for step in frame_steps:
-                        entry = live_buffer._live_events.get((step, "live_frame"))
-                        if entry is not None and entry[1]["run_id"] == run["run_id"]:
-                            event = entry[1]
-                            frames[step] = {"jpeg": event["live_frame"], "time": event["time"]}
-                    data = {"id": run["run_id"], "started_at": run["time"], "frames": frames}
-            self.send_json(data)
+                current_settings = console_logs.settings()
+                events = console_logs.read_run(None)
+            except (OSError, ValueError):
+                return None
+            resolved = events[0]["run_id"] if events else None
+            return {"settings": current_settings, "run_id": resolved, "events": events}
 
         def dashboard_live_placement(self, query: str) -> None:
             try:
@@ -659,15 +632,15 @@ def serve(
                 self.send_json({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
                     "zoom": zoom, "edit_running_source": run_token is not None, "edit_lock": edit_lock,
+                    "dashboard_panels": self.all_dashboard_panels(),
+                    "console_logs": self.initial_console_logs(),
                 })
             elif self.path == "/status":
                 self.send_json({"status": "running" if sheet_busy(root) else live_buffer.status()})
-            elif self.path == "/dashboard-live":
-                self.send_json(live_buffer.dashboard_live())
             elif self.path.partition("?")[0] == "/dashboard-live-placement":
                 self.dashboard_live_placement(self.path.partition("?")[2])
-            elif self.path.startswith("/dashboard-live-frames?"):
-                self.dashboard_live_frames(self.path.partition("?")[2])
+            elif self.path == "/dashboard-panels":
+                self.send_json({"scopes": self.all_dashboard_panels()})
             elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):
                 scope = match[1]
                 try:

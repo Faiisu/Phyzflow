@@ -103,9 +103,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       scope: null,
       panelId: "default",
       panelLabel: "",
-      runVersion: 0,
-      savedRun: null,
-      following: true,
       settings: {},
       opener: null,
     };
@@ -126,7 +123,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
 
     panel.sendSnapshot = function sendSnapshot() {
       if (!frameSession) return;
-      const run = panel.following ? liveRun : panel.savedRun;
       const inScope = id => panel.scope === null || id === panel.scope;
       frameSession.send({
         type: "dashboard-data",
@@ -134,17 +130,17 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
           scope: panel.scope === null ? "workflow" : "node",
           nodeId: panel.scope,
           panelId: panel.panelId,
-          mode: panel.following ? "live" : "saved",
+          mode: "live",
           graph: graph.filter(node => inScope(node.id)),
-          run: run && {
-            ...pick(run, runFields),
-            steps: run.steps.filter(node => inScope(node.id)).map(node => pick(node, nodeFields)),
+          run: liveRun && {
+            ...pick(liveRun, runFields),
+            steps: liveRun.steps.filter(node => inScope(node.id)).map(node => pick(node, nodeFields)),
           },
-          previews: panel.following ? Object.fromEntries([...previews].filter(([id]) => inScope(id))) : {},
-          liveFrames: panel.following ? Object.fromEntries([...frames].filter(([id]) => inScope(id))) : {},
-          liveMetrics: panel.following ? Object.fromEntries([...metrics].filter(([id]) => inScope(id))) : {},
+          previews: Object.fromEntries([...previews].filter(([id]) => inScope(id))),
+          liveFrames: Object.fromEntries([...frames].filter(([id]) => inScope(id))),
+          liveMetrics: Object.fromEntries([...metrics].filter(([id]) => inScope(id))),
           settings: panel.settings,
-          settingChanges: panel.following ? [...settingChanges.values()].filter(change => inScope(change.nodeId)) : [],
+          settingChanges: [...settingChanges.values()].filter(change => inScope(change.nodeId)),
         },
       });
     };
@@ -187,7 +183,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     async function changeSetting(data, session) {
       const { id, nodeId, name, mode, value } = data;
       if (!Number.isSafeInteger(id)) return;
-      const runId = mode === "live" && panel.following ? liveRun?.id : null;
+      const runId = mode === "live" ? liveRun?.id : null;
       let result;
       try {
         result = await fetchJSON(`dashboard-settings/${scopeKey(panel.scope)}`, "Could not change this setting.", {
@@ -230,9 +226,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       panel.scope = nodeId;
       panel.panelId = panelId;
       panel.panelLabel = panelLabel;
-      panel.runVersion++;
-      panel.savedRun = null;
-      panel.following = true;
       panel.settings = {};
       updateHeading();
       if (element.hidden) panel.opener = document.activeElement;
@@ -247,7 +240,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       if (element.hidden && !activePanels.has(panel)) return;
       releaseBoard(element, layoutKey(panel.scope, panel.panelId));
       if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
-      panel.runVersion++;
       closeFrame();
       activePanels.delete(panel);
       if (panel.isPrimary) {
@@ -339,21 +331,12 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     return panel;
   }
 
-  async function refreshVisualizeList() {
+  function renderVisualizeScopes(scopeMap) {
     const list = document.querySelector("#visualize-list");
     if (!list) return;
-    const version = ++listVersion;
-    const results = await Promise.allSettled(
-      scopes.map(async item => {
-        const path = `dashboard-panels/${item.key}`;
-        const data = await fetchJSON(path, "Could not list panels.");
-        return { ...item, panels: data.panels ?? [] };
-      }),
-    );
-    if (version !== listVersion) return;
-    const groups = results
-      .filter(res => res.status === "fulfilled" && res.value.panels.length > 0)
-      .map(res => res.value);
+    const groups = scopes
+      .map(item => ({ ...item, panels: Array.isArray(scopeMap?.[item.key]) ? scopeMap[item.key] : [] }))
+      .filter(group => group.panels.length > 0);
 
     availablePanels = groups.flatMap(group =>
       group.panels.map(entry => ({ nodeId: group.nodeId, panelId: entry.id, label: entry.label })),
@@ -406,6 +389,30 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
     list.replaceChildren(fragment);
     syncVisualizeDrawer();
+  }
+
+  async function refreshVisualizeList() {
+    const list = document.querySelector("#visualize-list");
+    if (!list) return;
+    const version = ++listVersion;
+    try {
+      const data = await fetchJSON("dashboard-panels", "Could not list panels.");
+      if (version !== listVersion) return;
+      renderVisualizeScopes(data?.scopes ?? {});
+    } catch {
+      const results = await Promise.allSettled(
+        scopes.map(async item => {
+          const path = `dashboard-panels/${item.key}`;
+          const data = await fetchJSON(path, "Could not list panels.");
+          return [item.key, data.panels ?? []];
+        }),
+      );
+      if (version !== listVersion) return;
+      const fallbackMap = Object.fromEntries(
+        results.filter(res => res.status === "fulfilled").map(res => res.value),
+      );
+      renderVisualizeScopes(fallbackMap);
+    }
   }
 
   async function open(nodeId, panelId = null) {
@@ -479,7 +486,11 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       if (!visualizeDrawer.hidden) refreshVisualizeList();
     };
     new MutationObserver(refreshVisibleDrawer).observe(visualizeDrawer, { attributeFilter: ["hidden"] });
-    refreshVisibleDrawer();
+    if (project.dashboard_panels && typeof project.dashboard_panels === "object") {
+      renderVisualizeScopes(project.dashboard_panels);
+    } else {
+      refreshVisibleDrawer();
+    }
   }
   document.querySelector("#visualize-refresh")?.addEventListener("click", () => {
     refreshVisualizeList();
@@ -514,7 +525,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
         liveRun.status = "failed";
         frames.clear();
         for (const panel of activePanels) {
-          if (panel.following) panel.sendSnapshot();
+          panel.sendSnapshot();
         }
       }
       return;
@@ -526,10 +537,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       frames.clear();
       metrics.clear();
       settingChanges.clear();
-      for (const panel of activePanels) {
-        panel.runVersion++;
-        panel.following = true;
-      }
     } else if (liveRun?.id === event.run_id) {
       if (id === undefined) {
         liveRun.status = status;
@@ -557,7 +564,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       }
     }
     for (const panel of activePanels) {
-      if (panel.following) panel.sendSnapshot();
+      panel.sendSnapshot();
     }
   }
 

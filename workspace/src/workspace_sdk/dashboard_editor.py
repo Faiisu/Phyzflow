@@ -19,8 +19,8 @@ STARTER_HTML = """<main class="reading">
 """
 STARTER_JS = """const status = document.querySelector('[role="status"]');
 
-workspaceDashboard.subscribe(({run, sources}) => {
-  status.textContent = sources?.[0]?.value ?? run?.status ?? "Waiting for data…";
+workspaceDashboard.subscribe(({run}) => {
+  status.textContent = run?.status ?? "Waiting for data…";
 });
 """
 
@@ -30,13 +30,11 @@ def _check_path(path: Path, *, directory: bool = False) -> None:
         raise PermissionError
 
 
-def _create_panel(directory: Path, *, workspace: bool) -> None:
+def _create_panel(directory: Path) -> None:
     if directory.exists():
         raise FileExistsError
     directory.parent.mkdir(parents=True, exist_ok=True)
     declaration = {"versions": [DASHBOARD_BRIDGE_VERSION]}
-    if workspace:
-        declaration["sources"] = [{"id": "main-status", "sheet": ".", "field": "status", "mode": "live"}]
     with TemporaryDirectory(dir=directory.parent.parent, prefix=".dashboard-create-") as temp:
         staged = Path(temp) / "panel"
         staged.mkdir()
@@ -72,18 +70,18 @@ def _remove_panel(directory: Path) -> None:
         directory.rmdir()
 
 
-def _edit(root: Path, step_id: str | None, data: dict, *, workspace: bool) -> dict:
+def _edit(root: Path, step_id: str | None, data: dict) -> dict:
     action = data.get("action")
     panel_id = data.get("panel")
     if not isinstance(panel_id, str) or not panel_id:
         raise ValueError("Send a dashboard panel identifier.")
-    directory = dashboard_directory(root.resolve(), step_id, panel_id, workspace=workspace)
+    directory = dashboard_directory(root.resolve(), step_id, panel_id)
     with _edit_lock:
         _check_path(directory, directory=True)
         if action == "create":
             if panel_id == "default" or not panel_id.strip("._-"):
                 raise ValueError("Use a panel name containing letters or numbers other than default.")
-            _create_panel(directory, workspace=workspace)
+            _create_panel(directory)
             return {}
         if action == "remove":
             _remove_panel(directory)
@@ -104,11 +102,11 @@ def _edit(root: Path, step_id: str | None, data: dict, *, workspace: bool) -> di
 
 def send_dashboard_edit(
     request, root: Path, step_id: str | None, data: dict, *,
-    workspace: bool = False, sheet_lease: SheetEditLease | None = None,
+    sheet_lease: SheetEditLease | None = None,
 ) -> None:
     def perform():
         try:
-            return _edit(root, step_id, data, workspace=workspace)
+            return _edit(root, step_id, data)
         except PermissionError:
             raise ValueError("Choose a dashboard panel and regular source files inside its folder.") from None
         except FileExistsError:

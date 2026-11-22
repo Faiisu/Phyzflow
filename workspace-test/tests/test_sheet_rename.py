@@ -54,13 +54,18 @@ def measure():
 
 flow = Flow((), (Step("Measure", measure, {}),), Output("Measure"))
 ''', encoding="utf-8")
-                panel = root / "dashboards" / "workspace"
+                panel = flow.parent / "dashboards" / "workflow"
                 panel.mkdir(parents=True)
                 (panel / "index.html").write_text("<h1>Telemetry</h1>", encoding="utf-8")
-                (panel / "bridge.json").write_text(json.dumps({"versions": [1], "sources": [
-                    {"id": "latest", "sheet": "flows/Telemetry", "field": "status"},
-                ]}), encoding="utf-8")
+                (panel / "bridge.json").write_text(json.dumps({"versions": [1]}), encoding="utf-8")
                 workspace = f"{url}/workspaces/{workspace_id}"
+                placement_res = page.request.post(
+                    f"{workspace}/dashboard/placements",
+                    headers={"Origin": url},
+                    data={"action": "add", "sheet": "flows/Telemetry", "scope": None, "id": "default"},
+                )
+                self.assertEqual(placement_res.status, 200)
+                placement_id = placement_res.json()["placements"][0]["id"]
                 page.goto(f"{workspace}/")
                 page.get_by_role("tab", name="Telemetry", exact=True).click()
                 frame = page.locator('iframe[title="Telemetry flow"]')
@@ -98,8 +103,8 @@ flow = Flow((), (Step("Measure", measure, {}),), Output("Measure"))
                 result = subprocess.run([*cli, "run", "--sheet", "Live Telemetry", "{}"],
                                         capture_output=True, text=True, check=True)
                 self.assertEqual(json.loads(result.stdout), 42)
-                sources = page.request.get(f"{workspace}/workspace-dashboard/default/data").json()["sources"]
-                self.assertEqual((sources[0]["sheet_name"], sources[0]["value"], sources[0]["run_id"]),
+                snapshot = page.request.get(f"{workspace}/dashboard/placement-assets/{placement_id}/data").json()
+                self.assertEqual((snapshot["sheetName"], snapshot["run"]["status"], snapshot["run"]["id"]),
                                  ("Live Telemetry", "succeeded", run_id))
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:

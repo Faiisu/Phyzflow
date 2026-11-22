@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import unquote
 
 from ..dashboard import (
     DASHBOARD_BRIDGE_VERSION,
@@ -40,7 +40,7 @@ from ..web import (
     UIRequestHandler,
     is_flow_view_route,
 )
-from .dashboard_data import dashboard_snapshot, dashboard_sources, placement_snapshot, workspace_dashboard_batch
+from .dashboard_data import placement_snapshot
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
 
@@ -51,8 +51,6 @@ RECOVERY_NODE_FILES = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_FILES_R
 RECOVERY_NODE_SOURCE = re.compile(rf"/flows/([0-9]{{1,8}})/recovery/{NODE_SOURCE_ROUTE}")
 FLOW_SOURCE_PATH = re.compile(r"/flows/([0-9]{1,8})/source(?:\?(files|path=([^&]+)))?")
 EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
-WORKSPACE_DASHBOARD_PATH = re.compile(r"/workspace-dashboard/([A-Za-z0-9._-]+)(/data)?")
-WORKSPACE_DASHBOARD_BATCH_PATH = "/workspace-dashboard/data"
 WORKSPACE_VISUALIZE_LAYOUT = "/dashboard/visualize-layout"
 WORKSPACE_PLACEMENTS = "/dashboard/placements"
 PLACEMENT_ASSET_PATH = re.compile(r"/dashboard/placement-assets/([0-9a-f]{32})(/data)?")
@@ -120,53 +118,6 @@ def workspace_dispatch(
             self.request = request
             self.path = path
 
-        def workspace_dashboard(self, panel_id: str, data: bool) -> None:
-            try:
-                assets = dashboard_assets(root, None, panel_id, workspace=True, manifest_only=data)
-                sources = dashboard_sources(assets.get("bridge.json", "{}"))
-                result = (dashboard_snapshot(root, discovered_sheets(), sources) if data
-                          else {"bridge_version": DASHBOARD_BRIDGE_VERSION, "scope": "workspace", **assets})
-            except FileNotFoundError:
-                self.request.send_json({"error": "Workspace dashboard not found."}, HTTPStatus.NOT_FOUND)
-            except PermissionError:
-                self.request.send_json({"error": "Workspace dashboard files must be inside the dashboard folder."},
-                                       HTTPStatus.FORBIDDEN)
-            except (OSError, RuntimeError, ValueError, RecursionError) as error:
-                message = str(error) if isinstance(error, ValueError) else "Could not load the Workspace dashboard."
-                self.request.send_json({"error": message}, HTTPStatus.BAD_REQUEST)
-            else:
-                if data:
-                    self.request.send_conditional_json(result)
-                else:
-                    self.request.send_json(result)
-
-        def workspace_dashboard_batch_data(self, query: str) -> None:
-            params = parse_qs(query, keep_blank_values=False)
-            if set(params) != {"panels"}:
-                self.request.send_json({"error": "Specify dashboard panels to read."}, HTTPStatus.BAD_REQUEST)
-                return
-            raw_panels = [part.strip() for item in params["panels"] for part in item.split(",") if part.strip()]
-            panel_ids = list(dict.fromkeys(raw_panels))
-            if not panel_ids or len(panel_ids) > 64 or any(PANEL_ID_PATTERN.fullmatch(panel_id) is None for panel_id in panel_ids):
-                self.request.send_json({"error": "Use valid dashboard panel IDs."}, HTTPStatus.BAD_REQUEST)
-                return
-            panel_sources: dict[str, list[dict]] = {}
-            panel_errors: dict[str, str] = {}
-            for panel_id in panel_ids:
-                try:
-                    assets = dashboard_assets(root, None, panel_id, workspace=True, manifest_only=True)
-                    panel_sources[panel_id] = dashboard_sources(assets.get("bridge.json", "{}"))
-                except FileNotFoundError:
-                    panel_errors[panel_id] = "Workspace dashboard not found."
-                except PermissionError:
-                    panel_errors[panel_id] = "Workspace dashboard files must be inside the dashboard folder."
-                except (OSError, RuntimeError, ValueError, RecursionError) as error:
-                    panel_errors[panel_id] = (
-                        str(error) if isinstance(error, ValueError) else "Could not load the Workspace dashboard."
-                    )
-            result = workspace_dashboard_batch(root, discovered_sheets(), panel_sources, panel_errors)
-            self.request.send_conditional_json(result)
-
         def workspace_placements(self) -> None:
             if dashboard_state is None or is_closing():
                 self.request.send_json({"error": "This Workspace is unavailable."}, HTTPStatus.NOT_FOUND)
@@ -215,6 +166,9 @@ def workspace_dispatch(
                     )
                     placement.update(sheet_name=sheet.title if sheet is not None else placement["sheet"],
                                      sheet_index=index, available=available, label=dashboard_panel_label(panel_id))
+                sources = discover_flows(root)
+                node_ids = {path: current[path][1].dashboard_step_ids() for _, path in sources if path in current}
+                catalog = sheet_panel_catalog(root, sources, node_ids)
             except FileNotFoundError:
                 self.request.send_json({"error": "Source panel unavailable in this Workspace."}, HTTPStatus.NOT_FOUND)
             except (ValueError, UnicodeError, RecursionError):
@@ -222,7 +176,7 @@ def workspace_dispatch(
             except (OSError, sqlite3.Error, RuntimeError):
                 self.request.send_json({"error": "Could not access dashboard placements."}, HTTPStatus.INTERNAL_SERVER_ERROR)
             else:
-                self.request.send_json({"placements": placements})
+                self.request.send_json({"placements": placements, "catalog": catalog})
 
         def workspace_placement(self, placement_id: str, data: bool) -> None:
             try:
@@ -250,7 +204,10 @@ def workspace_dispatch(
             except (OSError, sqlite3.Error, RuntimeError, KeyError, TypeError):
                 self.request.send_json({"error": "Could not load the source panel."}, HTTPStatus.INTERNAL_SERVER_ERROR)
             else:
-                self.request.send_json(result)
+                if data:
+                    self.request.send_conditional_json(result)
+                else:
+                    self.request.send_json(result)
 
         def create_sheet(self) -> None:
             try:
@@ -659,7 +616,6 @@ def workspace_dispatch(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
-            parsed = urlsplit(self.path)
             if self.path == WORKSPACE_VISUALIZE_LAYOUT:
                 self.visualize_layout()
                 return
@@ -674,15 +630,6 @@ def workspace_dispatch(
                 current = dashboard_sheets()
                 node_ids = {path: current[path][1].dashboard_step_ids() for _, path in sources if path in current}
                 self.request.send_json({"panels": sheet_panel_catalog(root, sources, node_ids)})
-                return
-            if self.path == "/workspace-dashboard":
-                self.request.send_json({"panels": dashboard_panels(root, None, workspace=True)})
-                return
-            if parsed.path == WORKSPACE_DASHBOARD_BATCH_PATH and parsed.query:
-                self.workspace_dashboard_batch_data(parsed.query)
-                return
-            if dashboard := WORKSPACE_DASHBOARD_PATH.fullmatch(self.path):
-                self.workspace_dashboard(dashboard[1], dashboard[2] is not None)
                 return
             if layout := VISUALIZE_LAYOUT_PATH.fullmatch(self.path):
                 self.visualize_layout(int(layout[1]))
@@ -727,9 +674,10 @@ def workspace_dispatch(
                         flows.append(None)
                         continue
                     status = sheet.status()
+                    changed = None if status in ("running", "opening", "stopping") else sheet.changed_source(status)
                     entry = {
                         "name": sheet.title, "status": status, "deletable": can_delete_sheet(root, sheet.root),
-                        "revision": sheet.revision, "changed_source": sheet.changed_source(status),
+                        "revision": sheet.revision, "changed_source": changed,
                         "edit_lock": sheet.edit_lock_status(viewer_sessions),
                         "recoverable": sheet.recovery_graph is not None,
                     }
@@ -761,17 +709,6 @@ def workspace_dispatch(
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
-                return
-            if self.path == "/dashboard-source":
-                if self.request.headers.get_content_type() != "application/json":
-                    self.request.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
-                    return
-                try:
-                    data = self.request.read_json_dict()
-                except (ValueError, UnicodeError):
-                    self.request.send_json({"error": "Send a JSON object up to 1 MiB."}, HTTPStatus.BAD_REQUEST)
-                    return
-                send_dashboard_edit(self.request, root, None, data, workspace=True)
                 return
             if self.path == WORKSPACE_PLACEMENTS:
                 self.workspace_placements()
