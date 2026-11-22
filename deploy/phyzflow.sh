@@ -14,5 +14,6 @@ if [ ! -x "$python" ]; then
     uv venv --allow-existing --python 3.12 "$venv_dir"
 fi
 
+rm -rf "$repo_dir/workspace/build"
 uv pip install --python "$python" --reinstall-package workspace-sdk "$repo_dir/workspace[mcp]"
 exec "$venv_dir/bin/workspace" app "$@"

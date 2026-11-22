@@ -16,6 +16,7 @@ if not exist "%PYTHON%" (
     if errorlevel 1 exit /b 1
 )
 
+if exist "%REPO_DIR%\workspace\build" rmdir /s /q "%REPO_DIR%\workspace\build"
 uv.exe pip install --python "%PYTHON%" --reinstall-package workspace-sdk "%REPO_DIR%\workspace[mcp]"
 if errorlevel 1 exit /b 1
 
