@@ -370,6 +370,12 @@ class FlowSheet:
                     raise RuntimeError("Could not open the flow worker.")
             sleep(0.02)
 
+    def dashboard_step_ids(self) -> set[str] | None:
+        if self.recovery_graph is not None:
+            return {step["id"] for step in self.recovery_graph["steps"]}
+        steps = declared_graph(self.root, {"flow.py"}, require_export=True)
+        return {step["id"] for step in steps} if steps else None
+
     def source_graph(self) -> dict:
         files = sorted(editable_sheet_python_files(self.root, main=self.main))
         paths = [path.relative_to(self.root) for path in files]

@@ -242,12 +242,12 @@ def serve(
                             frames[step] = f"data:image/jpeg;base64,{event['live_frame']}"
                         elif "live_metrics" in event:
                             metrics.setdefault(step, {}).update(event["live_metrics"])
-                        elif kind in ("running", "succeeded", "failed", "skipped"):
+                        elif kind in ("running", "succeeded", "failed", "stopped", "skipped"):
                             entry = nodes.setdefault(step, {"id": step})
                             entry["status"] = kind
                             if kind == "running":
                                 entry["started_at"] = event["time"]
-                            else:
+                            elif kind != "skipped":
                                 entry["finished_at"] = event["time"]
                             entry.update({field: event[field] for field in ("duration_ms", "metrics") if field in event})
                     data = {

@@ -68,6 +68,79 @@ def write_panel(folder, version=None):
 
 
 class WorkspaceDashboardTests(unittest.TestCase):
+    def test_live_placement_distinguishes_stopped_and_skipped_steps(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            state, root = parent / "state", parent / "workspace"
+            with application(state) as url:
+                workspace = create_workspace(page, url, state, root)
+                (root / "flow.py").write_text("""from pathlib import Path
+from time import monotonic, sleep
+
+from workspace_sdk import Flow, Output, Step
+
+root = Path(__file__).parent
+
+
+def unused():
+    yield 1
+
+
+def closing():
+    try:
+        yield 2
+    finally:
+        (root / "closing").touch()
+        deadline = monotonic() + 20
+        while monotonic() < deadline and not (root / "release").exists():
+            sleep(.02)
+
+
+def fail():
+    raise ValueError("private-failure")
+
+
+flow = Flow((), (
+    Step("Unused", unused, {}, track_generator=True),
+    Step("Closing", closing, {}, track_generator=True),
+    Step("Failed", fail, {}),
+    Step("Skipped", lambda value: value, {"value": Output("Failed")}),
+    Step("Consume", lambda iterator: next(iterator), {"iterator": Output("Closing")}),
+), Output("Consume"))
+""", encoding="utf-8")
+                write_panel(root / "dashboards/workflow")
+                workspace.click()
+                workspace_url = page.url.rstrip("/")
+                response = page.request.post(
+                    f"{workspace_url}/dashboard/placements", headers={"Origin": url},
+                    data={"action": "add", "sheet": ".", "scope": None, "id": "default"},
+                )
+                self.assertTrue(response.ok, response.text())
+                placement_id = response.json()["placements"][0]["id"]
+                data_url = f"{workspace_url}/dashboard/placement-assets/{placement_id}/data"
+
+                def snapshot():
+                    response = page.request.get(data_url)
+                    self.assertTrue(response.ok, response.text())
+                    self.assertNotIn("private-failure", response.text())
+                    return response.json()
+
+                page.get_by_role("button", name="Run flow", exact=True).click()
+                try:
+                    wait_for(lambda: (root / "closing").is_file())
+                    data = snapshot()
+                    self.assertEqual(data["mode"], "live")
+                    steps = {step["id"]: step for step in data["run"]["steps"]}
+                    self.assertEqual(steps["Skipped"], {"id": "Skipped", "status": "skipped"})
+                    self.assertEqual(steps["Unused"]["status"], "stopped")
+                    self.assertTrue(steps["Unused"]["finished_at"])
+                finally:
+                    (root / "release").touch()
+                wait_for(lambda: snapshot()["mode"] == "saved")
+                saved = {step["id"]: step for step in snapshot()["run"]["steps"]}
+                self.assertEqual(saved["Skipped"], {**steps["Skipped"], "metrics": {}})
+                self.assertEqual(saved["Unused"], {**steps["Unused"], "metrics": {}})
+
     def test_workspace_placements_follow_unopened_sheets_and_show_saved_runs(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             parent = Path(temp).resolve()
@@ -170,6 +243,20 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 self.assertEqual(list(node["liveFrames"]), ["Live Camera"])
                 self.assertEqual(active[first_path]["liveFrames"]["Other Camera"], images[2])
                 expect(page.locator('iframe[title$="Camera flow"]')).to_have_count(0)
+
+                renamed = page.request.post(
+                    f"{workspace_url}/flows/2/rename", headers={"Origin": url}, data={"name": "Renamed Camera"},
+                )
+                self.assertTrue(renamed.ok, renamed.text())
+                board.get_by_text("Panels", exact=True).click()
+                board.get_by_role("button", name="Refresh", exact=True).click()
+                titles = (titles[0], "Renamed Camera · Live Camera · Overview", titles[2])
+                last = region(titles[1]).frame_locator("iframe")
+                expect(last.locator("img")).to_have_attribute("src", images[1])
+                assert_renamed = snapshot(second_path)
+                self.assertEqual(assert_renamed["sheetName"], "Renamed Camera")
+                self.assertEqual(assert_renamed["run"]["id"], node["run"]["id"])
+                board.get_by_text("Panels", exact=True).click()
 
                 self.assertEqual(command("flows/2/stop").status, 200)
                 expect(last.locator("img")).to_be_hidden()

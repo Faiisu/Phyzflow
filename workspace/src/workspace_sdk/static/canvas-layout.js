@@ -24,6 +24,7 @@ export function createCanvasLayout({
   layoutSize,
   cancelWheelZoom,
   persistInitialBounds = false,
+  sharedLayout = /^\/workspaces\/[a-f0-9]{32}\/flows\//.test(location.pathname),
 }) {
   const savedCanvasLayouts = new Map();
   const savedVisualizeLayouts = new Map();
@@ -31,7 +32,6 @@ export function createCanvasLayout({
   const pendingBounds = new Map();
   const layoutStatus = document.querySelector("#visualize-layout-status");
   const retryLayout = layoutStatus.querySelector("button");
-  const sharedLayout = /^\/workspaces\/[a-f0-9]{32}\/(?:flows\/|dashboard\/$)/.test(location.pathname);
   let layoutLoad = sharedLayout ? "unloaded" : "ready";
   let layoutSave = "idle";
   let fitted = false;

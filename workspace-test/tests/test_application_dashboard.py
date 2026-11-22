@@ -1130,6 +1130,9 @@ class ApplicationDashboardTests(unittest.TestCase):
                 (root, f"{node}/panels/default/index.html", "Reserved node collision"),
                 (root, f"{node}/panels/shared/index.html", "Main node panel"),
                 (root, "dashboards/nodes/%4Dultiply by Ten/panels/alias/index.html", "Noncanonical node"),
+                (root, "dashboards/nodes/Retired/panels/retired/index.html", "Retired node panel"),
+                (other, "dashboards/nodes/Built at runtime/panels/dynamic/index.html", "Dynamic flow node panel"),
+                (other, f"{node}/panels/replaced/index.html", "Node replaced at runtime"),
                 (other, f"{workflow}/panels/shared/index.html", "Other workflow panel"),
             ):
                 asset = sheet / path
@@ -1140,6 +1143,14 @@ class ApplicationDashboardTests(unittest.TestCase):
             (incomplete / "style.css").write_text("main { color: red; }", encoding="utf-8")
             notes = root / workflow / "README.md"
             notes.write_text("Dashboard notes", encoding="utf-8")
+            other_flow = other / "flow.py"
+            other_flow.write_text(
+                other_flow.read_text(encoding="utf-8").replace("flow = Flow(", "template = Flow(")
+                + '\nfrom dataclasses import replace\n\nflow = replace(\n'
+                + '    template, steps=(Step("Built at runtime", lambda: 1, {}),),\n'
+                + '    output=Output("Built at runtime"),\n)\n',
+                encoding="utf-8",
+            )
 
             with application(state) as url:
                 sign_in(page, url, state)
@@ -1158,7 +1169,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                     self.assertEqual([(p["id"], p["ready"]) for p in main["workflow"]], [
                         ("default", True), ("incomplete", False), ("shared", True),
                     ])
-                    self.assertEqual([group["step_id"] for group in main["nodes"]], [node_id])
+                    self.assertEqual([group["step_id"] for group in main["nodes"]], [node_id, "Retired"])
                     self.assertEqual([p["id"] for p in main["nodes"][0]["panels"]], ["default", "shared"])
                     self.assertEqual(main["nodes"][0]["panels"][1]["assets"], [f"{node}/panels/shared/index.html"])
                     self.assertEqual(remote["workflow"][1]["assets"], [f"{workflow}/panels/shared/index.html"])
@@ -1174,10 +1185,19 @@ class ApplicationDashboardTests(unittest.TestCase):
                         [(".", "Main", None, "shared"), (".", "Main", node_id, "shared"),
                          ("flows/Other", "Other", None, "shared")],
                     )
-                    self.assertFalse({"incomplete", "alias"} & {p["id"] for p in catalog})
+                    self.assertFalse({"incomplete", "alias", "retired"} & {p["id"] for p in catalog})
+                    self.assertTrue(any(p["id"] == "dynamic" for p in catalog))
+                    self.assertFalse(any(
+                        flow["worker_ready"] for flow in page.request.get(f"{workspace_url}/workspace").json()["flows"]
+                    ))
+                    self.assertEqual(page.request.post(
+                        f"{workspace_url}/dashboard/placements", headers={"Origin": url},
+                        data={"action": "add", "sheet": ".", "scope": "Retired", "id": "retired"},
+                    ).status, 404)
 
                     page.goto(f"{workspace_url}/")
                     flow = page.frame_locator('iframe[title="Main flow"]')
+                    expect(flow.get_by_role("button", name=f"Inspect {node_id}")).to_be_visible(timeout=20_000)
                     overview_button = flow.locator('[data-vis-node=""][data-vis-panel="default"]')
                     expect(overview_button).to_have_count(1)
                     expect(flow.locator('[data-vis-panel="incomplete"]')).to_have_count(0)
@@ -1204,6 +1224,12 @@ class ApplicationDashboardTests(unittest.TestCase):
                     expect(flow.get_by_role("heading", name="Workflow dashboard · shared")).to_be_visible()
                     self.assertFalse(any(p["sheet"] == "." and p["scope"] is None and p["id"] == "default"
                                          for p in page.request.get(catalog_url).json()["panels"]))
+                    page.get_by_role("tab", name="Other", exact=True).click()
+                    other_editor = page.frame_locator('iframe[title="Other flow"]')
+                    expect(other_editor.get_by_role("button", name="Inspect Built at runtime")).to_be_visible(timeout=20_000)
+                    catalog = page.request.get(catalog_url).json()["panels"]
+                    self.assertTrue(any(p["id"] == "dynamic" for p in catalog))
+                    self.assertFalse(any(p["id"] == "replaced" for p in catalog))
 
                     page.get_by_role("tab", name="Other").click()
                     flow = page.frame_locator('iframe[title="Other flow"]')

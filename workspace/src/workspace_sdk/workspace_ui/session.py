@@ -34,6 +34,7 @@ def workspace_routes(
     interpreter: Path | None = None,
     workspace_id: str | None = None,
     run_state: RunStateStore | None = None,
+    dashboard_state: RunStateStore | None = None,
     app_closing: Callable[[], bool] = lambda: False,
 ):
     def make_sheet(title: str, path: Path) -> FlowSheet:
@@ -257,6 +258,7 @@ def workspace_routes(
         run_all_sheets=run_all_sheets,
         workspace_id=workspace_id,
         run_state=run_state,
+        dashboard_state=dashboard_state or run_state,
     )
 
     def close(*, delete: bool = False) -> None:

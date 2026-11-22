@@ -138,7 +138,7 @@ def editable_sheet_python_files(root: Path, *, main: bool) -> Iterator[Path]:
             yield path
 
 
-def declared_graph(root: Path, files: set[str]) -> list[dict]:
+def declared_graph(root: Path, files: set[str], *, require_export: bool = False) -> list[dict]:
     if "flow.py" not in files:
         return []
     try:
@@ -153,9 +153,14 @@ def declared_graph(root: Path, files: set[str]) -> list[dict]:
                 imports[alias.asname or alias.name] = next(
                     (file for file in (f"{path}.py", f"{path}/__init__.py") if file in files), "flow.py",
                 )
-    flow = next((node for node in ast.walk(module)
-                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Flow"), None)
-    if flow is None:
+    if require_export:
+        flow_names = [node for node in ast.walk(module) if isinstance(node, ast.Name) and node.id == "flow"]
+        flow = next((node.value for node in module.body if isinstance(node, ast.Assign)
+                     and node.targets == flow_names), None)
+    else:
+        flow = next((node for node in ast.walk(module) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id == "Flow"), None)
+    if not isinstance(flow, ast.Call) or not isinstance(flow.func, ast.Name) or flow.func.id != "Flow":
         return []
     steps = next((item.value for item in flow.keywords if item.arg == "steps"),
                  flow.args[1] if len(flow.args) > 1 else None)
