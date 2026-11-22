@@ -1,4 +1,4 @@
-import { createDashboardFrame, fetchJSON } from "./dashboard-bridge.js";
+import { fetchJSON, mountDashboardFrame } from "./dashboard-bridge.js";
 import { initDashboardEditor } from "./dashboard-editor.js";
 
 const primaryBoard = document.querySelector("#dashboard");
@@ -94,6 +94,8 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     const reload = element.querySelector('[data-dash="reload"]');
     const fullscreen = element.querySelector('[data-dash="fullscreen"]');
     const closeBtn = element.querySelector('[data-dash="close"]');
+    let loading;
+    let frameSession;
 
     const panel = {
       element,
@@ -101,9 +103,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       scope: null,
       panelId: "default",
       panelLabel: "",
-      frame: null,
-      ready: false,
-      loadVersion: 0,
       runVersion: 0,
       savedRun: null,
       following: true,
@@ -111,6 +110,12 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       opener: null,
     };
     if (isPrimary) primaryBoard._panelInstance = panel;
+
+    function closeFrame() {
+      loading?.abort();
+      frameSession?.close();
+      frameSession = null;
+    }
 
     function updateHeading() {
       const base = panel.scope === null ? "Workflow dashboard" : `${panel.scope} dashboard`;
@@ -120,10 +125,10 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
 
     panel.sendSnapshot = function sendSnapshot() {
-      if (!panel.ready || !panel.frame?.contentWindow) return;
+      if (!frameSession) return;
       const run = panel.following ? liveRun : panel.savedRun;
       const inScope = id => panel.scope === null || id === panel.scope;
-      panel.frame.contentWindow.postMessage({
+      frameSession.send({
         type: "dashboard-data",
         snapshot: {
           scope: panel.scope === null ? "workflow" : "node",
@@ -141,44 +146,45 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
           settings: panel.settings,
           settingChanges: panel.following ? [...settingChanges.values()].filter(change => inScope(change.nodeId)) : [],
         },
-      }, "*");
+      });
     };
 
     panel.loadDashboard = async function loadDashboard() {
-      const version = ++panel.loadVersion;
-      panel.ready = false;
-      panel.frame = null;
-      preview.replaceChildren();
+      closeFrame();
+      loading = new AbortController();
+      const { signal } = loading;
       message.textContent = "Loading dashboard…";
       try {
         const key = scopeKey(panel.scope);
         const panelPath = encodeURIComponent(panel.panelId);
         const assetPath = panel.panelId && panel.panelId !== "default" ? `dashboard-assets/${key}/${panelPath}` : `dashboard-assets/${key}`;
-        const assets = await fetchJSON(assetPath, "Could not load the dashboard.");
-        if (version !== panel.loadVersion || element.hidden) return;
-        const frame = createDashboardFrame(assets, heading.textContent);
-        panel.frame = frame;
-        preview.replaceChildren(frame);
+        const assets = await fetchJSON(assetPath, "Could not load the dashboard.", { signal });
+        if (signal.aborted) return;
+        frameSession = mountDashboardFrame(preview, assets, heading.textContent, {
+          onReady: panel.sendSnapshot,
+          onMessage: handleDashboardMessage,
+        });
         message.textContent = "";
-        panel.loadSettings(version);
+        panel.loadSettings();
       } catch (error) {
-        if (version === panel.loadVersion) message.textContent = error.message;
+        if (!signal.aborted) message.textContent = error.message;
       }
     };
 
-    panel.loadSettings = async function loadSettings(version) {
-      if (!panel.frame) return;
+    panel.loadSettings = async function loadSettings() {
+      if (!frameSession) return;
+      const { signal } = frameSession;
       try {
-        const current = await fetchJSON(`dashboard-settings/${scopeKey(panel.scope)}`, "Could not load dashboard settings.");
-        if (version !== panel.loadVersion) return;
+        const current = await fetchJSON(`dashboard-settings/${scopeKey(panel.scope)}`, "Could not load dashboard settings.", { signal });
+        if (signal.aborted) return;
         panel.settings = current;
         panel.sendSnapshot();
       } catch (error) {
-        if (version === panel.loadVersion) message.textContent = error.message;
+        if (!signal.aborted) message.textContent = error.message;
       }
     };
 
-    panel.changeSetting = async function changeSetting(data, sender) {
+    async function changeSetting(data, session) {
       const { id, nodeId, name, mode, value } = data;
       if (!Number.isSafeInteger(id)) return;
       const runId = mode === "live" && panel.following ? liveRun?.id : null;
@@ -194,15 +200,28 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
           result = settingChanges.get(result.id);
         }
         if (result.status === "saved") {
-          await Promise.all([...activePanels].map(item => item.loadSettings(item.loadVersion)));
+          await Promise.all([...activePanels].map(item => item.loadSettings()));
         }
       } catch (error) {
         result = { status: "rejected", message: error.message };
       }
-      if (sender !== panel.frame?.contentWindow) return;
-      sender.postMessage({ type: "dashboard-setting-result", id, result }, "*");
+      if (session.signal.aborted) return;
+      session.send({ type: "dashboard-setting-result", id, result });
       panel.sendSnapshot();
-    };
+    }
+
+    function handleDashboardMessage(data, session) {
+      if (data?.type === "dashboard-open-node" && panel.scope === null && graph.some(node => node.id === data.nodeId)) {
+        panel.setScope(data.nodeId, "default", "");
+      } else if (data?.type === "dashboard-open-panel" && typeof data.panelId === "string") {
+        const targetNode = data.nodeId ?? null;
+        if (targetNode === null || graph.some(node => node.id === targetNode)) {
+          openSinglePanel(targetNode, data.panelId, "");
+        }
+      } else if (data?.type === "dashboard-set-setting") {
+        changeSetting(data, session);
+      }
+    }
 
     panel.setScope = function setScope(nodeId, panelId = "default", panelLabel = "") {
       if (!element.hidden && activePanels.has(panel)) {
@@ -228,11 +247,8 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
       if (element.hidden && !activePanels.has(panel)) return;
       releaseBoard(element, layoutKey(panel.scope, panel.panelId));
       if (document.fullscreenElement === element) document.exitFullscreen().catch(() => {});
-      panel.loadVersion++;
       panel.runVersion++;
-      panel.ready = false;
-      panel.frame = null;
-      preview.replaceChildren();
+      closeFrame();
       activePanels.delete(panel);
       if (panel.isPrimary) {
         element.hidden = true;
@@ -479,26 +495,6 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
     wasLocked = locked;
     lastEditGeneration = Math.max(lastEditGeneration, generation);
-  });
-
-  window.addEventListener("message", event => {
-    if (event.origin !== "null") return;
-    const panel = [...activePanels].find(p => p.frame?.contentWindow === event.source);
-    if (!panel || panel.element.hidden) return;
-    const data = event.data;
-    if (data?.type === "dashboard-ready") {
-      panel.ready = true;
-      panel.sendSnapshot();
-    } else if (data?.type === "dashboard-open-node" && panel.scope === null && graph.some(node => node.id === data.nodeId)) {
-      panel.setScope(data.nodeId, "default", "");
-    } else if (data?.type === "dashboard-open-panel" && typeof data.panelId === "string") {
-      const targetNode = data.nodeId ?? null;
-      if (targetNode === null || graph.some(node => node.id === targetNode)) {
-        openSinglePanel(targetNode, data.panelId, "");
-      }
-    } else if (data?.type === "dashboard-set-setting") {
-      panel.changeSetting(data, event.source);
-    }
   });
 
   window.addEventListener("workspace-stop", event => {
