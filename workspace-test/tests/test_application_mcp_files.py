@@ -18,8 +18,10 @@ from zipfile import ZipFile
 
 from anyio.from_thread import start_blocking_portal
 import httpx2
+from playwright.sync_api import expect
 
-from test_application import application
+from browser_support import browser_page
+from test_application import application, sign_in
 from test_application_mcp import mcp_client, output
 from workspace_sdk.application_mcp.access import McpTokens, WorkspaceAccess, request_identity
 from workspace_sdk.application_mcp.file_transfers import CHUNK_BYTES, FileTransfers
@@ -67,6 +69,72 @@ class ApplicationMcpFilesTests(unittest.TestCase):
         result = call(name, **arguments)
         self.assertTrue(result.is_error, result.content)
         self.assertIn(message, result.content[0].text)
+
+    def test_workspace_uploads_share_browser_storage_and_enforce_grants(self):
+        with installed_workspace() as (parent, state, root, workspace_id, url, token, call, revoke), browser_page() as page:
+            granted = {"workspace_id": workspace_id}
+            self.assertEqual(self.ok(call, "list_workspace_uploads", **granted)["entries"], [])
+            folder = "Input & samples"
+            self.assertEqual(self.ok(call, "create_workspace_upload_folder", **granted, name=folder), {"path": folder})
+            self.failed(call, "create_workspace_upload_folder", "already exists", **granted, name=folder)
+            self.failed(call, "create_workspace_upload_folder", "Workspace-relative", **granted, name="Escape", path="..")
+            path = f"{folder}/capture.bin"
+            content = bytes(range(256)) * 2049
+            source = parent / "capture.bin"
+            source.write_bytes(content)
+            digest = sha256(content).hexdigest()
+            upload = subprocess.run([
+                sys.executable, "-m", "workspace_sdk.application_mcp.file_client",
+                "--url", url, "--workspace-id", workspace_id, "upload", "--uploads", str(source), path,
+            ], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, timeout=25)
+            self.assertEqual(upload.returncode, 0, upload.stderr)
+            self.assertEqual(json.loads(upload.stdout)["sha256"], digest)
+            saved = root / ".workspace/files" / path
+            self.assertEqual(saved.read_bytes(), content)
+            self.assertEqual(self.ok(call, "list_workspace_uploads", **granted, path=folder)["entries"], [
+                {"name": "capture.bin", "directory": False, "size": len(content)},
+            ])
+            self.failed(call, "stat_workspace_file", "Workspace-relative", **granted, path=f".workspace/files/{path}")
+            self.failed(call, "begin_workspace_upload", "already exists", **granted, path=path, size=0, sha256=digest)
+            self.failed(call, "begin_workspace_upload", "Workspace-relative", **granted,
+                        path="../flow.py", size=0, sha256=digest)
+
+            if sys.platform != "win32":
+                link = saved.parent / "linked"
+                link.symlink_to(root, target_is_directory=True)
+                self.failed(call, "list_workspace_uploads", "Symbolic links", **granted, path=f"{folder}/linked")
+                self.failed(call, "begin_workspace_upload", "Symbolic links", **granted,
+                            path=f"{folder}/linked/escape.bin", size=0, sha256=digest)
+
+            sign_in(page, url, state)
+            page.get_by_role("link", name=root.name, exact=True).click()
+            page.get_by_role("button", name="Files", exact=True).click()
+            dialog = page.get_by_role("dialog", name="Workspace files")
+            dialog.get_by_role("button", name=folder, exact=True).click()
+            expect(dialog.get_by_text("capture.bin", exact=True)).to_be_visible()
+            self.assertEqual(saved.read_bytes(), content)
+
+            competing = self.ok(call, "begin_workspace_upload", **granted, path=f"{folder}/competing.bin",
+                                size=0, sha256=sha256(b"").hexdigest())["transfer_id"]
+            dialog.locator('input[type="file"]').set_input_files({
+                "name": "competing.bin", "mimeType": "application/octet-stream", "buffer": b"browser upload",
+            })
+            expect(dialog.get_by_text("competing.bin", exact=True)).to_be_visible()
+            self.failed(call, "finish_workspace_transfer", "already exists", transfer_id=competing)
+            self.assertEqual((saved.parent / "competing.bin").read_bytes(), b"browser upload")
+            self.ok(call, "cancel_workspace_transfer", transfer_id=competing)
+
+            pending = self.ok(call, "begin_workspace_upload", **granted, path=f"{folder}/pending.bin",
+                              size=len(content), sha256=digest)["transfer_id"]
+            self.ok(call, "write_workspace_chunk", transfer_id=pending, offset=0, data="YQ==")
+            self.ok(call, "cancel_workspace_transfer", transfer_id=pending)
+            self.assertEqual(list(saved.parent.glob(".phyzflow-transfer-*")), [])
+            pending = self.ok(call, "begin_workspace_upload", **granted, path=f"{folder}/pending.bin",
+                              size=0, sha256=sha256(b"").hexdigest())["transfer_id"]
+            revoke()
+            self.failed(call, "list_workspace_uploads", "Workspace access denied", **granted)
+            self.failed(call, "finish_workspace_transfer", "Workspace access denied", transfer_id=pending)
+            self.assertFalse((saved.parent / "pending.bin").exists())
 
     def test_installed_file_operations_and_sheet_leases(self):
         with installed_workspace() as (_, _, root, workspace_id, _, _, call, _):
@@ -326,6 +394,13 @@ class FileTransferCleanupTests(unittest.TestCase):
                 transfers.recover()
                 self.assertFalse((root / path).exists())
                 self.assertFalse((transfers.directory / leftover).exists())
+                started = transfers.begin("allowed", "file", "upload", "missing", 1, sha256(b"a").hexdigest(), upload_area=True)
+                identity = started["transfer_id"]
+                item = transfers.transfers.pop(identity)
+                item.stream.close()
+                transfers.recover()
+                self.assertFalse(item.stage.exists())
+                self.assertFalse((transfers.directory / identity).exists())
             finally:
                 transfers.close()
                 request_identity.reset(current)

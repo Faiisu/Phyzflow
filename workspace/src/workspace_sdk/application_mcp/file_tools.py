@@ -3,16 +3,52 @@ from tempfile import NamedTemporaryFile
 from typing import Literal
 
 from ..node_sources import MAX_SOURCE_BYTES
+from .access import ensure_not_protected
 from .file_paths import (
     STAGING_PREFIX, atomic_move, checked_path, file_errors, file_metadata, is_entrypoint,
     mutate_files, open_file, relative_path, require_file, revision as file_revision, verify_revision,
 )
 from .file_transfers import CHUNK_BYTES, FileTransfers, publish_file
+from .upload_paths import UPLOAD_DIRECTORY, file_folder, file_name, folder_entries
 
 PAGE_SIZE = 200
 
 
 def register_file_tools(server, access, transfers: FileTransfers) -> None:
+    @server.tool(description="List folders and files shown in the Workspace Files browser. Paths are relative to Files.")
+    @file_errors
+    def list_workspace_uploads(workspace_id: str, path: str = ".", after: str | None = None) -> dict:
+        with access.file_gate:
+            root = access.workspace(workspace_id)
+            relative = relative_path(path, directory=True)
+            ensure_not_protected(root / UPLOAD_DIRECTORY / relative, access.protected_folders)
+            entries = folder_entries(file_folder(root, path))
+        entries = sorted((entry for entry in entries if after is None or entry["name"] > after), key=lambda entry: entry["name"])
+        return {
+            "path": relative.as_posix(),
+            "entries": entries[:PAGE_SIZE],
+            "next_after": entries[PAGE_SIZE - 1]["name"] if len(entries) > PAGE_SIZE else None,
+        }
+
+    @server.tool(description="Create a folder in Workspace Files under an existing Files folder.")
+    @file_errors
+    def create_workspace_upload_folder(workspace_id: str, name: str, path: str = ".") -> dict:
+        with access.file_gate:
+            root = access.workspace(workspace_id)
+            relative = relative_path(path, directory=True) / file_name(name)
+            ensure_not_protected(root / UPLOAD_DIRECTORY / relative, access.protected_folders)
+            folder = file_folder(root, path, create=True)
+            try:
+                (folder / name).mkdir(mode=0o700)
+            except FileExistsError:
+                raise ValueError("A file or folder with this name already exists.") from None
+        return {"path": relative.as_posix()}
+
+    @server.tool(description="Begin an upload to Workspace Files using a Files-relative path. Use write_workspace_chunk and finish_workspace_transfer. Existing files are preserved.")
+    @file_errors
+    def begin_workspace_upload(workspace_id: str, path: str, size: int, sha256: str) -> dict:
+        return transfers.begin(workspace_id, path, "upload", "missing", size, sha256, upload_area=True)
+
     @server.tool(description="List regular files and directories in a granted Workspace, including project dotfiles.")
     @file_errors
     def list_workspace_files(workspace_id: str, path: str = ".", after: str | None = None) -> dict:

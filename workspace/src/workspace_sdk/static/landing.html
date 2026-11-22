@@ -42,6 +42,10 @@
     <form>
       <h2 id="create-workspace-title" tabindex="-1">Create Workspace</h2>
       <p id="workspace-path-hint" class="dialog-hint"></p>
+      <div id="workspace-add-modes" class="workspace-add-modes" role="group" aria-label="Folder selection method" hidden>
+        <button type="button" class="secondary-action" id="workspace-add-browse" aria-pressed="true" aria-controls="workspace-folder-browser">Browse folders</button>
+        <button type="button" class="secondary-action" id="workspace-add-path" aria-pressed="false" aria-controls="workspace-manual-path-field">Enter a folder path</button>
+      </div>
       <fieldset id="workspace-folder-browser" aria-label="Browse folders">
         <div class="folder-location">
           <div>
@@ -53,6 +57,7 @@
             <button type="button" id="workspace-folder-up" class="secondary-action">Up</button>
           </div>
         </div>
+        <p class="workspace-add-subfolders" aria-hidden="true">Subfolders</p>
         <p id="workspace-folder-empty" class="dialog-hint" hidden>No subfolders to show.</p>
         <ul id="workspace-folders" aria-label="Subfolders"></ul>
       </fieldset>

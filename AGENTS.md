@@ -17,6 +17,8 @@ Before planning, implementing, or reviewing a feature, read the relevant require
 
 - Keep new code comment-free. Use clear names and structure, and record design rationale in project documentation when needed.
 - Keep work scoped to the requested outcome and follow the prerequisites recorded for the feature.
+- When adding or changing a Workspace feature, add or update its MCP tools in the same change so authorized AI agents can perform the same Workspace operations. Share feature logic across entry points and enforce the applicable Workspace grants and permissions.
+- Include MCP coverage in the feature's acceptance criteria. Verify the changed behavior through an MCP client before marking the feature complete.
 - Before refactoring or implementing a feature, determine whether the change adds a capability or replaces an existing one.
 - For a replacement, inspect the existing implementation and its callers. Adapt it if it can meet the requirements. Create a new implementation when needed.
 - When a new implementation replaces existing behavior, move callers to it and remove the superseded code once it has no remaining callers.

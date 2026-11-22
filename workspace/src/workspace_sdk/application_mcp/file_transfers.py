@@ -14,10 +14,13 @@ from time import monotonic
 from typing import Any, BinaryIO
 from uuid import uuid4
 
+from ..workspace_environment import is_protected_path
+from .access import ensure_not_protected
 from .file_paths import (
     STAGING_PREFIX, atomic_move, checked_path, file_metadata, mutate_files, open_file,
-    relative_path, require_file, revision, verify_revision,
+    path_info, relative_path, require_file, revision, verify_revision,
 )
+from .upload_paths import UPLOAD_DIRECTORY, file_folder, file_name
 
 CHUNK_BYTES = 512 * 1024
 IDLE_SECONDS = 15 * 60
@@ -44,6 +47,7 @@ class Transfer:
     device: int | None = None
     expected_sha256: str | None = None
     stage_revision: str | None = None
+    upload_area: bool = False
 
 
 def publish_file(stage: Path, target: Path, mode: str, info: os.stat_result | None) -> None:
@@ -68,12 +72,20 @@ class FileTransfers:
         self.recover()
         self.worker.start()
 
-    def clean_stage(self, identity: str, root: Path, stage: Path) -> None:
+    def staging_directory_exists(self, root: Path, parent: Path, upload_area: bool) -> bool:
+        if upload_area:
+            path = parent.relative_to(root / UPLOAD_DIRECTORY).as_posix()
+            try:
+                return file_folder(root, path) is not None and not is_protected_path(parent, self.access.protected_folders)
+            except FileNotFoundError:
+                return False
+        relative = relative_path(parent.relative_to(root).as_posix(), directory=True)
+        return checked_path(root, relative, self.access.protected_folders)[1] == "directory"
+
+    def clean_stage(self, identity: str, root: Path, stage: Path, upload_area: bool) -> None:
         if stage.name != STAGING_PREFIX + identity or not stage.is_relative_to(root):
             raise ValueError("Invalid upload staging path.")
-        parent = relative_path(stage.parent.relative_to(root).as_posix(), directory=True)
-        _, mode, _ = checked_path(root, parent, self.access.protected_folders)
-        if mode == "directory":
+        if self.staging_directory_exists(root, stage.parent, upload_area):
             stage.unlink(missing_ok=True)
         (self.directory / identity).unlink(missing_ok=True)
 
@@ -87,7 +99,7 @@ class FileTransfers:
                 if root is None:
                     record.unlink()
                 else:
-                    self.clean_stage(record.name, root, root / data["staging_path"])
+                    self.clean_stage(record.name, root, root / data["staging_path"], data.get("upload_area") is True)
 
     def sweep(self) -> None:
         while not self.stopping.wait(30):
@@ -110,7 +122,7 @@ class FileTransfers:
             transfer.stream.close()
         if transfer.stage is not None:
             with suppress(OSError, ValueError):
-                self.clean_stage(identity, transfer.root, transfer.stage)
+                self.clean_stage(identity, transfer.root, transfer.stage, transfer.upload_area)
 
     def cancel_workspace(self, workspace_id: str) -> None:
         with self.lock:
@@ -133,7 +145,20 @@ class FileTransfers:
         if pending and pending + reserved + DISK_RESERVE > disk_usage(parent).free:
             raise ValueError("There is insufficient free disk space for this upload.")
 
-    def begin(self, workspace_id, path, direction, expected_revision, size, checksum):
+    def transfer_target(self, root: Path, relative: Path, upload_area: bool, *, create: bool = False):
+        if not upload_area:
+            return checked_path(root, relative, self.access.protected_folders)
+        name = file_name(relative.name)
+        ensure_not_protected(root / UPLOAD_DIRECTORY / relative, self.access.protected_folders)
+        folder = file_folder(root, relative.parent.as_posix(), create=create)
+        if folder is None:
+            raise FileNotFoundError("This folder is unavailable.")
+        target = folder / name
+        if path_info(target)[0] != "missing":
+            raise ValueError("A file or folder with this name already exists.")
+        return target, "missing", None
+
+    def begin(self, workspace_id, path, direction, expected_revision, size, checksum, *, upload_area=False):
         with self.access.file_gate, self.lock:
             root = self.access.workspace(workspace_id)
             self.expire()
@@ -145,7 +170,7 @@ class FileTransfers:
             ):
                 raise ValueError("The active transfer limit was reached. Finish or cancel a transfer first.")
             relative = relative_path(path)
-            target, mode, info = checked_path(root, relative, self.access.protected_folders)
+            target, mode, info = self.transfer_target(root, relative, upload_area, create=True)
             identity = uuid4().hex
             if uploads:
                 if (
@@ -161,7 +186,10 @@ class FileTransfers:
                 record = self.directory / identity
                 try:
                     with record.open("x", encoding="utf-8") as journal:
-                        json.dump({"workspace_id": workspace_id, "staging_path": stage.relative_to(root).as_posix()}, journal)
+                        json.dump({
+                            "workspace_id": workspace_id, "staging_path": stage.relative_to(root).as_posix(),
+                            "upload_area": upload_area,
+                        }, journal)
                         journal.flush()
                         os.fsync(journal.fileno())
                     stream = os.fdopen(os.open(stage, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600), "wb", buffering=0)
@@ -172,6 +200,7 @@ class FileTransfers:
                     workspace_id, principal, root, relative, stream, expected_revision, size,
                     stage=stage, device=device, expected_sha256=checksum,
                     stage_revision=revision(os.fstat(stream.fileno())),
+                    upload_area=upload_area,
                 )
             else:
                 if size is not None or checksum is not None:
@@ -299,10 +328,9 @@ class FileTransfers:
         assert stage is not None
 
         def commit(root):
-            target, mode, info = checked_path(root, item.relative, self.access.protected_folders)
+            target, mode, info = self.transfer_target(root, item.relative, item.upload_area)
             verify_revision(mode, info, item.expected)
-            parent = stage.parent.relative_to(root)
-            if checked_path(root, parent, self.access.protected_folders)[1] != "directory":
+            if not self.staging_directory_exists(root, stage.parent, item.upload_area):
                 raise ValueError("The staging directory changed.")
             staged = stage.lstat()
             opened = os.fstat(item.stream.fileno()) if not item.stream.closed else None
@@ -315,12 +343,17 @@ class FileTransfers:
                 os.fsync(item.stream.fileno())
                 if os.name == "nt":
                     item.stream.close()
-            target.parent.mkdir(parents=True, exist_ok=True)
-            _, mode, info = checked_path(root, item.relative, self.access.protected_folders)
+            if not item.upload_area:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            _, mode, info = self.transfer_target(root, item.relative, item.upload_area)
             verify_revision(mode, info, item.expected)
             publish_file(stage, target, mode, info)
             return file_metadata(item.relative, target.stat())
 
+        if item.upload_area:
+            if session_ids:
+                raise ValueError("Workspace Files uploads do not use Sheet editing sessions.")
+            return commit(self.access.workspace(item.workspace_id))
         return mutate_files(self.access, item.workspace_id, (item.relative,), session_ids, commit)
 
     def cancel(self, identity: str) -> dict:

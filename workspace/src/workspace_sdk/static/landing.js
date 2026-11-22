@@ -21,6 +21,9 @@ const nameField = document.querySelector("#workspace-folder-name-field");
 const folderName = document.querySelector("#workspace-folder-name");
 const manualField = document.querySelector("#workspace-manual-path-field");
 const pathMode = document.querySelector("#workspace-path-mode");
+const addModes = document.querySelector("#workspace-add-modes");
+const addBrowse = document.querySelector("#workspace-add-browse");
+const addPath = document.querySelector("#workspace-add-path");
 const submit = form.querySelector('[type="submit"]');
 const cancel = document.querySelector("#cancel-workspace");
 const status = document.querySelector("#create-workspace-status");
@@ -140,17 +143,20 @@ function updateFolderControls() {
   folderName.disabled = nameField.hidden || saving;
   path.disabled = !manual || saving;
   pathMode.disabled = cancel.disabled = saving;
-  submit.disabled = saving || (!manual && (loading || !folder));
+  addBrowse.disabled = addPath.disabled = saving;
+  submit.disabled = saving || (manual ? action === "add" && !path.value.trim() : loading || !folder);
 }
 
 function showPathMode(manual) {
   const adding = action === "add";
   manualField.hidden = !manual;
   pathMode.textContent = manual ? "Browse folders" : "Enter a folder path";
+  addBrowse.setAttribute("aria-pressed", String(!manual));
+  addPath.setAttribute("aria-pressed", String(manual));
   hint.textContent = manual
     ? "Enter an absolute folder path on the Phyzflow host."
     : adding
-      ? "Open the project folder on the Phyzflow host, then choose Add."
+      ? "Choose an existing project folder on the Phyzflow host."
       : "Choose a parent folder on the Phyzflow host and enter a name for the new folder.";
   updateFolderControls();
 }
@@ -208,13 +214,16 @@ function openDialog(nextAction) {
   stopBrowsing();
   action = nextAction;
   const adding = action === "add";
+  dialog.dataset.action = action;
+  pathMode.hidden = adding;
+  addModes.hidden = !adding;
   form.reset();
   folder = undefined;
   locationPath.textContent = "";
   folderList.replaceChildren();
   folderEmpty.hidden = true;
   title.textContent = adding ? "Add Workspace" : "Create Workspace";
-  locationLabel.textContent = adding ? "Selected folder" : "Parent folder";
+  locationLabel.textContent = adding ? "Folder to add" : "Parent folder";
   label.textContent = adding ? "Existing folder path" : "New folder path";
   submit.textContent = adding ? "Add" : "Create";
   problem.hidden = true;
@@ -226,8 +235,8 @@ function openDialog(nextAction) {
 
 home.addEventListener("click", () => browseFolders(undefined, true));
 up.addEventListener("click", () => browseFolders(folder.parent, true));
-pathMode.addEventListener("click", () => {
-  const manual = manualField.hidden;
+function changePathMode(manual) {
+  if (manual === !manualField.hidden) return;
   stopBrowsing();
   problem.hidden = true;
   status.textContent = "";
@@ -235,7 +244,11 @@ pathMode.addEventListener("click", () => {
   if (manual) path.focus();
   else if (!folder) browseFolders();
   else locationPath.focus();
-});
+}
+pathMode.addEventListener("click", () => changePathMode(manualField.hidden));
+addBrowse.addEventListener("click", () => changePathMode(false));
+addPath.addEventListener("click", () => changePathMode(true));
+path.addEventListener("input", updateFolderControls);
 filterInput.addEventListener("input", renderWorkspaces);
 document.querySelector("#new-workspace").addEventListener("click", () => openDialog("create"));
 document.querySelector("#add-workspace").addEventListener("click", () => openDialog("add"));
