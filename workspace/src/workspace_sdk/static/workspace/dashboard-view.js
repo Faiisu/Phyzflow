@@ -1,5 +1,5 @@
 import { createCanvasLayout } from "./canvas-layout.js";
-import { createDashboardFrame, fetchJSON } from "./dashboard-ui.js";
+import { fetchJSON, mountDashboardFrame } from "./dashboard-bridge.js";
 
 document.title = "Phyzflow | Workspace Dashboard";
 document.body.classList.add("is-visualize-mode", "is-workspace-dashboard");
@@ -137,9 +137,45 @@ function openPanel(placement) {
   });
 
   let loading;
-  async function load() {
+  let frameSession;
+  function dispose() {
     loading?.abort();
-    preview.replaceChildren();
+    frameSession?.close();
+  }
+
+  function followPlacement(session) {
+    const { signal } = session;
+    let timer;
+    let snapshot;
+    signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+    async function poll() {
+      try {
+        const data = await fetchJSON(`placement-assets/${placement.id}/data`, "Could not load dashboard data.", { signal });
+        if (signal.aborted) return;
+        snapshot = data;
+        message.textContent = "";
+        session.send({ type: "dashboard-data", snapshot });
+      } catch (error) {
+        if (signal.aborted) return;
+        message.textContent = error.message;
+        if (error.status === 404) {
+          panel.placement = { ...panel.placement, available: false };
+          session.close();
+          return;
+        }
+        if (snapshot) {
+          session.send({ type: "dashboard-data", snapshot: {
+            ...snapshot, run: null, timestamp: null, liveFrames: {}, liveMetrics: {},
+          } });
+        }
+      }
+      timer = setTimeout(poll, 500);
+    }
+    void poll();
+  }
+
+  async function load() {
+    dispose();
     if (!panel.placement.available) {
       message.textContent = "Source panel unavailable.";
       return;
@@ -151,7 +187,9 @@ function openPanel(placement) {
     try {
       const assets = await fetchJSON(`placement-assets/${placement.id}`, "Could not load the source panel.", { signal });
       if (signal.aborted) return;
-      preview.replaceChildren(createDashboardFrame(assets, heading.textContent));
+      frameSession = mountDashboardFrame(preview, assets, heading.textContent, {
+        subscribeOnly: true, onReady: followPlacement,
+      });
       message.textContent = "";
     } catch (error) {
       if (!signal.aborted) message.textContent = error.message;
@@ -168,9 +206,7 @@ function openPanel(placement) {
       sourceLink.href = `../#flow-tab-${next.sheet_index}`;
       if (changed) void load();
     },
-    dispose() {
-      loading?.abort();
-    },
+    dispose,
   };
   full.hidden = !document.fullscreenEnabled;
   full.addEventListener("click", async () => {
@@ -300,6 +336,9 @@ function exit() {
 back.addEventListener("click", exit);
 window.addEventListener("keydown", event => {
   if (event.key === "Escape" && !document.fullscreenElement) exit();
+});
+window.addEventListener("pagehide", () => {
+  for (const panel of panels.values()) panel.dispose();
 });
 showStatus("Loading dashboard panels…");
 void refreshPanels();

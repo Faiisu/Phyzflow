@@ -38,7 +38,7 @@ from ..web import (
     UIRequestHandler,
     is_flow_view_route,
 )
-from .dashboard_data import dashboard_snapshot, dashboard_sources
+from .dashboard_data import dashboard_snapshot, dashboard_sources, placement_snapshot
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
 
@@ -52,7 +52,7 @@ EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
 WORKSPACE_DASHBOARD_PATH = re.compile(r"/workspace-dashboard/([A-Za-z0-9._-]+)(/data)?")
 WORKSPACE_VISUALIZE_LAYOUT = "/dashboard/visualize-layout"
 WORKSPACE_PLACEMENTS = "/dashboard/placements"
-PLACEMENT_ASSET_PATH = re.compile(r"/dashboard/placement-assets/([0-9a-f]{32})")
+PLACEMENT_ASSET_PATH = re.compile(r"/dashboard/placement-assets/([0-9a-f]{32})(/data)?")
 WORKSPACE_ASSETS = {
     "/": ("workspace.html", "text/html"),
     "/workspace.css": ("workspace.css", "text/css"),
@@ -65,6 +65,7 @@ WORKSPACE_ASSETS = {
     "/dashboard/app.js": ("workspace/dashboard-view.js", "text/javascript"),
     "/dashboard/canvas-layout.js": FLOW_VIEW_ASSETS["/canvas-layout.js"],
     "/dashboard/dashboard-ui.js": FLOW_VIEW_ASSETS["/dashboard-ui.js"],
+    "/dashboard/dashboard-bridge.js": FLOW_VIEW_ASSETS["/dashboard-bridge.js"],
     "/dashboard/dashboard-editor.js": FLOW_VIEW_ASSETS["/dashboard-editor.js"],
     "/dashboard/prism-syntax.js": FLOW_VIEW_ASSETS["/prism-syntax.js"],
 }
@@ -172,7 +173,7 @@ def workspace_dispatch(
             else:
                 self.request.send_json({"placements": placements})
 
-        def workspace_placement_assets(self, placement_id: str) -> None:
+        def workspace_placement(self, placement_id: str, data: bool) -> None:
             try:
                 placement = (
                     run_state.find_workspace_placement(workspace_id, placement_id)
@@ -184,15 +185,24 @@ def workspace_dispatch(
                 source = find_sheet_by_path(root, placement["sheet"])
                 if source is None:
                     raise FileNotFoundError
-                assets = dashboard_assets(source, placement["scope"], placement["panel_id"])
+                assets = dashboard_assets(source, placement["scope"], placement["panel_id"], manifest_only=data)
+                if data:
+                    sheet = next((item for item in discovered_sheets()
+                                  if item is not None and item.root == source and not item.closing), None)
+                    if sheet is None:
+                        raise FileNotFoundError
+                    result = placement_snapshot(sheet, placement)
+                else:
+                    result = {"bridge_version": DASHBOARD_BRIDGE_VERSION, "scope": "workspace", **assets}
             except (FileNotFoundError, PermissionError):
                 self.request.send_json({"error": "Source panel unavailable."}, HTTPStatus.NOT_FOUND)
             except ValueError as error:
-                self.request.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
-            except (OSError, sqlite3.Error, RuntimeError):
+                message = "Could not load dashboard data." if data else str(error)
+                self.request.send_json({"error": message}, HTTPStatus.BAD_REQUEST)
+            except (OSError, sqlite3.Error, RuntimeError, KeyError, TypeError):
                 self.request.send_json({"error": "Could not load the source panel."}, HTTPStatus.INTERNAL_SERVER_ERROR)
             else:
-                self.request.send_json({"bridge_version": DASHBOARD_BRIDGE_VERSION, "scope": "workspace", **assets})
+                self.request.send_json(result)
 
         def create_sheet(self) -> None:
             try:
@@ -606,7 +616,7 @@ def workspace_dispatch(
                 self.workspace_placements()
                 return
             if asset := PLACEMENT_ASSET_PATH.fullmatch(self.path):
-                self.workspace_placement_assets(asset[1])
+                self.workspace_placement(asset[1], asset[2] is not None)
                 return
             if self.path == "/dashboard/panel-catalog":
                 self.request.send_json({"panels": sheet_panel_catalog(root, discover_flows(root))})
