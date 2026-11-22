@@ -168,7 +168,13 @@ def _regular_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink() and path.resolve() == path
 
 
-def _panel_entry(root: Path, directory: Path, panel_id: str, label: str) -> dict | None:
+def dashboard_panel_label(panel_id: str) -> str:
+    if panel_id == DEFAULT_PANEL_ID:
+        return "Overview"
+    return panel_id.replace("-", " ").replace("_", " ").strip() or panel_id
+
+
+def _panel_entry(root: Path, directory: Path, panel_id: str) -> dict | None:
     if not _regular_dir(directory):
         return None
     assets = [
@@ -180,7 +186,7 @@ def _panel_entry(root: Path, directory: Path, panel_id: str, label: str) -> dict
         return None
     return {
         "id": panel_id,
-        "label": label,
+        "label": dashboard_panel_label(panel_id),
         "directory": directory.relative_to(root).as_posix(),
         "assets": assets,
         "ready": _regular_file(directory / "index.html"),
@@ -191,7 +197,7 @@ def _scope_panel_entries(root: Path, base: Path) -> list[dict]:
     if not _regular_dir(base):
         return []
     panels: list[dict] = []
-    default_entry = _panel_entry(root, base, DEFAULT_PANEL_ID, "Overview")
+    default_entry = _panel_entry(root, base, DEFAULT_PANEL_ID)
     if default_entry is not None:
         panels.append(default_entry)
     panels_dir = base / "panels"
@@ -199,20 +205,24 @@ def _scope_panel_entries(root: Path, base: Path) -> list[dict]:
         for sub in sorted(panels_dir.iterdir(), key=lambda p: p.name):
             if not _additional_panel_id(sub.name):
                 continue
-            label = sub.name.replace("-", " ").replace("_", " ").strip() or sub.name
-            entry = _panel_entry(root, sub, sub.name, label)
+            entry = _panel_entry(root, sub, sub.name)
             if entry is not None:
                 panels.append(entry)
     return panels
 
 
-def sheet_panel_catalog(root: Path, sheets: list[tuple[str, Path]]) -> list[dict]:
+def sheet_panel_catalog(
+    root: Path, sheets: list[tuple[str, Path]], node_ids: dict[Path, set[str] | None],
+) -> list[dict]:
     panels = []
     for name, sheet in sheets:
         details = inspect_sheet_dashboards(sheet)
         sheet_path = sheet.relative_to(root).as_posix()
         scopes = [{"step_id": None, "panels": details["workflow"]}, *details["nodes"]]
+        step_ids = node_ids.get(sheet)
         for scope in scopes:
+            if scope["step_id"] is not None and step_ids is not None and scope["step_id"] not in step_ids:
+                continue
             panels.extend({
                 "sheet": sheet_path,
                 "sheet_name": name,

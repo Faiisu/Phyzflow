@@ -62,6 +62,7 @@ const graph = document.querySelector("#graph");
 const layout = createCanvasLayout({
   graph,
   persistInitialBounds: true,
+  sharedLayout: true,
   graphPlane: document.querySelector("#graph-plane"),
   graphViewport: viewport,
   layoutSize(element) {

@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
 import json
+from pathlib import Path
 import re
 import sqlite3
 from urllib.parse import unquote
@@ -12,6 +13,7 @@ from ..dashboard import (
     DASHBOARD_BRIDGE_VERSION,
     PANEL_ID_PATTERN,
     dashboard_assets,
+    dashboard_panel_label,
     dashboard_panels,
     sheet_panel_catalog,
 )
@@ -96,7 +98,20 @@ def validate_visualize_layout(panels: object) -> dict:
 def workspace_dispatch(
     root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
     create_workspace_sheet, rename_workspace_sheet, delete_workspace_sheet, run_all_sheets, workspace_id, run_state,
+    dashboard_state,
 ):
+    dashboard_id = workspace_id or "."
+
+    def dashboard_sheets() -> dict[Path, tuple[int, FlowSheet]]:
+        return {sheet.root: (index, sheet) for index, sheet in enumerate(discovered_sheets())
+                if sheet is not None and not sheet.closing}
+
+    def panel_scope_available(sheet: FlowSheet, scope: str | None) -> bool:
+        if scope is None:
+            return True
+        step_ids = sheet.dashboard_step_ids()
+        return step_ids is None or scope in step_ids
+
     class Routes:
         def __init__(self, request: UIRequestHandler, path: str):
             self.request = request
@@ -120,7 +135,7 @@ def workspace_dispatch(
                 self.request.send_json(result)
 
         def workspace_placements(self) -> None:
-            if run_state is None or workspace_id is None or is_closing():
+            if dashboard_state is None or is_closing():
                 self.request.send_json({"error": "This Workspace is unavailable."}, HTTPStatus.NOT_FOUND)
                 return
             try:
@@ -142,28 +157,31 @@ def workspace_dispatch(
                             raise ValueError
                         with sheets_lock:
                             source = find_sheet_by_path(root, sheet)
-                            if source is None or not any(
+                            entry = dashboard_sheets().get(source)
+                            if entry is None or not panel_scope_available(entry[1], scope) or not any(
                                 panel["id"] == panel_id for panel in dashboard_panels(source, scope)
                             ):
                                 raise FileNotFoundError
-                            run_state.add_workspace_placement(workspace_id, source.relative_to(root).as_posix(), scope, panel_id)
+                            dashboard_state.add_workspace_placement(dashboard_id, source.relative_to(root).as_posix(), scope, panel_id)
                     elif action == "remove":
                         placement_id = data.get("id")
                         if not isinstance(placement_id, str) or not re.fullmatch(r"[0-9a-f]{32}", placement_id):
                             raise ValueError
-                        run_state.remove_workspace_placement(workspace_id, placement_id)
+                        dashboard_state.remove_workspace_placement(dashboard_id, placement_id)
                     else:
                         raise ValueError
 
-                current = {sheet.root: (index, sheet.title) for index, sheet in enumerate(discovered_sheets()) if sheet}
-                placements = run_state.workspace_placements(workspace_id)
+                current = dashboard_sheets()
+                placements = dashboard_state.workspace_placements(dashboard_id)
                 for placement in placements:
                     path = find_sheet_by_path(root, placement["sheet"])
-                    index, name = current.get(path, (None, placement["sheet"]))
-                    panels = dashboard_panels(path, placement["scope"]) if path is not None else []
-                    panel = next((panel for panel in panels if panel["id"] == placement["panel_id"]), None)
-                    placement.update(sheet_name=name, sheet_index=index, available=panel is not None,
-                                     label=panel["label"] if panel else placement["panel_id"])
+                    index, sheet = current.get(path, (None, None))
+                    scope, panel_id = placement["scope"], placement["panel_id"]
+                    available = sheet is not None and panel_scope_available(sheet, scope) and any(
+                        panel["id"] == panel_id for panel in dashboard_panels(path, scope)
+                    )
+                    placement.update(sheet_name=sheet.title if sheet is not None else placement["sheet"],
+                                     sheet_index=index, available=available, label=dashboard_panel_label(panel_id))
             except FileNotFoundError:
                 self.request.send_json({"error": "Source panel unavailable in this Workspace."}, HTTPStatus.NOT_FOUND)
             except (ValueError, UnicodeError, RecursionError):
@@ -176,22 +194,19 @@ def workspace_dispatch(
         def workspace_placement(self, placement_id: str, data: bool) -> None:
             try:
                 placement = (
-                    run_state.find_workspace_placement(workspace_id, placement_id)
-                    if run_state is not None and workspace_id is not None and not is_closing()
+                    dashboard_state.find_workspace_placement(dashboard_id, placement_id)
+                    if dashboard_state is not None and not is_closing()
                     else None
                 )
                 if placement is None:
                     raise FileNotFoundError
                 source = find_sheet_by_path(root, placement["sheet"])
-                if source is None:
+                entry = dashboard_sheets().get(source)
+                if entry is None or not panel_scope_available(entry[1], placement["scope"]):
                     raise FileNotFoundError
                 assets = dashboard_assets(source, placement["scope"], placement["panel_id"], manifest_only=data)
                 if data:
-                    sheet = next((item for item in discovered_sheets()
-                                  if item is not None and item.root == source and not item.closing), None)
-                    if sheet is None:
-                        raise FileNotFoundError
-                    result = placement_snapshot(sheet, placement)
+                    result = placement_snapshot(entry[1], placement)
                 else:
                     result = {"bridge_version": DASHBOARD_BRIDGE_VERSION, "scope": "workspace", **assets}
             except (FileNotFoundError, PermissionError):
@@ -319,7 +334,9 @@ def workspace_dispatch(
             sheet = sheets[index] if index is not None and index < len(sheets) else None
             sheet_key = sheet and sheet.sheet_key
             unavailable = "This Workspace is unavailable." if index is None else "This sheet is unavailable."
-            if run_state is None or workspace_id is None or (index is not None and sheet_key is None):
+            state = dashboard_state if index is None else run_state
+            identity = dashboard_id if index is None else workspace_id
+            if state is None or identity is None or (index is not None and sheet_key is None):
                 self.request.send_json({"error": unavailable}, HTTPStatus.NOT_FOUND)
                 return
             panels = None
@@ -337,13 +354,13 @@ def workspace_dispatch(
                         self.request.send_json({"error": unavailable}, HTTPStatus.NOT_FOUND)
                         return
                     if panels is None:
-                        result = {"panels": run_state.load_workspace_placement_layout(workspace_id) if index is None
-                                  else run_state.load_visualize_layout(workspace_id, sheet_key)}
+                        result = {"panels": state.load_workspace_placement_layout(identity) if index is None
+                                  else state.load_visualize_layout(identity, sheet_key)}
                     else:
                         if index is None:
-                            run_state.save_workspace_placement_layout(workspace_id, panels)
+                            state.save_workspace_placement_layout(identity, panels)
                         else:
-                            run_state.save_visualize_layout(workspace_id, sheet_key, panels)
+                            state.save_visualize_layout(identity, sheet_key, panels)
                         result = {}
             except sqlite3.Error:
                 self.request.send_json({"error": "Could not access the saved dashboard layout."}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -619,7 +636,10 @@ def workspace_dispatch(
                 self.workspace_placement(asset[1], asset[2] is not None)
                 return
             if self.path == "/dashboard/panel-catalog":
-                self.request.send_json({"panels": sheet_panel_catalog(root, discover_flows(root))})
+                sources = discover_flows(root)
+                current = dashboard_sheets()
+                node_ids = {path: current[path][1].dashboard_step_ids() for _, path in sources if path in current}
+                self.request.send_json({"panels": sheet_panel_catalog(root, sources, node_ids)})
                 return
             if self.path == "/workspace-dashboard":
                 self.request.send_json({"panels": dashboard_panels(root, None, workspace=True)})
