@@ -16,4 +16,9 @@ fi
 
 rm -rf "$repo_dir/workspace/build"
 uv pip install --python "$python" --reinstall-package workspace-sdk "$repo_dir/workspace[mcp]"
+
+if [ "$#" -eq 1 ] && [ "$1" = "--install-only" ]; then
+    exit 0
+fi
+
 exec "$venv_dir/bin/workspace" app "$@"

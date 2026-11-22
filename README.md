@@ -37,6 +37,21 @@ flowchart LR
 
 The default address is `http://127.0.0.1:18080`. To resolve a port conflict, append `--port 0` to the launcher command and open the new URL printed in the terminal. To save a different address or port, use **Network settings** and restart the app.
 
+### Deploy on Linux with systemd
+
+Install uv on a Linux host running systemd. From the repository root, run the installer as the account that should run Phyzflow and its flows. The installer uses `sudo` to register the system service and enable it at boot. Keep the checkout at the same path so systemd can start the installed application.
+
+```sh
+./deploy/phyzflow-systemd.sh
+systemctl status phyzflow.service --no-pager
+systemctl is-enabled phyzflow.service
+curl --retry 5 --retry-connrefused -fsS http://127.0.0.1:18080/login > /dev/null
+```
+
+Sign in as `admin` using the initial password in `~/.phyzflow/admin/initial-password` on the deployment account. A new configuration listens on loopback and existing network settings are preserved. Use the loopback address with an HTTPS reverse proxy for remote access, or change the bind address in **Network settings** on an isolated test network.
+
+After updating the checkout, rerun the installer to update Phyzflow and restart the service. Use `sudo journalctl -u phyzflow.service -b` to inspect startup logs and `sudo systemctl restart phyzflow.service` to apply saved network settings.
+
 ### Run the ticket example from the CLI
 
 From the repository root, use [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the Phyzflow SDK into a Python 3.12 environment.
