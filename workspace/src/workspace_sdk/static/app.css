@@ -800,6 +800,13 @@ body.is-workspace-dashboard #panel-visualize {
   margin-top: .45rem;
   overflow: auto;
 }
+body.is-workspace-dashboard .workspace-placement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding-right: .4rem;
+}
+body.is-workspace-dashboard [data-dash="handle"] h2 { overflow: hidden; text-overflow: ellipsis; }
 body.is-workspace-dashboard .exit-visualize-mode { opacity: 1; }
 #workspace-dashboard-message {
   position: absolute;
