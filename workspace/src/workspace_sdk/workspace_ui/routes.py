@@ -37,6 +37,7 @@ from ..web import (
     recovery_graph_revision,
 )
 from .dashboard_data import placement_snapshot
+from .files import send_workspace_files
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
 
@@ -58,6 +59,7 @@ WORKSPACE_ASSETS = {
     "/workspace/source-editing.js": ("workspace/source-editing.js", "text/javascript"),
     "/workspace/sheet-dialogs.js": ("workspace/sheet-dialogs.js", "text/javascript"),
     "/workspace/dashboard.js": ("workspace/dashboard.js", "text/javascript"),
+    "/workspace/files.js": ("workspace/files.js", "text/javascript"),
     "/dashboard/": FLOW_VIEW_ASSETS["/"],
     "/dashboard/app.css": FLOW_VIEW_ASSETS["/app.css"],
     "/dashboard/app.js": ("workspace/dashboard-view.js", "text/javascript"),
@@ -593,6 +595,10 @@ def workspace_dispatch(
             if not self.request.local_request():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
                 return
+            route, _, query = self.path.partition("?")
+            if route == "/files":
+                send_workspace_files(self.request, root, route, query, sheets_lock, is_closing)
+                return
             if self.path == WORKSPACE_VISUALIZE_LAYOUT:
                 self.visualize_layout()
                 return
@@ -684,6 +690,10 @@ def workspace_dispatch(
         def do_POST(self) -> None:
             if not self.request.valid_post_origin():
                 self.request.send_error(HTTPStatus.FORBIDDEN)
+                return
+            route, _, query = self.path.partition("?")
+            if route in ("/files/folders", "/files/upload"):
+                send_workspace_files(self.request, root, route, query, sheets_lock, is_closing)
                 return
             if self.path == WORKSPACE_PLACEMENTS:
                 self.workspace_placements()

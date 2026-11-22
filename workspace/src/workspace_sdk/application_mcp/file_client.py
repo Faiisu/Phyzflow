@@ -34,10 +34,13 @@ async def upload(client: Client, args) -> dict:
         size = os.fstat(stream.fileno()).st_size
         checksum = file_digest(stream, "sha256").hexdigest()
         stream.seek(0)
-        started = await call_tool(
-            client, "begin_workspace_transfer", workspace_id=args.workspace_id, path=args.remote_path,
-            direction="upload", revision=args.revision, size=size, sha256=checksum,
-        )
+        start_arguments = {"workspace_id": args.workspace_id, "path": args.remote_path, "size": size, "sha256": checksum}
+        if args.uploads:
+            started = await call_tool(client, "begin_workspace_upload", **start_arguments)
+        else:
+            started = await call_tool(
+                client, "begin_workspace_transfer", direction="upload", revision=args.revision, **start_arguments,
+            )
         identity = started["transfer_id"]
         offset = 0
         finished = False
@@ -132,6 +135,7 @@ def main() -> int:
     put = commands.add_parser("upload")
     put.add_argument("local_path", type=Path)
     put.add_argument("remote_path")
+    put.add_argument("--uploads", action="store_true", help="Upload to Workspace Files using a Files-relative path.")
     put.add_argument("--revision", default="missing")
     put.add_argument("--session", type=session_argument, action="append", default=[])
     put.set_defaults(operation=upload)
@@ -141,6 +145,8 @@ def main() -> int:
     get.add_argument("--revision")
     get.set_defaults(operation=download)
     args = parser.parse_args()
+    if args.operation is upload and args.uploads and (args.revision != "missing" or args.session):
+        parser.error("Workspace Files uploads require a new destination and do not use Sheet editing sessions.")
     token = os.environ.get("PHYZFLOW_MCP_TOKEN")
     if not token:
         parser.error("Set PHYZFLOW_MCP_TOKEN to the MCP bearer token.")

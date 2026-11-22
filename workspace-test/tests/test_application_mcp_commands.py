@@ -48,6 +48,9 @@ EXPECTED_TOOLS = {
     "configure_console_logs",
     "install_dependencies",
     "list_workspace_files",
+    "list_workspace_uploads",
+    "create_workspace_upload_folder",
+    "begin_workspace_upload",
     "stat_workspace_file",
     "read_workspace_text",
     "write_workspace_text",
@@ -135,6 +138,9 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
 
                     for tool_name, args in (
                         ("inspect_workspace", {"workspace_id": denied_id}),
+                        ("list_workspace_uploads", {"workspace_id": denied_id}),
+                        ("create_workspace_upload_folder", {"workspace_id": denied_id, "name": "Input"}),
+                        ("begin_workspace_upload", {"workspace_id": denied_id, "path": "file", "size": 0, "sha256": "0" * 64}),
                         ("create_sheet", {"workspace_id": denied_id, "name": "Extra"}),
                         ("rename_sheet", {"workspace_id": denied_id, "sheet": "Main", "name": "Renamed"}),
                         ("delete_sheet", {"workspace_id": denied_id, "sheet": "Main"}),

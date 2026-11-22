@@ -17,6 +17,7 @@
     </div>
     <div class="workspace-actions" role="group" aria-label="Workspace actions">
       <button type="button" id="open-workspace-dashboard" class="secondary-action" aria-haspopup="dialog">Dashboard</button>
+      <button type="button" id="open-workspace-files" class="secondary-action" aria-haspopup="dialog">Files</button>
       <button type="button" id="run-all" class="secondary-action" hidden>Run All</button>
       <button type="button" id="rename-sheet" class="secondary-action" aria-haspopup="dialog" disabled>Rename sheet</button>
       <button type="button" id="edit-flow-source" class="secondary-action" aria-haspopup="dialog" disabled>Edit flow.py</button>
@@ -46,6 +47,34 @@
   </footer>
   <dialog id="workspace-dashboard" aria-label="Workspace dashboard">
     <iframe title="Workspace Dashboard" allowfullscreen></iframe>
+  </dialog>
+  <dialog id="workspace-files" class="sheet-dialog" aria-labelledby="workspace-files-title">
+    <header class="workspace-files-header">
+      <h2 id="workspace-files-title">Workspace files</h2>
+      <button type="button" id="close-workspace-files" class="secondary-action" autofocus>Close</button>
+    </header>
+    <div class="workspace-files-location">
+      <button type="button" id="workspace-files-up" class="secondary-action" disabled>Up</button>
+      <code id="workspace-files-path" aria-live="polite" tabindex="-1">Files</code>
+    </div>
+    <div id="workspace-files-drop" role="region" aria-label="Current folder">
+      <ul id="workspace-files-list" aria-label="Folder contents"></ul>
+      <p id="workspace-files-empty" hidden>This folder is empty.</p>
+      <div class="workspace-files-drop-hint">
+        <p>Drop files here or on a folder</p>
+        <button type="button" id="choose-workspace-files" class="secondary-action" disabled>Choose files</button>
+        <input type="file" id="workspace-file-input" multiple hidden>
+      </div>
+    </div>
+    <form id="workspace-folder-form">
+      <label for="workspace-files-folder">New folder name</label>
+      <div class="workspace-files-create">
+        <input id="workspace-files-folder" required autocomplete="off">
+        <button type="submit" class="secondary-action" disabled>Create folder</button>
+      </div>
+    </form>
+    <p id="workspace-files-status" role="status"></p>
+    <p id="workspace-files-error" class="dialog-error" role="alert" hidden></p>
   </dialog>
   <dialog id="flow-source" class="sheet-dialog" aria-labelledby="flow-source-title">
     <form>
@@ -100,5 +129,6 @@
     </form>
   </dialog>
   <script type="module" src="./workspace/dashboard.js"></script>
+  <script type="module" src="./workspace/files.js"></script>
 </body>
 </html>
