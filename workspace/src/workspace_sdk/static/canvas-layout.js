@@ -34,7 +34,6 @@ export function createCanvasLayout({
   const retryLayout = layoutStatus.querySelector("button");
   let layoutLoad = sharedLayout ? "unloaded" : "ready";
   let layoutSave = "idle";
-  let fitted = false;
   let boardDrag = null;
 
   function isVisualizeMode() {
@@ -124,17 +123,17 @@ export function createCanvasLayout({
     }
   }
 
+  function visualizeRightEdge() {
+    return Math.floor(graphViewport.clientWidth / WORKSPACE_STEP) * WORKSPACE_STEP - WORKSPACE_STEP;
+  }
+
   function changeDashboardBounds(panel, bounds, dx, dy, resize) {
     const visualize = isVisualizeMode();
     const gap = WORKSPACE_STEP;
-    const viewportWidth = graphViewport.clientWidth;
     if (resize) {
       let width = Math.max(280, snapDashboardSize(bounds.width + dx));
       const height = Math.max(220, snapDashboardSize(bounds.height + dy));
-      if (visualize) {
-        const left = parseFloat(panel.style.left) || gap;
-        width = Math.min(width, Math.max(280, Math.floor((viewportWidth - left - gap) / gap) * gap));
-      }
+      if (visualize) width = Math.min(width, Math.max(1, visualizeRightEdge() - bounds.left));
       panel.style.width = `${width}px`;
       panel.style.height = `${height}px`;
       panel.dataset.resizeSize = `${Math.round(panel.offsetWidth || width)} × ${Math.round(panel.offsetHeight || height)}`;
@@ -142,8 +141,7 @@ export function createCanvasLayout({
       let nextLeft = snapStep(bounds.left + dx);
       let nextTop = snapStep(bounds.top + dy);
       if (visualize) {
-        const width = panel.offsetWidth || parseFloat(panel.style.width) || DEFAULT_PANEL_WIDTH;
-        const maxLeft = Math.max(gap, Math.floor((viewportWidth - width - gap) / gap) * gap);
+        const maxLeft = Math.max(gap, visualizeRightEdge() - bounds.width);
         nextLeft = Math.max(gap, Math.min(maxLeft, nextLeft));
         nextTop = Math.max(gap, nextTop);
       }
@@ -239,14 +237,13 @@ export function createCanvasLayout({
       loadFailed: "Could not load the dashboard layout.",
       saving: "Saving dashboard layout…",
       saveFailed: "Could not save the dashboard layout.",
-      fitted: "Layout editing is available in a wider window.",
     };
-    const state = layoutLoad !== "ready" ? layoutLoad : layoutSave !== "idle" ? layoutSave : fitted ? "fitted" : "";
+    const state = layoutLoad !== "ready" ? layoutLoad : layoutSave;
     const message = layoutStatus.querySelector('[role="status"]');
     if (message.textContent !== (messages[state] ?? "")) message.textContent = messages[state] ?? "";
     layoutStatus.hidden = !messages[state];
     retryLayout.hidden = state !== "loadFailed" && state !== "saveFailed";
-    graphViewport.toggleAttribute("data-layout-locked", isVisualizeMode() && (fitted || layoutLoad !== "ready"));
+    graphViewport.toggleAttribute("data-layout-locked", isVisualizeMode() && layoutLoad !== "ready");
     graphViewport.toggleAttribute("data-layout-loading", isVisualizeMode() && layoutLoad === "loading");
   }
 
@@ -270,22 +267,16 @@ export function createCanvasLayout({
       applyBounds(panel, bounds);
     }
     const ordered = orderedVisualizeBounds();
-    const gap = WORKSPACE_STEP;
-    const width = graphViewport.clientWidth;
-    fitted = ordered.some(bounds => bounds.left + bounds.width + gap > width);
+    const rightEdge = visualizeRightEdge();
+    const fitted = ordered.some(bounds => bounds.left + bounds.width > rightEdge);
     graphViewport.toggleAttribute("data-layout-fitted", fitted);
-    if (fitted) {
-      let top = gap;
-      const inset = Math.min(gap, Math.floor(width / 10));
-      for (const bounds of ordered) {
-        applyBounds(bounds.panel, {
-          left: inset, top, width: Math.max(1, Math.min(bounds.width, width - inset * 2)), height: bounds.height,
-        });
-        top += bounds.height + gap;
-      }
-    } else {
-      resolveVisualizeCollisions(null, ordered);
+    for (const bounds of ordered) {
+      bounds.width = Math.min(bounds.width, Math.max(1, rightEdge - WORKSPACE_STEP));
+      bounds.left = Math.min(bounds.left, Math.max(WORKSPACE_STEP, rightEdge - bounds.width));
+      bounds.panel.style.left = `${bounds.left}px`;
+      bounds.panel.style.width = `${bounds.width}px`;
     }
+    resolveVisualizeCollisions(null, ordered);
     updateVisualizeScrollHeight();
     showLayoutStatus();
     if (layoutSave !== "saveFailed") void flushLayout();
@@ -341,8 +332,15 @@ export function createCanvasLayout({
       const original = before.get(panel);
       if (!original || Object.keys(bounds).every(name => bounds[name] === original[name])) continue;
       const key = panelKeys.get(panel);
-      savedVisualizeLayouts.set(key, bounds);
-      if (sharedLayout) pendingBounds.set(key, bounds);
+      const saved = { ...savedVisualizeLayouts.get(key) };
+      if (bounds.left !== original.left || bounds.width !== original.width) {
+        saved.left = bounds.left;
+        saved.width = Math.max(280, bounds.width);
+      }
+      if (bounds.top !== original.top) saved.top = bounds.top;
+      if (bounds.height !== original.height) saved.height = bounds.height;
+      savedVisualizeLayouts.set(key, saved);
+      if (sharedLayout) pendingBounds.set(key, saved);
     }
     if (layoutSave !== "saveFailed") void flushLayout();
   }

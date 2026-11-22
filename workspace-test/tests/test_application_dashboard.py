@@ -457,6 +457,9 @@ class ApplicationDashboardTests(unittest.TestCase):
             def enter(viewer, workspace):
                 viewer.goto(workspace)
                 flow = viewer.frame_locator('iframe[title="Main flow"]')
+                if viewer.viewport_size["width"] <= 720:
+                    flow.locator("#panel-switcher summary").click()
+                    flow.get_by_role("button", name="Visualize", exact=True).click()
                 flow.locator("#enter-visualize-mode").click()
                 expect(flow.locator("body")).to_have_class("is-visualize-mode")
                 expect(flow.locator(".graph-scroll")).not_to_have_attribute("data-layout-locked", "")
@@ -537,6 +540,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 page.set_viewport_size({"width": 390, "height": 800})
                 viewport = flow.locator(".graph-scroll")
                 expect(viewport).to_have_attribute("data-layout-fitted", "")
+                expect(viewport).not_to_have_attribute("data-layout-locked", "", timeout=1500)
                 fitted = bounds(flow)
                 width, scroll_width = viewport.evaluate("el => [el.clientWidth, el.scrollWidth]")
                 self.assertEqual(width, scroll_width)
@@ -552,6 +556,26 @@ class ApplicationDashboardTests(unittest.TestCase):
                 expect(viewport).not_to_have_attribute("data-layout-fitted", "")
                 self.assertEqual(bounds(flow), saved)
                 self.assertEqual(page.request.get(endpoint).json(), expected)
+
+                page.set_viewport_size({"width": 390, "height": 800})
+                expect(viewport).to_have_attribute("data-layout-fitted", "")
+                second_panel = flow.locator(".dashboard-panel:not([hidden])").nth(1)
+                handle = second_panel.locator('[data-dash="handle"]')
+                narrow = bounds(flow)
+                handle.press("ArrowDown")
+                handle.press("Shift+ArrowDown")
+                expect(flow.locator("#visualize-layout-status")).to_be_hidden()
+                self.assertEqual(bounds(flow)[1], {
+                    **narrow[1], "top": narrow[1]["top"] + 20, "height": narrow[1]["height"] + 20,
+                })
+                saved[1].update(top=narrow[1]["top"] + 20, height=narrow[1]["height"] + 20)
+                self.assertEqual(page.request.get(endpoint).json(), expected)
+                flow = enter(page, workspace)
+                self.assertEqual(bounds(flow)[1]["top"], saved[1]["top"])
+                self.assertEqual(bounds(flow)[1]["height"], saved[1]["height"])
+                page.set_viewport_size({"width": 1440, "height": 900})
+                expect(viewport).not_to_have_attribute("data-layout-fitted", "")
+                self.assertEqual(bounds(flow), saved)
 
                 page.route("**/visualize-layout", lambda route: route.fulfill(status=503))
                 flow.locator("#exit-visualize-mode").click()

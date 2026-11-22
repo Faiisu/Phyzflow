@@ -757,6 +757,9 @@ body.is-visualize-mode .dashboard-panel .dock-heading {
   min-height: 28px;
   padding: .2rem .55rem;
 }
+body.is-visualize-mode .dashboard-panel:not(:fullscreen) :is(.dock-heading, [data-dash="resize"]) {
+  touch-action: none;
+}
 body.is-visualize-mode:not(.is-workspace-dashboard) .dashboard-panel :is(.dashboard-controls, [data-dash="fullscreen"], [data-dash="close"]) {
   display: none !important;
 }

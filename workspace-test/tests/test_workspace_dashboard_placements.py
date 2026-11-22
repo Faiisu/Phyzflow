@@ -49,6 +49,42 @@ class WorkspaceDashboardPlacementTests(unittest.TestCase):
                 dashboard.click()
                 expect(heading).to_be_visible()
                 expect(panel).to_have_css("width", f"{int(width)}px")
+                layout_url = f"{url}/dashboard/visualize-layout"
+                original = page.request.get(layout_url).json()["panels"]
+                key, saved = next(iter(original.items()))
+                page.set_viewport_size({"width": 300, "height": 640})
+                viewport = board.locator(".graph-scroll")
+                expect(viewport).to_have_attribute("data-layout-fitted", "")
+                self.assertTrue(viewport.evaluate("el => el.clientWidth === el.scrollWidth"))
+                self.assertEqual(page.request.get(layout_url).json()["panels"], original)
+
+                resize = panel.locator('[data-dash="resize"]')
+                expect(resize).to_be_visible()
+                resize.scroll_into_view_if_needed()
+                box = resize.bounding_box()
+                x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x, y + 40, steps=4)
+                page.mouse.up()
+                wait_for(lambda: page.request.get(layout_url).json()["panels"][key] == {
+                    **saved, "height": saved["height"] + 40,
+                })
+                expect(panel).to_have_css("height", f"{saved['height'] + 40}px")
+                page.set_viewport_size({"width": 1440, "height": 900})
+                expect(panel).to_have_css("width", f"{int(width)}px")
+                expect(panel).to_have_css("height", f"{saved['height'] + 40}px")
+
+                page.set_viewport_size({"width": 390, "height": 844})
+                expect(viewport).to_have_attribute("data-layout-fitted", "")
+                narrow_width = int(panel.bounding_box()["width"])
+                handle.press("Shift+ArrowLeft")
+                handle.press("ArrowRight")
+                wait_for(lambda: page.request.get(layout_url).json()["panels"][key] == {
+                    **saved, "left": saved["left"] + 20, "width": narrow_width - 20, "height": saved["height"] + 40,
+                })
+                expect(panel).to_have_css("left", f"{saved['left'] + 20}px")
+                expect(panel).to_have_css("width", f"{narrow_width - 20}px")
 
     def test_sheet_placements_keep_source_identity_and_layout_after_restart(self):
         with TemporaryDirectory() as temp, browser_page() as page:
