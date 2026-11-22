@@ -49,10 +49,11 @@ uv pip install --python .venv/bin/python ./workspace
 
 Open the URL printed in the terminal (usually [127.0.0.1:18080](http://127.0.0.1:18080)). Select the **Main** sheet and click **Run flow** to try the sample. Click **+** to create a sheet with its own `flow.py`. After editing Python, use **Reload flow** to refresh that sheet.
 
-To try the dashboard examples, run `.venv/bin/workspace --project workspace-test/sheets-demo ui` and open [Live Counter](workspace-test/sheets-demo/flows/Live%20Counter/README.md) or [Telemetry Control Room](workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md). Select **Visualize** in the toolbar to open the workflow dashboard.
+To try the dashboard examples, run `.venv/bin/workspace --project workspace-test/sheets-demo ui` and open [Live Counter](workspace-test/sheets-demo/flows/Live%20Counter/README.md) or [Telemetry Control Room](workspace-test/sheets-demo/flows/Telemetry%20Control%20Room/README.md). Select the workflow panel in the **Visualize** drawer.
 
 ## Documentation
 
+- [Create, edit, and remove dashboard panels](docs/dashboard-editor.md)
 - [Application specification](docs/application-spec.md)
 - [Feature specs and implementation tickets](.scratch/)
 - [macOS launcher and CLI commands for AI agents](workspace/README.md)

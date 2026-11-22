@@ -4,7 +4,7 @@ from ..dashboard import DASHBOARD_THEME_REFERENCE, inspect_sheet_dashboards, ins
 from ..sheet_locks import SheetLockedError
 from ..sheets import discover_flows
 from ..workspace_environment import install_workspace_packages
-from .access import WorkspaceAccess, available_root, ensure_not_protected, resolve_workspace_sheet
+from .access import WorkspaceAccess, ensure_not_protected, resolve_workspace_sheet
 
 
 def register_sheet_tools(server, access: WorkspaceAccess) -> None:
@@ -21,7 +21,6 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
         sheets = [
             {"name": name, "entrypoint": (sheet / "flow.py").relative_to(root).as_posix()}
             for name, sheet in discover_flows(root)
-            if available_root(sheet) and not (sheet / "flow.py").is_symlink()
         ]
         return {"id": workspace_id, "name": root.name, "sheets": sheets}
 
@@ -59,7 +58,11 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
         except (SheetLockedError, OSError, RuntimeError, ValueError) as error:
             raise ToolError(str(error) or f"Could not rename sheet {sheet!r}.") from None
 
-    @server.tool(description="Inspect dashboard panels, asset paths, theme contract, and resize guidance. Pass null to inspect only Workspace panels.")
+    @server.tool(description=(
+        "Inspect dashboard panels, asset paths, theme contract, and resize guidance through MCP. "
+        "Pass sheet: null for the Workspace Dashboard or a sheet name for its Workflow and Node panels. "
+        "Use the MCP file tools to edit the returned assets. A browser URL is not required."
+    ))
     def inspect_dashboards(workspace_id: str, sheet: str | None = "Main") -> dict:
         if sheet is None:
             root = access.workspace(workspace_id)
@@ -67,7 +70,11 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
             result = {"theme_reference": DASHBOARD_THEME_REFERENCE}
         else:
             root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
-            result = {"sheet": sheet, **inspect_sheet_dashboards(flow_sheet.root)}
+            result = {
+                "sheet": sheet,
+                "sheet_path": flow_sheet.root.relative_to(root).as_posix(),
+                **inspect_sheet_dashboards(flow_sheet.root),
+            }
         return {**result, "workspace": inspect_workspace_dashboards(root)}
 
     @server.tool(description="Open a sheet for exclusive editing or read-only inspection.")

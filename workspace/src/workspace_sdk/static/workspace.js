@@ -483,6 +483,15 @@ function syncSheets(flows) {
   showCurrentSheet();
 }
 
+window.phyzflowOpenDashboardSource = async index => {
+  const dialog = document.querySelector("#workspace-dashboard");
+  if (!sheets[index]) syncSheets((await getWorkspace()).flows);
+  const sheet = sheets[index];
+  if (!sheet) return;
+  dialog.close();
+  selectSheet(sheet);
+};
+
 function showFormatNotice(notice) {
   const formatNotice = document.querySelector("#format-notice");
   formatNotice.textContent = notice ?? "";
@@ -535,6 +544,8 @@ try {
   runAll.hidden = !workspace.run_all;
   editRunningSource = workspace.edit_running_source;
   syncSheets(workspace.flows);
+  const linkedSheet = sheets.find(sheet => sheet && location.hash === `#${sheet.tab.id}`);
+  if (linkedSheet && linkedSheet !== active) selectSheet(linkedSheet);
   newSheet.disabled = false;
   pollStatus().catch(() => {});
 } catch (error) {

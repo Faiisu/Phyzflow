@@ -9,11 +9,14 @@ import re
 import sqlite3
 from threading import Lock
 from typing import Any
+from urllib.parse import parse_qs
 
 from .console import ConsoleLogStore, capture_console
 from .dashboard import (
-    ASSET_ROUTE, DASHBOARD_BRIDGE_VERSION, PANELS_ROUTE, SETTINGS_ROUTE, dashboard_assets, dashboard_panels,
+    ASSET_ROUTE, DASHBOARD_BRIDGE_VERSION, MAX_WORKSPACE_FRAME_SOURCES, PANELS_ROUTE, SETTINGS_ROUTE,
+    dashboard_assets, dashboard_panels,
 )
+from .dashboard_editor import SOURCE_ROUTE as DASHBOARD_SOURCE_ROUTE, send_dashboard_edit
 from .flow import Flow, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
@@ -33,6 +36,8 @@ FLOW_VIEW_ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/canvas-layout.js": ("canvas-layout.js", "text/javascript; charset=utf-8"),
     "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
+    "/dashboard-bridge.js": ("dashboard-bridge.js", "text/javascript; charset=utf-8"),
+    "/dashboard-editor.js": ("dashboard-editor.js", "text/javascript; charset=utf-8"),
     "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
     "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
     **{
@@ -43,7 +48,7 @@ FLOW_VIEW_ASSETS = {
 FLOW_VIEW_ASSET_PATTERN = "|".join(re.escape(path) for path in FLOW_VIEW_ASSETS if path != "/")
 FLOW_VIEW_SUBPATH_PATTERN = (
     rf"({FLOW_VIEW_ASSET_PATTERN}|/(?:project|"
-    r"dashboard-(?:panels|settings)/(?:workflow|[0-9]{1,8})|"
+    rf"dashboard-(?:panels|settings)/(?:workflow|[0-9]{{1,8}})|{DASHBOARD_SOURCE_ROUTE}|"
     r"dashboard-assets/(?:workflow|[0-9]{1,8})(?:/[A-Za-z0-9._-]+)?|"
     r"live-run|node-(?:files|source)/[0-9]{1,8}|history(?:/[0-9a-f]{32})?|console-logs(?:/[0-9a-f]{32})?|run)?)"
 )
@@ -55,12 +60,12 @@ def is_flow_view_route(method: str, subpath: str) -> bool:
     if _FLOW_VIEW_SUBPATH_RE.fullmatch(subpath) is None:
         return False
     if method == "GET":
-        return subpath != "/run" and not subpath.startswith("/node-source/")
+        return subpath != "/run" and not subpath.startswith(("/node-source/", "/dashboard-source/"))
     if method == "POST":
         return (
             subpath == "/run"
             or subpath == "/console-logs"
-            or subpath.startswith(("/node-source/", "/dashboard-settings/"))
+            or subpath.startswith(("/node-source/", "/dashboard-settings/", "/dashboard-source/"))
         )
     return False
 
@@ -144,7 +149,7 @@ def sample_input(root: Path) -> dict:
 def serve(
     flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
     *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str, list[dict]], None] | None = None,
-    run_token: str | None = None,
+    run_token: str | None = None, workspace_managed: bool = False,
 ) -> None:
     graph = []
     steps = ordered_steps(flow)
@@ -192,6 +197,66 @@ def serve(
 
         def scoped_steps(self, scope):
             return steps if scope == "workflow" else (steps[int(scope)],)
+
+        def dashboard_live_frames(self, query: str) -> None:
+            try:
+                parameters = parse_qs(query, strict_parsing=True, max_num_fields=MAX_WORKSPACE_FRAME_SOURCES)
+                frame_steps = parameters["step"]
+                if parameters.keys() != {"step"} or any(len(step) > 512 for step in frame_steps):
+                    raise ValueError
+            except (KeyError, ValueError):
+                self.send_json({"error": "Invalid live dashboard frame selection."}, HTTPStatus.BAD_REQUEST)
+                return
+            data = None
+            with live_lock:
+                started = live_events.get((None, "running")) if run_status == "running" else None
+                if started is not None:
+                    run = started[1]
+                    frames = {}
+                    for step in frame_steps:
+                        entry = live_events.get((step, "live_frame"))
+                        if entry is not None and entry[1]["run_id"] == run["run_id"]:
+                            event = entry[1]
+                            frames[step] = {"jpeg": event["live_frame"], "time": event["time"]}
+                    data = {"id": run["run_id"], "started_at": run["time"], "frames": frames}
+            self.send_json(data)
+
+        def dashboard_live_placement(self, query: str) -> None:
+            try:
+                parameters = parse_qs(query, strict_parsing=True, max_num_fields=1)
+                node_id = parameters["node"][0] if query else None
+            except (KeyError, ValueError):
+                self.send_json({"error": "Invalid dashboard node selection."}, HTTPStatus.BAD_REQUEST)
+                return
+            data = None
+            with live_lock:
+                started = live_events.get((None, "running")) if run_status == "running" else None
+                if started is not None and not any((None, status) in live_events for status in ("succeeded", "failed")):
+                    run = started[1]
+                    run_id = run["run_id"]
+                    nodes, frames, metrics = {}, {}, {}
+                    for (step, kind), (_, event) in live_events.items():
+                        if step is None or (node_id is not None and step != node_id) or event.get("run_id") != run_id:
+                            continue
+                        if kind == "live_frame":
+                            frames[step] = f"data:image/jpeg;base64,{event['live_frame']}"
+                        elif "live_metrics" in event:
+                            metrics.setdefault(step, {}).update(event["live_metrics"])
+                        elif kind in ("running", "succeeded", "failed", "stopped", "skipped"):
+                            entry = nodes.setdefault(step, {"id": step})
+                            entry["status"] = kind
+                            if kind == "running":
+                                entry["started_at"] = event["time"]
+                            elif kind != "skipped":
+                                entry["finished_at"] = event["time"]
+                            entry.update({field: event[field] for field in ("duration_ms", "metrics") if field in event})
+                    data = {
+                        "run": {"id": run_id, "status": "running", "started_at": run["time"],
+                                "steps": list(nodes.values())},
+                        "liveFrames": frames,
+                        "liveMetrics": metrics,
+                    }
+            self.send_json(data)
 
         def do_GET(self):
             if not self.local_request():
@@ -243,6 +308,10 @@ def serve(
                         data = {"id": run["run_id"], "status": "running", "started_at": run["time"],
                                 "metrics": metrics, "metric_times": metric_times}
                 self.send_json(data)
+            elif self.path.partition("?")[0] == "/dashboard-live-placement":
+                self.dashboard_live_placement(self.path.partition("?")[2])
+            elif self.path.startswith("/dashboard-live-frames?"):
+                self.dashboard_live_frames(self.path.partition("?")[2])
             elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):
                 scope = match[1]
                 try:
@@ -331,7 +400,8 @@ def serve(
                 return
             source_route = re.fullmatch(f"/{NODE_SOURCE_ROUTE}", self.path)
             settings_route = re.fullmatch(f"/{SETTINGS_ROUTE}", self.path)
-            if self.path not in ("/run", "/console-logs") and source_route is None and settings_route is None:
+            dashboard_route = re.fullmatch(f"/{DASHBOARD_SOURCE_ROUTE}", self.path) if not workspace_managed else None
+            if self.path not in ("/run", "/console-logs") and not any((source_route, settings_route, dashboard_route)):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -341,6 +411,15 @@ def serve(
                 inputs = self.read_json_dict()
             except (ValueError, UnicodeError):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Send a JSON object up to 1 MiB.")
+                return
+            if dashboard_route is not None:
+                scope = dashboard_route[1]
+                try:
+                    step_id = None if scope == "workflow" else self.scoped_steps(scope)[0].id
+                except IndexError:
+                    self.send_json({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
+                else:
+                    send_dashboard_edit(self, root, step_id, inputs)
                 return
             if source_route is not None:
                 self.edit_source(int(source_route[1]), inputs)

@@ -50,11 +50,30 @@ def discover_flows(root: Path) -> list[tuple[str, Path]]:
     workspace_format_notice(root)
     folder = root / "flows"
     flows = []
-    if folder.is_dir():
-        flows = [(sheet_name(path, path.name), path) for path in sorted(folder.iterdir()) if (path / "flow.py").is_file()]
-    if (root / "flow.py").is_file():
+    if folder.is_dir() and folder.resolve() == folder.absolute():
+        flows = [(sheet_name(path, path.name), path) for path in sorted(folder.iterdir()) if _is_sheet_directory(path)]
+    if _is_sheet_directory(root):
         flows.insert(0, (sheet_name(root, "Main"), root))
     return flows
+
+
+def _is_sheet_directory(path: Path) -> bool:
+    if not path.is_dir() or path.resolve() != path.absolute():
+        return False
+    entrypoint = path / "flow.py"
+    return not entrypoint.is_symlink() and entrypoint.is_file()
+
+
+def find_sheet_by_path(root: Path, relative: str | Path) -> Path | None:
+    if not relative or "\x00" in str(relative):
+        return None
+    relative = Path(relative)
+    if relative.anchor or ".." in relative.parts:
+        return None
+    path = root / relative
+    if (path == root or path.parent == root / "flows") and _is_sheet_directory(path):
+        return path
+    return None
 
 
 def find_sheet(root: Path, name: str) -> Path | None:
@@ -119,7 +138,7 @@ def editable_sheet_python_files(root: Path, *, main: bool) -> Iterator[Path]:
             yield path
 
 
-def declared_graph(root: Path, files: set[str]) -> list[dict]:
+def declared_graph(root: Path, files: set[str], *, require_export: bool = False) -> list[dict]:
     if "flow.py" not in files:
         return []
     try:
@@ -134,9 +153,14 @@ def declared_graph(root: Path, files: set[str]) -> list[dict]:
                 imports[alias.asname or alias.name] = next(
                     (file for file in (f"{path}.py", f"{path}/__init__.py") if file in files), "flow.py",
                 )
-    flow = next((node for node in ast.walk(module)
-                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Flow"), None)
-    if flow is None:
+    if require_export:
+        flow_names = [node for node in ast.walk(module) if isinstance(node, ast.Name) and node.id == "flow"]
+        flow = next((node.value for node in module.body if isinstance(node, ast.Assign)
+                     and node.targets == flow_names), None)
+    else:
+        flow = next((node for node in ast.walk(module) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id == "Flow"), None)
+    if not isinstance(flow, ast.Call) or not isinstance(flow.func, ast.Name) or flow.func.id != "Flow":
         return []
     steps = next((item.value for item in flow.keywords if item.arg == "steps"),
                  flow.args[1] if len(flow.args) > 1 else None)

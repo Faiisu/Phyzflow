@@ -16,6 +16,7 @@ from ..sheets import (
     can_delete_sheet,
     create_sheet,
     discover_flows,
+    find_sheet_by_path,
     set_sheet_name,
     validate_sheet_name,
 )
@@ -33,6 +34,7 @@ def workspace_routes(
     interpreter: Path | None = None,
     workspace_id: str | None = None,
     run_state: RunStateStore | None = None,
+    dashboard_state: RunStateStore | None = None,
     app_closing: Callable[[], bool] = lambda: False,
 ):
     def make_sheet(title: str, path: Path) -> FlowSheet:
@@ -122,19 +124,20 @@ def workspace_routes(
     restore_states()
 
     def resolve_sheet(sheet_path: Path) -> FlowSheet:
-        target = sheet_path.resolve()
         with sheets_lock:
             if closing:
                 raise RuntimeError("Workspace is shutting down.")
+            if not sheet_path.is_relative_to(root) or find_sheet_by_path(root, sheet_path.relative_to(root)) is None:
+                raise FileNotFoundError(f"Unknown flow sheet: {sheet_path}")
             for existing in sheets:
-                if existing is not None and existing.root.resolve() == target:
+                if existing is not None and existing.root == sheet_path:
                     return existing
-            known = {sheet.root.resolve() for sheet in sheets if sheet is not None}
+            known = {sheet.root for sheet in sheets if sheet is not None}
             for title, path in discover_flows(root):
-                if path.resolve() not in known:
+                if path not in known:
                     sheets.append(make_sheet(title, path))
             for existing in sheets:
-                if existing is not None and existing.root.resolve() == target:
+                if existing is not None and existing.root == sheet_path:
                     return existing
         raise FileNotFoundError(f"Unknown flow sheet: {sheet_path}")
 
@@ -168,10 +171,10 @@ def workspace_routes(
     ) -> dict:
         name = validate_sheet_name(value)
         with sheets_lock:
-            if closing or sheet.closing or sheet not in sheets or not (sheet.root / "flow.py").is_file():
+            if closing or sheet.closing or sheet not in sheets or (
+                find_sheet_by_path(root, sheet.root.relative_to(root)) is None
+            ):
                 raise FileNotFoundError("This sheet is no longer available.")
-            if sheet.root != root and not can_delete_sheet(root, sheet.root):
-                raise ValueError("Only sheets in this Workspace can be renamed.")
             if (sheet.root != root and name.casefold() == "main") or any(
                 path != sheet.root and title.casefold() == name.casefold() for title, path in discover_flows(root)
             ):
@@ -255,6 +258,7 @@ def workspace_routes(
         run_all_sheets=run_all_sheets,
         workspace_id=workspace_id,
         run_state=run_state,
+        dashboard_state=dashboard_state or run_state,
     )
 
     def close(*, delete: bool = False) -> None:

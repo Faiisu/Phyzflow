@@ -9,7 +9,7 @@ from playwright.sync_api import expect
 
 from browser_support import browser_page
 from test_application import application, sign_in
-from test_application_edit_locks import issue_token
+from test_application_edit_locks import issue_token, wait_for_open_sheet
 from test_application_mcp import call, mcp_client, output
 
 
@@ -210,6 +210,232 @@ workspaceDashboard.subscribe(({ run, liveMetrics }) => {
 
 
 class ApplicationDashboardTests(unittest.TestCase):
+    def test_sheet_dashboard_sources_remain_readable_during_mcp_edit(self):
+        with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
+            parent = Path(temp).resolve()
+            root = parent / "DashboardLocks"
+            state = parent / "state"
+            copytree(LIVE_COUNTER, root, ignore=ignore_patterns(".workspace", "__pycache__", ".venv"))
+            with application(state) as url:
+                sign_in(page, url, state)
+                added = page.request.post(
+                    f"{url}/workspaces", headers={"Origin": url}, data={"path": str(root), "action": "add"},
+                )
+                self.assertEqual(added.status, 201, added.text())
+                workspace_id = added.json()["id"]
+                token = issue_token(page, url, "Dashboard Author", [workspace_id])
+                workspace = f"{url}/workspaces/{workspace_id}/"
+                page.goto(workspace)
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                flow.locator("#enter-visualize-mode").click()
+                with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
+                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    self.assertFalse(opened.is_error, opened.content)
+                    owner = output(opened)["edit_lock"]["owner"]
+                    for label, path, scope in (
+                        ("Workflow dashboard", "dashboards/workflow", "workflow"),
+                        ("Multiply by Ten dashboard", "dashboards/nodes/Multiply by Ten", "1"),
+                    ):
+                        with self.subTest(scope=scope):
+                            panel = flow.get_by_role("region", name=label, exact=True)
+                            expect(panel.locator("iframe")).to_be_visible()
+                            endpoint = f"{workspace}flows/0/view/dashboard-source/{scope}"
+                            read = page.request.post(endpoint, headers={"Origin": url}, data={
+                                "action": "read", "panel": "default", "name": "index.html",
+                            })
+                            self.assertEqual(read.status, 200, read.text())
+                            original = (root / path / "index.html").read_text(encoding="utf-8")
+                            self.assertEqual(read.json()["source"], original)
+                            for mutation in (
+                                {"action": "create", "panel": "new-panel"},
+                                {"action": "remove", "panel": "default"},
+                                {"action": "save", "panel": "default", "name": "index.html",
+                                 "revision": read.json()["revision"], "source": "<h1>New dashboard</h1>"},
+                            ):
+                                result = page.request.post(endpoint, headers={"Origin": url}, data=mutation)
+                                self.assertEqual(result.status, 409, result.text())
+                                self.assertEqual(result.json()["edit_lock"]["owner"], owner)
+                            self.assertEqual((root / path / "index.html").read_text(encoding="utf-8"), original)
+                            self.assertFalse((root / path / "panels/new-panel").exists())
+                            panel.get_by_role("button", name="Edit dashboard").click()
+                            editor = flow.locator("#dashboard-editor")
+                            source = editor.get_by_role("textbox", name="Source code")
+                            expect(source).to_have_value(original)
+                            expect(source).not_to_be_editable()
+                            expect(editor.get_by_role("status")).to_contain_text(owner)
+                            expect(editor.get_by_role("button", name="Save", exact=True)).to_be_disabled()
+                            editor.get_by_role("button", name="Close dashboard editor").click()
+
+    def test_browser_dashboard_editor_holds_a_sheet_lease_and_checks_revisions(self):
+        with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
+            parent = Path(temp).resolve()
+            root = parent / "BrowserDashboardLocks"
+            state = parent / "state"
+            with application(state) as url:
+                workspace_id, token = create_workspace_and_token(page, url, state, root)
+                workspace = f"{url}/workspaces/{workspace_id}/"
+                created = page.request.post(f"{workspace}flows", headers={"Origin": url}, data={"name": "Other"})
+                self.assertEqual(created.status, 201, created.text())
+                page.goto(workspace)
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                editor = flow.locator("#dashboard-editor")
+                panel_id = editor.get_by_label("Panel ID")
+                create = editor.get_by_role("button", name="Create dashboard")
+
+                with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
+                    for scope, label, directory in (
+                        ("Workflow", "Workflow dashboard", "dashboards/workflow"),
+                        ("Start", "Start dashboard", "dashboards/nodes/Start"),
+                    ):
+                        with self.subTest(scope=scope):
+                            flow.get_by_role("button", name="Add dashboard").click()
+                            editor.get_by_label("Scope").select_option(label=scope)
+                            panel_id.fill("test-status")
+                            expect(create).to_be_enabled()
+                            denied = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                            self.assertTrue(denied.is_error)
+                            self.assertIn("Web editor", denied.content[0].text)
+
+                            other = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Other", mode="edit")
+                            self.assertFalse(other.is_error, other.content)
+                            other_session = output(other)["session_id"]
+                            other_write = call(
+                                portal, client, "write_file", workspace_id=workspace_id, sheet="Other",
+                                session_id=other_session, path=f"{directory}/panels/test-status/index.html",
+                                revision="missing", source="<h1>Other dashboard</h1>",
+                            )
+                            self.assertFalse(other_write.is_error, other_write.content)
+                            closed = call(portal, client, "close_sheet", workspace_id=workspace_id, sheet="Other",
+                                          session_id=other_session)
+                            self.assertFalse(closed.is_error, closed.content)
+
+                            with page.expect_response(lambda response: "/dashboard-source/" in response.url) as result:
+                                create.click()
+                            self.assertEqual(result.value.status, 200, result.value.text())
+                            panel = flow.get_by_role("region", name=f"{label} · test status", exact=True)
+                            preview = panel.frame_locator("iframe")
+                            expect(preview.get_by_role("heading", name="Dashboard")).to_be_visible()
+                            panel.get_by_role("button", name="Edit dashboard").click()
+                            source = editor.get_by_role("textbox", name="Source code")
+                            expect(source).to_be_editable()
+                            relative = f"{directory}/panels/test-status/index.html"
+                            read = call(portal, client, "read_workspace_text", workspace_id=workspace_id, path=relative)
+                            self.assertFalse(read.is_error, read.content)
+                            denied_write = call(
+                                portal, client, "write_workspace_text", workspace_id=workspace_id, path=relative,
+                                revision=output(read)["revision"], text="<h1>MCP dashboard</h1>",
+                            )
+                            self.assertTrue(denied_write.is_error)
+                            self.assertIn("Web editor", denied_write.content[0].text)
+                            read = call(portal, client, "read_file", workspace_id=workspace_id, sheet="Main", path=relative)
+                            self.assertFalse(read.is_error, read.content)
+                            denied_write = call(
+                                portal, client, "write_file", workspace_id=workspace_id, sheet="Main",
+                                path=relative, revision=output(read)["revision"], source="<h1>MCP dashboard</h1>",
+                            )
+                            self.assertTrue(denied_write.is_error)
+                            self.assertIn("Web editor", denied_write.content[0].text)
+                            source.fill("<h1>Saved dashboard</h1>")
+                            save = editor.get_by_role("button", name="Save", exact=True)
+                            save.click()
+                            expect(editor.get_by_role("status")).to_have_text("Saved.")
+                            expect(preview.get_by_role("heading", name="Saved dashboard")).to_have_count(1)
+                            asset = root / relative
+                            self.assertEqual(asset.read_text(encoding="utf-8"), "<h1>Saved dashboard</h1>")
+                            asset.write_text("<h1>Newer dashboard</h1>", encoding="utf-8")
+                            source.fill("<h1>Stale dashboard</h1>")
+                            save.click()
+                            expect(editor.get_by_role("status")).to_contain_text("changed on disk")
+                            self.assertEqual(asset.read_text(encoding="utf-8"), "<h1>Newer dashboard</h1>")
+                            page.once("dialog", lambda confirm: confirm.accept())
+                            editor.get_by_role("button", name="Close dashboard editor").click()
+                            panel.get_by_role("button", name="Remove dashboard").click()
+                            editor.get_by_role("button", name="Remove dashboard", exact=True).click()
+                            expect(panel).to_have_count(0)
+                            self.assertFalse(asset.exists())
+                            opened = wait_for_open_sheet(portal, client, workspace_id)
+                            self.assertFalse(opened.is_error, opened.content)
+                            closed = call(portal, client, "close_sheet", workspace_id=workspace_id,
+                                          sheet="Main", session_id=output(opened)["session_id"])
+                            self.assertFalse(closed.is_error, closed.content)
+
+    def test_dashboard_editor_creates_edits_and_removes_panel_assets(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root = parent / "DashboardEditor"
+            state = parent / "state"
+            copytree(LIVE_COUNTER, root, ignore=ignore_patterns(".workspace", "__pycache__", ".venv"))
+            with application(state) as url:
+                sign_in(page, url, state)
+                added = page.request.post(
+                    f"{url}/workspaces", headers={"Origin": url}, data={"path": str(root), "action": "add"},
+                )
+                self.assertEqual(added.status, 201, added.text())
+                workspace_url = f"{url}/workspaces/{added.json()['id']}"
+                page.goto(f"{workspace_url}/")
+                flow = page.frame_locator('iframe[title="Main flow"]')
+                flow.get_by_role("button", name="Add dashboard").click()
+                editor = flow.locator("#dashboard-editor")
+                editor.get_by_label("Scope").select_option(label="Workflow")
+                editor.get_by_label("Panel ID").fill("run-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                directory = root / "dashboards/workflow/panels/run-status"
+                panel = flow.get_by_role("region", name="Workflow dashboard · run status", exact=True)
+                frame = panel.frame_locator("iframe")
+                expect(frame.get_by_role("heading", name="Dashboard")).to_be_visible()
+                self.assertTrue((directory / "bridge.json").is_file())
+
+                flow.get_by_role("button", name="Add dashboard").click()
+                editor.get_by_label("Panel ID").fill("run-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                expect(editor.get_by_role("status")).to_contain_text("already exists")
+                editor.get_by_role("button", name="Close dashboard editor").click()
+
+                panel.get_by_role("button", name="Edit dashboard").click()
+                source = editor.get_by_role("textbox", name="Source code")
+                expect(source).to_have_value((directory / "index.html").read_text(encoding="utf-8"))
+                editor.get_by_label("Source file").select_option("dashboard.js")
+                expect(source).to_have_value((directory / "dashboard.js").read_text(encoding="utf-8"))
+                editor.get_by_label("Source file").select_option("index.html")
+                expect(source).to_have_value((directory / "index.html").read_text(encoding="utf-8"))
+                markup = '<h1>Edited dashboard</h1><p role="status"></p>'
+                source.fill(markup)
+                editor.get_by_role("button", name="Save", exact=True).click()
+                expect(editor.get_by_role("status")).to_have_text("Saved.")
+                expect(frame.get_by_role("heading", name="Edited dashboard")).to_have_count(1)
+                self.assertEqual((directory / "index.html").read_text(encoding="utf-8"), markup)
+                editor.get_by_role("button", name="Close dashboard editor").click()
+
+                panel.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Close dashboard editor").click()
+                self.assertTrue((directory / "index.html").is_file())
+                panel.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Remove dashboard", exact=True).click()
+                expect(panel).to_have_count(0)
+                self.assertFalse(directory.exists())
+
+                flow.get_by_role("button", name="Add dashboard").click()
+                editor = flow.locator("#dashboard-editor")
+                editor.get_by_label("Scope").select_option(label="Multiply by Ten")
+                editor.get_by_label("Panel ID").fill("node-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                node_panel = flow.get_by_role("region", name="Multiply by Ten dashboard · node status")
+                expect(node_panel.frame_locator("iframe").get_by_role("heading", name="Dashboard")).to_be_visible()
+                node_dir = root / "dashboards/nodes/Multiply by Ten/panels/node-status"
+                self.assertTrue((node_dir / "index.html").is_file())
+                node_panel.get_by_role("button", name="Remove dashboard").click()
+                editor.get_by_role("button", name="Remove dashboard", exact=True).click()
+                expect(node_panel).to_have_count(0)
+                self.assertFalse(node_dir.exists())
+
+                flow.get_by_role("button", name="Add dashboard").click()
+                editor.get_by_label("Scope").select_option(label="Workflow")
+                editor.get_by_label("Panel ID").fill("workflow-status")
+                editor.get_by_role("button", name="Create dashboard").click()
+                workflow = flow.get_by_role("region", name="Workflow dashboard · workflow status")
+                expect(workflow.frame_locator("iframe").get_by_role("heading", name="Dashboard")).to_be_visible()
+                self.assertTrue((root / "dashboards/workflow/panels/workflow-status/index.html").is_file())
+
     def test_visualize_layout_is_shared_per_sheet_and_fits_narrow_screens(self):
         with TemporaryDirectory() as temp, browser_page(show_scrollbars=True) as page:
             parent = Path(temp).resolve()
@@ -382,8 +608,12 @@ class ApplicationDashboardTests(unittest.TestCase):
                 denied_id = denied_created.json()["id"]
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    tools = {tool.name for tool in portal.call(client.list_tools).tools}
-                    self.assertIn("inspect_dashboards", tools)
+                    tools = {tool.name: tool for tool in portal.call(client.list_tools).tools}
+                    self.assertIn("Pass sheet: null for the Workspace Dashboard", tools["inspect_dashboards"].description)
+                    instructions = client.instructions or ""
+                    self.assertIn("inspect_dashboards with sheet: null", instructions)
+                    self.assertIn("read_workspace_text and write_workspace_text", instructions)
+                    self.assertIn("Use a browser for visual checks only if the user explicitly asks", instructions)
 
                     denied = call(portal, client, "inspect_dashboards", workspace_id=denied_id)
                     self.assertTrue(denied.is_error)
@@ -404,7 +634,33 @@ class ApplicationDashboardTests(unittest.TestCase):
                     resize_guidance = info["theme_reference"]["resize_guidance"]
                     self.assertIn("its own available width and height", resize_guidance)
                     self.assertIn("keeping the browser window size fixed", resize_guidance)
-                    self.assertIn(resize_guidance, client.instructions or "")
+                    self.assertIn(resize_guidance, instructions)
+                    self.assertIn("If the user explicitly requests browser verification", resize_guidance)
+
+                    def inspect_workspace_panels():
+                        inspected = call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=None)
+                        self.assertFalse(inspected.is_error, inspected.content)
+                        data = output(inspected)
+                        self.assertNotIn("workflow", data)
+                        self.assertNotIn("nodes", data)
+                        return data["workspace"]["panels"]
+
+                    self.assertEqual(inspect_workspace_panels(), [])
+                    workspace_asset = {"workspace_id": workspace_id, "path": "dashboards/workspace/index.html"}
+                    wrote = call(portal, client, "write_workspace_text", **workspace_asset,
+                                 revision="missing", text="<h1>Workspace overview</h1>")
+                    self.assertFalse(wrote.is_error, wrote.content)
+                    saved = call(portal, client, "read_workspace_text", **workspace_asset)
+                    self.assertFalse(saved.is_error, saved.content)
+                    edited = call(portal, client, "write_workspace_text", **workspace_asset,
+                                  revision=output(saved)["revision"], text="<h1>Workspace status</h1>")
+                    self.assertFalse(edited.is_error, edited.content)
+                    self.assertEqual(output(call(portal, client, "read_workspace_text", **workspace_asset))["text"],
+                                     "<h1>Workspace status</h1>")
+                    panels = inspect_workspace_panels()
+                    self.assertEqual(len(panels), 1)
+                    self.assertEqual(panels[0]["assets"], [workspace_asset["path"]])
+                    self.assertTrue(panels[0]["ready"])
 
                     opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
                     self.assertFalse(opened.is_error, opened.content[0].text)
@@ -781,7 +1037,7 @@ class ApplicationDashboardTests(unittest.TestCase):
         from workspace_sdk.dashboard import DASHBOARD_THEME_REFERENCE
         from workspace_sdk.web import STATIC
 
-        theme_css = (STATIC / "dashboard-ui.js").read_text(encoding="utf-8")
+        theme_css = (STATIC / "dashboard-bridge.js").read_text(encoding="utf-8")
         for group in DASHBOARD_THEME_REFERENCE["tokens"].values():
             for token in group:
                 self.assertIn(token, theme_css)
@@ -833,6 +1089,7 @@ class ApplicationDashboardTests(unittest.TestCase):
 
                 page.goto(f"{url}/workspaces/{workspace_id}/")
                 flow = page.frame_locator('iframe[title="Main flow"]')
+                expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
                 flow.locator("#visualize-refresh").click()
                 sub_btn = flow.locator('[data-vis-node=""][data-vis-panel="rate-chart"]')
                 expect(sub_btn).to_be_visible()
@@ -854,6 +1111,132 @@ class ApplicationDashboardTests(unittest.TestCase):
                     custom_btn.evaluate("el => getComputedStyle(el).outlineColor"),
                     "rgb(134, 199, 255)",
                 )
+
+    def test_sheet_dashboard_identity_matches_mcp_and_flow_editor(self):
+        with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:
+            parent = Path(temp).resolve()
+            root = parent / "PanelCatalog"
+            other = root / "flows/Other"
+            state = parent / "state"
+            for sheet in (root, other):
+                copytree(LIVE_COUNTER, sheet, ignore=ignore_patterns(".workspace", "__pycache__", ".venv"))
+            node_id = "Multiply by Ten"
+            workflow = "dashboards/workflow"
+            node = f"dashboards/nodes/{node_id}"
+            for sheet, path, heading in (
+                (root, f"{workflow}/index.html", "Workflow overview"),
+                (root, f"{workflow}/panels/default/index.html", "Reserved workflow collision"),
+                (root, f"{workflow}/panels/shared/index.html", "Main workflow panel"),
+                (root, f"{node}/panels/default/index.html", "Reserved node collision"),
+                (root, f"{node}/panels/shared/index.html", "Main node panel"),
+                (root, "dashboards/nodes/%4Dultiply by Ten/panels/alias/index.html", "Noncanonical node"),
+                (root, "dashboards/nodes/Retired/panels/retired/index.html", "Retired node panel"),
+                (other, "dashboards/nodes/Built at runtime/panels/dynamic/index.html", "Dynamic flow node panel"),
+                (other, f"{node}/panels/replaced/index.html", "Node replaced at runtime"),
+                (other, f"{workflow}/panels/shared/index.html", "Other workflow panel"),
+            ):
+                asset = sheet / path
+                asset.parent.mkdir(parents=True, exist_ok=True)
+                asset.write_text(f"<h1>{heading}</h1>", encoding="utf-8")
+            incomplete = root / workflow / "panels/incomplete"
+            incomplete.mkdir()
+            (incomplete / "style.css").write_text("main { color: red; }", encoding="utf-8")
+            notes = root / workflow / "README.md"
+            notes.write_text("Dashboard notes", encoding="utf-8")
+            other_flow = other / "flow.py"
+            other_flow.write_text(
+                other_flow.read_text(encoding="utf-8").replace("flow = Flow(", "template = Flow(")
+                + '\nfrom dataclasses import replace\n\nflow = replace(\n'
+                + '    template, steps=(Step("Built at runtime", lambda: 1, {}),),\n'
+                + '    output=Output("Built at runtime"),\n)\n',
+                encoding="utf-8",
+            )
+
+            with application(state) as url:
+                sign_in(page, url, state)
+                added = page.request.post(
+                    f"{url}/workspaces", headers={"Origin": url}, data={"path": str(root), "action": "add"},
+                )
+                self.assertEqual(added.status, 201, added.text())
+                workspace_id = added.json()["id"]
+                token = issue_token(page, url, "Inspector", [workspace_id])
+                with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
+                    def inspect(sheet):
+                        return output(call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=sheet))
+
+                    main = inspect("Main")
+                    remote = inspect("Other")
+                    self.assertEqual([(p["id"], p["ready"]) for p in main["workflow"]], [
+                        ("default", True), ("incomplete", False), ("shared", True),
+                    ])
+                    self.assertEqual([group["step_id"] for group in main["nodes"]], [node_id, "Retired"])
+                    self.assertEqual([p["id"] for p in main["nodes"][0]["panels"]], ["default", "shared"])
+                    self.assertEqual(main["nodes"][0]["panels"][1]["assets"], [f"{node}/panels/shared/index.html"])
+                    self.assertEqual(remote["workflow"][1]["assets"], [f"{workflow}/panels/shared/index.html"])
+                    self.assertEqual((main["sheet_path"], remote["sheet_path"]), (".", "flows/Other"))
+
+                    workspace_url = f"{url}/workspaces/{workspace_id}"
+                    catalog_url = f"{workspace_url}/dashboard/panel-catalog"
+                    response = page.request.get(catalog_url)
+                    self.assertEqual(response.status, 200, response.text())
+                    catalog = response.json()["panels"]
+                    self.assertCountEqual(
+                        [(p["sheet"], p["sheet_name"], p["scope"], p["label"]) for p in catalog if p["id"] == "shared"],
+                        [(".", "Main", None, "shared"), (".", "Main", node_id, "shared"),
+                         ("flows/Other", "Other", None, "shared")],
+                    )
+                    self.assertFalse({"incomplete", "alias", "retired"} & {p["id"] for p in catalog})
+                    self.assertTrue(any(p["id"] == "dynamic" for p in catalog))
+                    self.assertFalse(any(
+                        flow["worker_ready"] for flow in page.request.get(f"{workspace_url}/workspace").json()["flows"]
+                    ))
+                    self.assertEqual(page.request.post(
+                        f"{workspace_url}/dashboard/placements", headers={"Origin": url},
+                        data={"action": "add", "sheet": ".", "scope": "Retired", "id": "retired"},
+                    ).status, 404)
+
+                    page.goto(f"{workspace_url}/")
+                    flow = page.frame_locator('iframe[title="Main flow"]')
+                    expect(flow.get_by_role("button", name=f"Inspect {node_id}")).to_be_visible(timeout=20_000)
+                    overview_button = flow.locator('[data-vis-node=""][data-vis-panel="default"]')
+                    expect(overview_button).to_have_count(1)
+                    expect(flow.locator('[data-vis-panel="incomplete"]')).to_have_count(0)
+
+                    for scope, region, heading in (
+                        ("", "Workflow dashboard · shared", "Main workflow panel"),
+                        (node_id, f"{node_id} dashboard · shared", "Main node panel"),
+                    ):
+                        flow.locator(f'[data-vis-node="{scope}"][data-vis-panel="shared"]').click()
+                        board = flow.get_by_role("region", name=region, exact=True)
+                        expect(board.frame_locator("iframe").get_by_role("heading", name=heading)).to_be_visible()
+
+                    overview_button.click()
+                    overview = flow.get_by_role("region", name="Workflow dashboard", exact=True)
+                    expect(overview.frame_locator("iframe").get_by_role("heading", name="Workflow overview")).to_be_visible()
+                    overview.get_by_role("button", name="Remove dashboard").click()
+                    flow.locator("#dashboard-editor").get_by_role("button", name="Remove dashboard", exact=True).click()
+                    expect(overview).to_have_count(0)
+                    expect(overview_button).to_have_count(0)
+                    self.assertEqual([panel["id"] for panel in inspect("Main")["workflow"]], ["incomplete", "shared"])
+                    self.assertFalse((root / workflow / "index.html").exists())
+                    self.assertTrue((root / workflow / "panels/default/index.html").is_file())
+                    self.assertTrue(notes.is_file())
+                    expect(flow.get_by_role("heading", name="Workflow dashboard · shared")).to_be_visible()
+                    self.assertFalse(any(p["sheet"] == "." and p["scope"] is None and p["id"] == "default"
+                                         for p in page.request.get(catalog_url).json()["panels"]))
+                    page.get_by_role("tab", name="Other", exact=True).click()
+                    other_editor = page.frame_locator('iframe[title="Other flow"]')
+                    expect(other_editor.get_by_role("button", name="Inspect Built at runtime")).to_be_visible(timeout=20_000)
+                    catalog = page.request.get(catalog_url).json()["panels"]
+                    self.assertTrue(any(p["id"] == "dynamic" for p in catalog))
+                    self.assertFalse(any(p["id"] == "replaced" for p in catalog))
+
+                    page.get_by_role("tab", name="Other").click()
+                    flow = page.frame_locator('iframe[title="Other flow"]')
+                    flow.locator('[data-vis-node=""][data-vis-panel="shared"]').click()
+                    expect(flow.frame_locator("#dashboard-preview iframe").get_by_role(
+                        "heading", name="Other workflow panel",
+                    )).to_be_visible()
 
     def test_live_counter_example_inspects_and_renders_with_injected_shared_theme(self):
         with TemporaryDirectory() as temp, browser_page() as page, start_blocking_portal() as portal:

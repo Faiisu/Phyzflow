@@ -7,16 +7,31 @@ PANELS_ROUTE = r"dashboard-panels/(workflow|[0-9]{1,8})"
 ASSET_ROUTE = r"dashboard-assets/(workflow|[0-9]{1,8})(?:/([A-Za-z0-9._-]+))?"
 SETTINGS_ROUTE = r"dashboard-settings/(workflow|[0-9]{1,8})"
 PANEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+DEFAULT_PANEL_ID = "default"
 ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js", "bridge.json")
 WORKSPACE_DASHBOARD_DIRECTORY = Path("dashboards/workspace")
 DASHBOARD_BRIDGE_VERSION = 1
 MAX_ASSET_BYTES = 256 * 1024
+MAX_WORKSPACE_FRAME_SOURCES = 4
+
+DASHBOARD_AUTHORING_GUIDANCE = (
+    "Use the connected Phyzflow MCP tools to inspect, edit, and verify dashboard files. "
+    "Find the Workspace ID with list_workspaces if needed. For a Workspace Dashboard, call "
+    "inspect_dashboards with sheet: null. Use the returned Workspace-relative paths with "
+    "read_workspace_text and write_workspace_text, passing the read revision or 'missing' for a new file. "
+    "For a Workflow or Node Dashboard, pass the named sheet to inspect_dashboards and use read_file and write_file. "
+    "Read the saved files back and call inspect_dashboards again to verify panel discovery. "
+    "Dashboard-only edits do not require running or inspecting unrelated flows. "
+    "Do not search for a web UI URL or open a browser during MCP dashboard authoring. "
+    "Use a browser for visual checks only if the user explicitly asks for them."
+)
 
 DASHBOARD_RESIZE_GUIDANCE = (
     "Design every dashboard panel to respond to its own available width and height. "
     "As the user resizes the panel, reflow the layout, resize charts, and keep primary values and controls visible. "
     "Let secondary details scroll when needed. "
-    "Verify the panel by dragging its resize handles in Phyzflow while keeping the browser window size fixed."
+    "If the user explicitly requests browser verification, drag the panel's resize handles in Phyzflow "
+    "while keeping the browser window size fixed."
 )
 
 DASHBOARD_THEME_REFERENCE = {
@@ -97,9 +112,22 @@ def _scope_directory(root: Path, step_id: str | None) -> Path:
     return directory / "nodes" / name
 
 
+def _additional_panel_id(panel_id: str) -> bool:
+    return panel_id not in (".", "..", DEFAULT_PANEL_ID) and bool(PANEL_ID_PATTERN.fullmatch(panel_id))
+
+
+def dashboard_directory(root: Path, step_id: str | None, panel_id: str | None, *, workspace: bool) -> Path:
+    directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
+    if panel_id is not None and panel_id != DEFAULT_PANEL_ID:
+        if not _additional_panel_id(panel_id):
+            raise PermissionError("Invalid dashboard panel identifier.")
+        directory = directory / "panels" / panel_id
+    return directory
+
+
 def dashboard_panels(root: Path, step_id: str | None, *, workspace: bool = False) -> list[dict[str, str]]:
     resolved_root = root.resolve()
-    directory = resolved_root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(resolved_root, step_id)
+    directory = dashboard_directory(resolved_root, step_id, None, workspace=workspace)
     return [
         {"id": entry["id"], "label": entry["label"]}
         for entry in _scope_panel_entries(resolved_root, directory)
@@ -111,12 +139,7 @@ def dashboard_assets(
     root: Path, step_id: str | None, panel_id: str | None = None, *, workspace: bool = False,
     manifest_only: bool = False,
 ) -> dict[str, str]:
-    directory = root / WORKSPACE_DASHBOARD_DIRECTORY if workspace else _scope_directory(root, step_id)
-    if panel_id is not None and panel_id != "default":
-        if panel_id in (".", "..") or not PANEL_ID_PATTERN.fullmatch(panel_id):
-            raise PermissionError("Invalid dashboard panel identifier.")
-        directory = directory / "panels" / panel_id
-
+    directory = dashboard_directory(root, step_id, panel_id, workspace=workspace)
     if manifest_only and not _regular_file(directory / "index.html"):
         raise FileNotFoundError("index.html")
     assets = {}
@@ -145,7 +168,13 @@ def _regular_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink() and path.resolve() == path
 
 
-def _panel_entry(root: Path, directory: Path, panel_id: str, label: str) -> dict | None:
+def dashboard_panel_label(panel_id: str) -> str:
+    if panel_id == DEFAULT_PANEL_ID:
+        return "Overview"
+    return panel_id.replace("-", " ").replace("_", " ").strip() or panel_id
+
+
+def _panel_entry(root: Path, directory: Path, panel_id: str) -> dict | None:
     if not _regular_dir(directory):
         return None
     assets = [
@@ -157,7 +186,7 @@ def _panel_entry(root: Path, directory: Path, panel_id: str, label: str) -> dict
         return None
     return {
         "id": panel_id,
-        "label": label,
+        "label": dashboard_panel_label(panel_id),
         "directory": directory.relative_to(root).as_posix(),
         "assets": assets,
         "ready": _regular_file(directory / "index.html"),
@@ -168,18 +197,39 @@ def _scope_panel_entries(root: Path, base: Path) -> list[dict]:
     if not _regular_dir(base):
         return []
     panels: list[dict] = []
-    default_entry = _panel_entry(root, base, "default", "Overview")
+    default_entry = _panel_entry(root, base, DEFAULT_PANEL_ID)
     if default_entry is not None:
         panels.append(default_entry)
     panels_dir = base / "panels"
     if _regular_dir(panels_dir):
         for sub in sorted(panels_dir.iterdir(), key=lambda p: p.name):
-            if sub.name in (".", "..") or not PANEL_ID_PATTERN.fullmatch(sub.name):
+            if not _additional_panel_id(sub.name):
                 continue
-            label = sub.name.replace("-", " ").replace("_", " ").strip() or sub.name
-            entry = _panel_entry(root, sub, sub.name, label)
+            entry = _panel_entry(root, sub, sub.name)
             if entry is not None:
                 panels.append(entry)
+    return panels
+
+
+def sheet_panel_catalog(
+    root: Path, sheets: list[tuple[str, Path]], node_ids: dict[Path, set[str] | None],
+) -> list[dict]:
+    panels = []
+    for name, sheet in sheets:
+        details = inspect_sheet_dashboards(sheet)
+        sheet_path = sheet.relative_to(root).as_posix()
+        scopes = [{"step_id": None, "panels": details["workflow"]}, *details["nodes"]]
+        step_ids = node_ids.get(sheet)
+        for scope in scopes:
+            if scope["step_id"] is not None and step_ids is not None and scope["step_id"] not in step_ids:
+                continue
+            panels.extend({
+                "sheet": sheet_path,
+                "sheet_name": name,
+                "scope": scope["step_id"],
+                "id": entry["id"],
+                "label": entry["label"],
+            } for entry in scope["panels"] if entry["ready"])
     return panels
 
 
@@ -189,14 +239,19 @@ def inspect_sheet_dashboards(root: Path) -> dict:
     workflow: list[dict] = []
     nodes: list[dict] = []
     if _regular_dir(dashboards_dir):
-        workflow = _scope_panel_entries(resolved_root, dashboards_dir / "workflow")
+        workflow = _scope_panel_entries(resolved_root, _scope_directory(resolved_root, None))
         nodes_dir = dashboards_dir / "nodes"
         if _regular_dir(nodes_dir):
             for sub in sorted(nodes_dir.iterdir(), key=lambda p: p.name):
+                if not sub.name.isascii():
+                    continue
+                step_id = unquote(sub.name)
+                if sub != _scope_directory(resolved_root, step_id):
+                    continue
                 panels = _scope_panel_entries(resolved_root, sub)
                 if panels:
                     nodes.append({
-                        "step_id": unquote(sub.name),
+                        "step_id": step_id,
                         "directory": sub.relative_to(resolved_root).as_posix(),
                         "panels": panels,
                     })
@@ -223,9 +278,17 @@ def inspect_workspace_dashboards(root: Path) -> dict:
             "version": DASHBOARD_BRIDGE_VERSION,
             "methods": ["subscribe(listener)"],
             "snapshot_fields": ["scope", "sources"],
+            "frame_sources": {
+                "mode": "live",
+                "max_per_panel": MAX_WORKSPACE_FRAME_SOURCES,
+                "value": "JPEG data URL from the selected step's latest publish_frame call",
+            },
             "declaration_example": {
                 "versions": [DASHBOARD_BRIDGE_VERSION],
-                "sources": [{"id": "main-duration", "sheet": ".", "field": "duration_ms"}],
+                "sources": [
+                    {"id": "main-duration", "sheet": ".", "field": "duration_ms"},
+                    {"id": "camera", "sheet": "flows/Vision AI", "mode": "live", "frame": {"step": "Camera"}},
+                ],
             },
         },
     }

@@ -46,6 +46,65 @@ class RunStateStore:
                 "PRIMARY KEY (workspace_id, sheet_path, panel_key))"
             )
 
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS dashboard_placements ("
+                "workspace_id TEXT NOT NULL, id TEXT NOT NULL, sheet TEXT NOT NULL, "
+                "scope TEXT NOT NULL, panel_id TEXT NOT NULL, bounds TEXT, "
+                "PRIMARY KEY (workspace_id, id), UNIQUE (workspace_id, sheet, scope, panel_id))"
+            )
+
+    def workspace_placements(self, workspace_id: str) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, sheet, scope, panel_id FROM dashboard_placements WHERE workspace_id = ? ORDER BY rowid",
+                (workspace_id,),
+            ).fetchall()
+        return [
+            {"id": placement_id, "sheet": sheet, "scope": scope or None, "panel_id": panel_id}
+            for placement_id, sheet, scope, panel_id in rows
+        ]
+
+    def find_workspace_placement(self, workspace_id: str, placement_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT sheet, scope, panel_id FROM dashboard_placements WHERE workspace_id = ? AND id = ?",
+                (workspace_id, placement_id),
+            ).fetchone()
+        if row is None:
+            return None
+        sheet, scope, panel_id = row
+        return {"id": placement_id, "sheet": sheet, "scope": scope or None, "panel_id": panel_id}
+
+    def add_workspace_placement(self, workspace_id: str, sheet: str, scope: str | None, panel_id: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO dashboard_placements (workspace_id, id, sheet, scope, panel_id) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (workspace_id, sheet, scope, panel_id) DO NOTHING",
+                (workspace_id, uuid4().hex, sheet, scope or "", panel_id),
+            )
+
+    def remove_workspace_placement(self, workspace_id: str, placement_id: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "DELETE FROM dashboard_placements WHERE workspace_id = ? AND id = ?",
+                (workspace_id, placement_id),
+            )
+
+    def load_workspace_placement_layout(self, workspace_id: str) -> dict:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, bounds FROM dashboard_placements WHERE workspace_id = ? AND bounds IS NOT NULL",
+                (workspace_id,),
+            ).fetchall()
+        return {json.dumps([None, key], separators=(",", ":")): json.loads(bounds) for key, bounds in rows}
+
+    def save_workspace_placement_layout(self, workspace_id: str, panels: dict) -> None:
+        with self._lock, self._db:
+            self._db.executemany(
+                "UPDATE dashboard_placements SET bounds = ? WHERE workspace_id = ? AND id = ?",
+                ((json.dumps(bounds), workspace_id, json.loads(key)[1]) for key, bounds in panels.items()),
+            )
+
     def load_visualize_layout(self, workspace_id: str, sheet_path: str) -> dict:
         with self._lock:
             rows = self._db.execute(
@@ -172,6 +231,7 @@ class RunStateStore:
             self._db.execute("DELETE FROM sheet_states WHERE workspace_id = ?", (workspace_id,))
             self._db.execute("DELETE FROM sheet_graphs WHERE workspace_id = ?", (workspace_id,))
             self._db.execute("DELETE FROM visualize_layouts WHERE workspace_id = ?", (workspace_id,))
+            self._db.execute("DELETE FROM dashboard_placements WHERE workspace_id = ?", (workspace_id,))
 
     def close(self) -> None:
         with self._lock:

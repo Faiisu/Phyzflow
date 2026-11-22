@@ -23,6 +23,8 @@ export function createCanvasLayout({
   layoutGraph,
   layoutSize,
   cancelWheelZoom,
+  persistInitialBounds = false,
+  sharedLayout = /^\/workspaces\/[a-f0-9]{32}\/flows\//.test(location.pathname),
 }) {
   const savedCanvasLayouts = new Map();
   const savedVisualizeLayouts = new Map();
@@ -30,7 +32,6 @@ export function createCanvasLayout({
   const pendingBounds = new Map();
   const layoutStatus = document.querySelector("#visualize-layout-status");
   const retryLayout = layoutStatus.querySelector("button");
-  const sharedLayout = /^\/workspaces\/[a-f0-9]{32}\/(?:flows\/|dashboard\/$)/.test(location.pathname);
   let layoutLoad = sharedLayout ? "unloaded" : "ready";
   let layoutSave = "idle";
   let fitted = false;
@@ -263,7 +264,9 @@ export function createCanvasLayout({
     }
     for (const panel of unplaced) {
       const bounds = defaultVisualizeBounds(panel);
-      savedVisualizeLayouts.set(panelKeys.get(panel), bounds);
+      const key = panelKeys.get(panel);
+      savedVisualizeLayouts.set(key, bounds);
+      if (persistInitialBounds && sharedLayout && layoutLoad === "ready") pendingBounds.set(key, bounds);
       applyBounds(panel, bounds);
     }
     const ordered = orderedVisualizeBounds();
@@ -285,6 +288,7 @@ export function createCanvasLayout({
     }
     updateVisualizeScrollHeight();
     showLayoutStatus();
+    if (layoutSave !== "saveFailed") void flushLayout();
   }
 
   async function loadVisualizeLayout() {
@@ -459,7 +463,7 @@ export function createCanvasLayout({
     const resizeHandle = panel.querySelector('[data-dash="resize"]');
     const handle = panel.querySelector(".dock-heading");
     const resize = event.target === resizeHandle;
-    if (!resize && (!handle.contains(event.target) || event.target.closest("button"))) return;
+    if (!resize && (!handle.contains(event.target) || event.target.closest("button, a"))) return;
     cancelWheelZoom();
     boardDrag = {
       panel, id: event.pointerId, resize, x: event.clientX, y: event.clientY,
