@@ -8,7 +8,7 @@ from time import monotonic, sleep
 
 from ..execution import FlowBusy, sheet_busy
 from ..history import RunHistory
-from ..project import workspace_format_notice
+from ..project import ValidationError, workspace_format_notice
 from ..sheet_locks import SheetLockedError
 from ..sheet_runs import RunStateStore, SheetRun
 from ..sheets import (
@@ -18,6 +18,7 @@ from ..sheets import (
     discover_flows,
     find_sheet_by_path,
     set_sheet_name,
+    sheet_name,
     validate_sheet_name,
 )
 from ..ui_settings import UISettings
@@ -48,6 +49,46 @@ def workspace_routes(
     closing = False
     sheets: list[FlowSheet | None] = [make_sheet(title, path) for title, path in flows]
     sheets_lock = RLock()
+    format_cache: tuple[tuple[int, int, int] | None, str | None, str | None] | None = None
+    name_cache: dict[Path, tuple[tuple[int, int, int] | None, str]] = {}
+
+    def _file_stat_key(path: Path) -> tuple[int, int, int] | None:
+        try:
+            if path.is_symlink():
+                return (-1, -1, -1)
+            info = path.stat()
+            return (info.st_ino, info.st_mtime_ns, info.st_size)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return (-2, -2, -2)
+
+    def cached_format_notice() -> str | None:
+        nonlocal format_cache
+        key = _file_stat_key(root / "pyproject.toml")
+        if format_cache is not None and key not in ((-1, -1, -1), (-2, -2, -2)) and format_cache[0] == key:
+            _, cached_notice, cached_error = format_cache
+            if cached_error is not None:
+                raise ValidationError(cached_error)
+            return cached_notice
+        try:
+            notice = workspace_format_notice(root)
+        except ValidationError as error:
+            format_cache = (key, None, str(error))
+            raise
+        format_cache = (key, notice, None)
+        return notice
+
+    def cached_sheet_name(path: Path, default: str) -> str:
+        if path.is_symlink():
+            return default
+        key = _file_stat_key(path / ".workspace" / "sheet-name")
+        cached = name_cache.get(path)
+        if cached is not None and key not in ((-1, -1, -1), (-2, -2, -2)) and cached[0] == key:
+            return cached[1]
+        resolved = default if key is None else sheet_name(path, default)
+        name_cache[path] = (key, resolved)
+        return resolved
 
     def restore_states() -> None:
         if run_state is None or workspace_id is None:
@@ -144,8 +185,19 @@ def workspace_routes(
     def discovered_sheets() -> list[FlowSheet | None]:
         with sheets_lock:
             if not closing:
+                cached_format_notice()
+                folder = root / "flows"
+                found = []
+                if folder.is_dir():
+                    found = [
+                        (cached_sheet_name(path, path.name), path)
+                        for path in sorted(folder.iterdir())
+                        if (path / "flow.py").is_file()
+                    ]
+                if (root / "flow.py").is_file():
+                    found.insert(0, (cached_sheet_name(root, "Main"), root))
                 known = {sheet.root: sheet for sheet in sheets if sheet is not None}
-                for title, path in discover_flows(root):
+                for title, path in found:
                     if path in known:
                         known[path].title = title
                     else:
@@ -246,6 +298,7 @@ def workspace_routes(
     resolve_sheet.delete_workspace_sheet = delete_workspace_sheet
     resolve_sheet.run_all_sheets = run_all_sheets
     resolve_sheet.file_guard = sheets_lock
+    discovered_sheets.format_notice = cached_format_notice
 
     dispatch = workspace_dispatch(
         root, sheets, sheets_lock,
