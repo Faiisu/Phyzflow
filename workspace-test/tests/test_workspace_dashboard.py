@@ -197,6 +197,18 @@ class WorkspaceDashboardTests(unittest.TestCase):
                 self.assertTrue(record.is_file())
                 self.assertNotIn(images[0].split(",")[1], record.read_text(encoding="utf-8"))
 
+                (second / "finish").touch()
+                self.assertEqual(command("flows/2/run").status, 202)
+                wait_for(lambda: snapshot(second_path)["mode"] == "saved")
+                saved_node = snapshot(second_path)
+                self.assertNotEqual(saved_node["run"]["id"], node["run"]["id"])
+                self.assertEqual([step["id"] for step in saved_node["run"]["steps"]], ["Live Camera"])
+                self.assertEqual(saved_node["liveFrames"], {})
+                expect(last.locator("output")).to_have_text(
+                    f"{second_path} | saved | {saved_node['run']['id']} | {saved_node['timestamp']} | 34",
+                )
+                expect(last.locator("img")).to_be_hidden()
+
                 (second / "dashboards/nodes/Live Camera/index.html").unlink()
                 expect(region(titles[1]).get_by_text("Source panel unavailable.", exact=True)).to_be_visible()
                 expect(first.locator("output")).to_contain_text(saved_run["id"])

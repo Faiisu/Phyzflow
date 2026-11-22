@@ -1037,7 +1037,7 @@ class ApplicationDashboardTests(unittest.TestCase):
         from workspace_sdk.dashboard import DASHBOARD_THEME_REFERENCE
         from workspace_sdk.web import STATIC
 
-        theme_css = (STATIC / "dashboard-ui.js").read_text(encoding="utf-8")
+        theme_css = (STATIC / "dashboard-bridge.js").read_text(encoding="utf-8")
         for group in DASHBOARD_THEME_REFERENCE["tokens"].values():
             for token in group:
                 self.assertIn(token, theme_css)
@@ -1089,6 +1089,7 @@ class ApplicationDashboardTests(unittest.TestCase):
 
                 page.goto(f"{url}/workspaces/{workspace_id}/")
                 flow = page.frame_locator('iframe[title="Main flow"]')
+                expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()
                 flow.locator("#visualize-refresh").click()
                 sub_btn = flow.locator('[data-vis-node=""][data-vis-panel="rate-chart"]')
                 expect(sub_btn).to_be_visible()
