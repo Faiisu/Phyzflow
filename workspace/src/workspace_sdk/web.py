@@ -36,6 +36,7 @@ FLOW_VIEW_ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/canvas-layout.js": ("canvas-layout.js", "text/javascript; charset=utf-8"),
     "/dashboard-ui.js": ("dashboard-ui.js", "text/javascript; charset=utf-8"),
+    "/dashboard-bridge.js": ("dashboard-bridge.js", "text/javascript; charset=utf-8"),
     "/dashboard-editor.js": ("dashboard-editor.js", "text/javascript; charset=utf-8"),
     "/edge-routing.js": ("edge-routing.js", "text/javascript; charset=utf-8"),
     "/prism-syntax.js": ("prism-syntax.js", "text/javascript; charset=utf-8"),
@@ -220,6 +221,43 @@ def serve(
                     data = {"id": run["run_id"], "started_at": run["time"], "frames": frames}
             self.send_json(data)
 
+        def dashboard_live_placement(self, query: str) -> None:
+            try:
+                parameters = parse_qs(query, strict_parsing=True, max_num_fields=1)
+                node_id = parameters["node"][0] if query else None
+            except (KeyError, ValueError):
+                self.send_json({"error": "Invalid dashboard node selection."}, HTTPStatus.BAD_REQUEST)
+                return
+            data = None
+            with live_lock:
+                started = live_events.get((None, "running")) if run_status == "running" else None
+                if started is not None and not any((None, status) in live_events for status in ("succeeded", "failed")):
+                    run = started[1]
+                    run_id = run["run_id"]
+                    nodes, frames, metrics = {}, {}, {}
+                    for (step, kind), (_, event) in live_events.items():
+                        if step is None or (node_id is not None and step != node_id) or event.get("run_id") != run_id:
+                            continue
+                        if kind == "live_frame":
+                            frames[step] = f"data:image/jpeg;base64,{event['live_frame']}"
+                        elif "live_metrics" in event:
+                            metrics.setdefault(step, {}).update(event["live_metrics"])
+                        elif kind in ("running", "succeeded", "failed", "skipped"):
+                            entry = nodes.setdefault(step, {"id": step})
+                            entry["status"] = kind
+                            if kind == "running":
+                                entry["started_at"] = event["time"]
+                            else:
+                                entry["finished_at"] = event["time"]
+                            entry.update({field: event[field] for field in ("duration_ms", "metrics") if field in event})
+                    data = {
+                        "run": {"id": run_id, "status": "running", "started_at": run["time"],
+                                "steps": list(nodes.values())},
+                        "liveFrames": frames,
+                        "liveMetrics": metrics,
+                    }
+            self.send_json(data)
+
         def do_GET(self):
             if not self.local_request():
                 self.send_error(HTTPStatus.FORBIDDEN)
@@ -270,6 +308,8 @@ def serve(
                         data = {"id": run["run_id"], "status": "running", "started_at": run["time"],
                                 "metrics": metrics, "metric_times": metric_times}
                 self.send_json(data)
+            elif self.path.partition("?")[0] == "/dashboard-live-placement":
+                self.dashboard_live_placement(self.path.partition("?")[2])
             elif self.path.startswith("/dashboard-live-frames?"):
                 self.dashboard_live_frames(self.path.partition("?")[2])
             elif match := re.fullmatch(f"/{PANELS_ROUTE}", self.path):

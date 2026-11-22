@@ -2,6 +2,7 @@ from functools import lru_cache
 from http.client import HTTPConnection, HTTPException
 import json
 from pathlib import Path
+import re
 from urllib.parse import urlencode
 
 from ..dashboard import MAX_WORKSPACE_FRAME_SOURCES, PANEL_ID_PATTERN
@@ -11,6 +12,7 @@ from ..sheets import find_sheet_by_path
 
 
 RUN_FIELDS = ("status", "started_at", "finished_at", "duration_ms")
+STEP_FIELDS = ("id", *RUN_FIELDS)
 
 
 def dashboard_sources(declaration: str) -> list[dict]:
@@ -58,23 +60,41 @@ def latest_dashboard_run(root: Path, history_version: tuple[int, int, int]) -> d
     record = RunHistory(root).latest()
     if record is None:
         return None
-    return {
+    run = {
         **{field: record.get(field) for field in ("id", *RUN_FIELDS)},
-        "metrics": {step["id"]: step.get("metrics", {}) for step in record.get("steps", [])},
+        "steps": [
+            {
+                **{field: step[field] for field in STEP_FIELDS if field in step},
+                "metrics": {
+                    group: values
+                    for group, raw in step.get("metrics", {}).items()
+                    if (values := checked_metrics(group, raw))
+                },
+            }
+            for step in record.get("steps", [])
+        ],
     }
+    source_version = record.get("source_version")
+    if isinstance(source_version, str) and re.fullmatch(r"[0-9a-f]{64}", source_version):
+        run["source_version"] = source_version
+    return run
+
+
+def saved_dashboard_run(root: Path) -> dict | None:
+    directory = root / ".workspace" / "runs"
+    if directory.resolve() != directory:
+        raise ValueError("Invalid run history location.")
+    try:
+        info = directory.stat()
+    except FileNotFoundError:
+        return None
+    return latest_dashboard_run(root, (info.st_dev, info.st_ino, info.st_mtime_ns))
 
 
 def sheet_dashboard_run(sheet, mode: str) -> dict | None:
     if mode == "latest":
-        directory = sheet.root / ".workspace" / "runs"
-        if directory.resolve() != directory:
-            raise ValueError("Invalid run history location.")
-        try:
-            info = directory.stat()
-        except FileNotFoundError:
-            return None
-        return latest_dashboard_run(sheet.root, (info.st_dev, info.st_ino, info.st_mtime_ns))
-
+        run = saved_dashboard_run(sheet.root)
+        return None if run is None else {**run, "metrics": {step["id"]: step["metrics"] for step in run["steps"]}}
     return read_live_dashboard(sheet, "/dashboard-live")
 
 
@@ -88,9 +108,44 @@ def read_live_dashboard(sheet, path: str) -> dict | None:
         with connection.getresponse() as response:
             if response.status != 200:
                 raise ValueError("Could not read live dashboard data.")
-            return json.load(response)
+            data = json.load(response)
+            return data if sheet.worker is worker and not sheet.closing else None
     finally:
         connection.close()
+
+
+def placement_snapshot(sheet, placement: dict) -> dict:
+    node_id = placement["scope"]
+    node_query = "" if node_id is None else "?" + urlencode({"node": node_id})
+    try:
+        live = read_live_dashboard(sheet, f"/dashboard-live-placement{node_query}")
+    except (OSError, HTTPException, ValueError):
+        live = None
+
+    saved = None if live is not None else saved_dashboard_run(sheet.root)
+    if saved is not None and node_id is not None:
+        saved = {**saved, "steps": [step for step in saved["steps"] if step["id"] == node_id]}
+    run = live["run"] if live is not None else saved
+    return {
+        "scope": "workflow" if node_id is None else "node",
+        "nodeId": node_id,
+        "panelId": placement["panel_id"],
+        "sheet": placement["sheet"],
+        "sheetName": sheet.title,
+        "mode": "saved" if saved is not None else "live",
+        "timestamp": (run.get("finished_at") or run["started_at"]) if run is not None else None,
+        "graph": [
+            {"id": step["id"], "dependencies": step.get("dependencies", []) if node_id is None else []}
+            for step in (sheet.recovery_graph or {}).get("steps", [])
+            if node_id is None or step["id"] == node_id
+        ],
+        "run": run,
+        "previews": {},
+        "liveFrames": live["liveFrames"] if live is not None else {},
+        "liveMetrics": live["liveMetrics"] if live is not None else {},
+        "settings": {},
+        "settingChanges": [],
+    }
 
 
 def dashboard_snapshot(root: Path, sheets, sources: list[dict]) -> dict:
