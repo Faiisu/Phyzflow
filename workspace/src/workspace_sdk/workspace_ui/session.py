@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import re
 from threading import RLock
 from time import monotonic, sleep
 
+from ..dashboard import PANEL_ID_PATTERN, dashboard_panel_label, dashboard_panels, sheet_panel_catalog
 from ..execution import FlowBusy, sheet_busy
 from ..history import RunHistory
 from ..project import ValidationError, workspace_format_notice
@@ -16,6 +18,7 @@ from ..sheets import (
     can_delete_sheet,
     create_sheet,
     discover_flows,
+    find_sheet,
     find_sheet_by_path,
     set_sheet_name,
     sheet_name,
@@ -286,6 +289,98 @@ def workspace_routes(
                     errors[key] = str(error)
         return {"started": started, "errors": errors}
 
+    active_dashboard_state = dashboard_state or run_state
+    dashboard_id = workspace_id or "."
+
+    def dashboard_sheets() -> dict[Path, tuple[int, FlowSheet]]:
+        try:
+            current_list = discovered_sheets()
+        except ValidationError:
+            with sheets_lock:
+                current_list = list(sheets)
+        return {
+            sheet.root: (index, sheet)
+            for index, sheet in enumerate(current_list)
+            if sheet is not None and not sheet.closing
+        }
+
+    def panel_scope_available(sheet: FlowSheet, scope: str | None) -> bool:
+        if scope is None:
+            return True
+        step_ids = sheet.dashboard_step_ids()
+        return step_ids is None or scope in step_ids
+
+    def inspect_workspace_dashboard() -> dict:
+        if active_dashboard_state is None or closing:
+            raise FileNotFoundError("This Workspace is unavailable.")
+        current = dashboard_sheets()
+        placements = active_dashboard_state.workspace_placements(dashboard_id)
+        for placement in placements:
+            path = find_sheet_by_path(root, placement["sheet"])
+            index, sheet = current.get(path, (None, None))
+            scope, panel_id = placement["scope"], placement["panel_id"]
+            available = sheet is not None and panel_scope_available(sheet, scope) and any(
+                panel["id"] == panel_id for panel in dashboard_panels(path, scope)
+            )
+            placement.update(
+                sheet_name=sheet.title if sheet is not None else placement["sheet"],
+                sheet_index=index,
+                available=available,
+                label=dashboard_panel_label(panel_id),
+            )
+        sources = discover_flows(root)
+        node_ids = {path: current[path][1].dashboard_step_ids() for _, path in sources if path in current}
+        catalog = sheet_panel_catalog(root, sources, node_ids)
+        return {
+            "placements": placements,
+            "catalog": catalog,
+        }
+
+    def add_workspace_dashboard_placement(
+        sheet_ref: object,
+        scope: object = None,
+        panel_id: object = "default",
+        *,
+        allow_sheet_name: bool = False,
+    ) -> dict:
+        if active_dashboard_state is None or closing:
+            raise FileNotFoundError("This Workspace is unavailable.")
+        if (
+            not isinstance(sheet_ref, str)
+            or not sheet_ref
+            or (scope is not None and (not isinstance(scope, str) or not scope or "\x00" in scope))
+            or not isinstance(panel_id, str)
+            or not PANEL_ID_PATTERN.fullmatch(panel_id)
+            or panel_id in (".", "..")
+        ):
+            raise ValueError("Send a valid dashboard placement.")
+        with sheets_lock:
+            source = find_sheet(root, sheet_ref) if allow_sheet_name else None
+            if source is None:
+                source = find_sheet_by_path(root, sheet_ref)
+            entry = dashboard_sheets().get(source)
+            if entry is None or not panel_scope_available(entry[1], scope) or not any(
+                panel["id"] == panel_id for panel in dashboard_panels(source, scope)
+            ):
+                raise FileNotFoundError("Source panel unavailable in this Workspace.")
+            active_dashboard_state.add_workspace_placement(
+                dashboard_id,
+                source.relative_to(root).as_posix(),
+                scope,
+                panel_id,
+            )
+        return inspect_workspace_dashboard()
+
+    def remove_workspace_dashboard_placement(placement_id: object, *, allow_missing: bool = False) -> dict:
+        if active_dashboard_state is None or closing:
+            raise FileNotFoundError("This Workspace is unavailable.")
+        if not isinstance(placement_id, str) or not re.fullmatch(r"[0-9a-f]{32}", placement_id):
+            raise ValueError("Send a valid dashboard placement ID.")
+        if not allow_missing and active_dashboard_state.find_workspace_placement(dashboard_id, placement_id) is None:
+            raise FileNotFoundError("Dashboard placement not found in this Workspace.")
+        active_dashboard_state.remove_workspace_placement(dashboard_id, placement_id)
+        return inspect_workspace_dashboard()
+
     def file_leases():
         with sheets_lock:
             if closing:
@@ -297,6 +392,9 @@ def workspace_routes(
     resolve_sheet.rename_workspace_sheet = rename_workspace_sheet
     resolve_sheet.delete_workspace_sheet = delete_workspace_sheet
     resolve_sheet.run_all_sheets = run_all_sheets
+    resolve_sheet.inspect_workspace_dashboard = inspect_workspace_dashboard
+    resolve_sheet.add_workspace_dashboard_placement = add_workspace_dashboard_placement
+    resolve_sheet.remove_workspace_dashboard_placement = remove_workspace_dashboard_placement
     resolve_sheet.file_guard = sheets_lock
     discovered_sheets.format_notice = cached_format_notice
 
@@ -311,7 +409,10 @@ def workspace_routes(
         run_all_sheets=run_all_sheets,
         workspace_id=workspace_id,
         run_state=run_state,
-        dashboard_state=dashboard_state or run_state,
+        dashboard_state=active_dashboard_state,
+        inspect_workspace_dashboard=inspect_workspace_dashboard,
+        add_workspace_dashboard_placement=add_workspace_dashboard_placement,
+        remove_workspace_dashboard_placement=remove_workspace_dashboard_placement,
     )
 
     def close(*, delete: bool = False) -> None:

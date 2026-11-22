@@ -1,6 +1,7 @@
+import sqlite3
 from typing import Literal
 
-from ..dashboard import DASHBOARD_THEME_REFERENCE, inspect_sheet_dashboards, inspect_workspace_dashboards
+from ..dashboard import DASHBOARD_THEME_REFERENCE, inspect_sheet_dashboards
 from ..sheet_locks import SheetLockedError
 from ..sheets import discover_flows
 from ..workspace_environment import install_workspace_packages
@@ -60,8 +61,8 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
 
     @server.tool(description=(
         "Inspect dashboard panels, asset paths, theme contract, and resize guidance through MCP. "
-        "Pass sheet: null for the Workspace Dashboard or a sheet name for its Workflow and Node panels. "
-        "Use the MCP file tools to edit the returned assets. A browser URL is not required."
+        "Pass sheet: null for the Workspace Dashboard catalog and placements or a sheet name for its Workflow and Node panels. "
+        "Use the MCP file tools to edit the returned assets in their source sheet. A browser URL is not required."
     ))
     def inspect_dashboards(workspace_id: str, sheet: str | None = "Main") -> dict:
         if sheet is None:
@@ -75,7 +76,46 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
                 "sheet_path": flow_sheet.root.relative_to(root).as_posix(),
                 **inspect_sheet_dashboards(flow_sheet.root),
             }
-        return {**result, "workspace": inspect_workspace_dashboards(root)}
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            workspace_info = resolver.inspect_workspace_dashboard()
+        except (FileNotFoundError, OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or "Could not inspect Workspace dashboards.") from None
+        return {**result, "workspace": workspace_info}
+
+    @server.tool(description=(
+        "Add a sheet's Workflow or Node dashboard panel as a placement on the Workspace Dashboard. "
+        "Pass the sheet name or relative path, scope (null for Workflow or step ID for a Node), and panel_id."
+    ))
+    def add_dashboard_placement(
+        workspace_id: str,
+        sheet: str = "Main",
+        scope: str | None = None,
+        panel_id: str = "default",
+    ) -> dict:
+        root = access.workspace(workspace_id)
+        ensure_not_protected(root, access.protected_folders)
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            workspace_info = resolver.add_workspace_dashboard_placement(
+                sheet, scope, panel_id, allow_sheet_name=True,
+            )
+        except (FileNotFoundError, OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or "Could not add dashboard placement.") from None
+        return {"workspace_id": workspace_id, **workspace_info}
+
+    @server.tool(description=(
+        "Remove a placement from the Workspace Dashboard while keeping the source panel assets in its sheet."
+    ))
+    def remove_dashboard_placement(workspace_id: str, placement_id: str) -> dict:
+        root = access.workspace(workspace_id)
+        ensure_not_protected(root, access.protected_folders)
+        try:
+            resolver = access.sheet_resolver(workspace_id)
+            workspace_info = resolver.remove_workspace_dashboard_placement(placement_id)
+        except (FileNotFoundError, OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+            raise ToolError(str(error) or "Could not remove dashboard placement.") from None
+        return {"workspace_id": workspace_id, **workspace_info}
 
     @server.tool(description="Open a sheet for exclusive editing or read-only inspection.")
     def open_sheet(workspace_id: str, sheet: str = "Main", mode: Literal["edit", "read"] = "edit") -> dict:

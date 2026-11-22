@@ -11,11 +11,7 @@ from urllib.parse import unquote
 
 from ..dashboard import (
     DASHBOARD_BRIDGE_VERSION,
-    PANEL_ID_PATTERN,
     dashboard_assets,
-    dashboard_panel_label,
-    dashboard_panels,
-    sheet_panel_catalog,
 )
 from ..dashboard_editor import SOURCE_ROUTE as DASHBOARD_SOURCE_ROUTE, send_dashboard_edit
 from ..execution import FlowBusy, sheet_lock
@@ -25,7 +21,6 @@ from ..project import ValidationError, workspace_format_notice
 from ..sheet_locks import SheetLockedError
 from ..sheets import (
     can_delete_sheet,
-    discover_flows,
     edit_sheet_flow_source,
     editable_sheet_python_files,
     find_sheet_by_path,
@@ -99,12 +94,17 @@ def validate_visualize_layout(panels: object) -> dict:
 def workspace_dispatch(
     root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
     create_workspace_sheet, rename_workspace_sheet, delete_workspace_sheet, run_all_sheets, workspace_id, run_state,
-    dashboard_state,
+    dashboard_state, inspect_workspace_dashboard, add_workspace_dashboard_placement, remove_workspace_dashboard_placement,
 ):
     dashboard_id = workspace_id or "."
 
     def dashboard_sheets() -> dict[Path, tuple[int, FlowSheet]]:
-        return {sheet.root: (index, sheet) for index, sheet in enumerate(discovered_sheets())
+        try:
+            current_list = discovered_sheets()
+        except ValidationError:
+            with sheets_lock:
+                current_list = list(sheets)
+        return {sheet.root: (index, sheet) for index, sheet in enumerate(current_list)
                 if sheet is not None and not sheet.closing}
 
     def panel_scope_available(sheet: FlowSheet, scope: str | None) -> bool:
@@ -129,46 +129,15 @@ def workspace_dispatch(
                     data = self.request.read_json_dict(16 * 1024)
                     action = data.get("action")
                     if action == "add":
-                        sheet = data.get("sheet")
-                        scope = data.get("scope")
-                        panel_id = data.get("id")
-                        if (
-                            not isinstance(sheet, str)
-                            or (scope is not None and (not isinstance(scope, str) or not scope or "\x00" in scope))
-                            or not isinstance(panel_id, str) or not PANEL_ID_PATTERN.fullmatch(panel_id)
-                            or panel_id in (".", "..")
-                        ):
-                            raise ValueError
-                        with sheets_lock:
-                            source = find_sheet_by_path(root, sheet)
-                            entry = dashboard_sheets().get(source)
-                            if entry is None or not panel_scope_available(entry[1], scope) or not any(
-                                panel["id"] == panel_id for panel in dashboard_panels(source, scope)
-                            ):
-                                raise FileNotFoundError
-                            dashboard_state.add_workspace_placement(dashboard_id, source.relative_to(root).as_posix(), scope, panel_id)
+                        payload = add_workspace_dashboard_placement(
+                            data.get("sheet"), data.get("scope"), data.get("id"),
+                        )
                     elif action == "remove":
-                        placement_id = data.get("id")
-                        if not isinstance(placement_id, str) or not re.fullmatch(r"[0-9a-f]{32}", placement_id):
-                            raise ValueError
-                        dashboard_state.remove_workspace_placement(dashboard_id, placement_id)
+                        payload = remove_workspace_dashboard_placement(data.get("id"), allow_missing=True)
                     else:
                         raise ValueError
-
-                current = dashboard_sheets()
-                placements = dashboard_state.workspace_placements(dashboard_id)
-                for placement in placements:
-                    path = find_sheet_by_path(root, placement["sheet"])
-                    index, sheet = current.get(path, (None, None))
-                    scope, panel_id = placement["scope"], placement["panel_id"]
-                    available = sheet is not None and panel_scope_available(sheet, scope) and any(
-                        panel["id"] == panel_id for panel in dashboard_panels(path, scope)
-                    )
-                    placement.update(sheet_name=sheet.title if sheet is not None else placement["sheet"],
-                                     sheet_index=index, available=available, label=dashboard_panel_label(panel_id))
-                sources = discover_flows(root)
-                node_ids = {path: current[path][1].dashboard_step_ids() for _, path in sources if path in current}
-                catalog = sheet_panel_catalog(root, sources, node_ids)
+                else:
+                    payload = inspect_workspace_dashboard()
             except FileNotFoundError:
                 self.request.send_json({"error": "Source panel unavailable in this Workspace."}, HTTPStatus.NOT_FOUND)
             except (ValueError, UnicodeError, RecursionError):
@@ -176,7 +145,7 @@ def workspace_dispatch(
             except (OSError, sqlite3.Error, RuntimeError):
                 self.request.send_json({"error": "Could not access dashboard placements."}, HTTPStatus.INTERNAL_SERVER_ERROR)
             else:
-                self.request.send_json({"placements": placements, "catalog": catalog})
+                self.request.send_json(payload)
 
         def workspace_placement(self, placement_id: str, data: bool) -> None:
             try:
@@ -626,10 +595,7 @@ def workspace_dispatch(
                 self.workspace_placement(asset[1], asset[2] is not None)
                 return
             if self.path == "/dashboard/panel-catalog":
-                sources = discover_flows(root)
-                current = dashboard_sheets()
-                node_ids = {path: current[path][1].dashboard_step_ids() for _, path in sources if path in current}
-                self.request.send_json({"panels": sheet_panel_catalog(root, sources, node_ids)})
+                self.request.send_json({"panels": inspect_workspace_dashboard()["catalog"]})
                 return
             if layout := VISUALIZE_LAYOUT_PATH.fullmatch(self.path):
                 self.visualize_layout(int(layout[1]))

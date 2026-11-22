@@ -9,17 +9,18 @@ SETTINGS_ROUTE = r"dashboard-settings/(workflow|[0-9]{1,8})"
 PANEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_PANEL_ID = "default"
 ASSET_NAMES = ("index.html", "style.css", "setting.js", "dashboard.js", "bridge.json")
-WORKSPACE_DASHBOARD_DIRECTORY = Path("dashboards/workspace")
 DASHBOARD_BRIDGE_VERSION = 1
 MAX_ASSET_BYTES = 256 * 1024
-MAX_WORKSPACE_FRAME_SOURCES = 4
 
 DASHBOARD_AUTHORING_GUIDANCE = (
     "Use the connected Phyzflow MCP tools to inspect, edit, and verify dashboard files. "
-    "Find the Workspace ID with list_workspaces if needed. For a Workspace Dashboard, call "
-    "inspect_dashboards with sheet: null. Use the returned Workspace-relative paths with "
-    "read_workspace_text and write_workspace_text, passing the read revision or 'missing' for a new file. "
-    "For a Workflow or Node Dashboard, pass the named sheet to inspect_dashboards and use read_file and write_file. "
+    "Find the Workspace ID with list_workspaces if needed. For a Workflow or Node Dashboard, "
+    "pass the named sheet to inspect_dashboards, open the sheet with open_sheet, and use "
+    "read_file, write_file, and apply_patch on the returned sheet-relative asset paths. "
+    "For the Workspace Dashboard, call inspect_dashboards with sheet: null to inspect the "
+    "available Sheet panel catalog and active Workspace placements; author or edit each "
+    "panel's files in its source sheet and use add_dashboard_placement or "
+    "remove_dashboard_placement to manage Workspace Dashboard placements. "
     "Read the saved files back and call inspect_dashboards again to verify panel discovery. "
     "Dashboard-only edits do not require running or inspecting unrelated flows. "
     "Do not search for a web UI URL or open a browser during MCP dashboard authoring. "
@@ -265,30 +266,4 @@ def inspect_sheet_dashboards(root: Path) -> dict:
             "files": list(ASSET_NAMES),
         },
         "theme_reference": DASHBOARD_THEME_REFERENCE,
-    }
-
-
-def inspect_workspace_dashboards(root: Path) -> dict:
-    root = root.resolve()
-    return {
-        "panels": _scope_panel_entries(root, root / WORKSPACE_DASHBOARD_DIRECTORY),
-        "directory": WORKSPACE_DASHBOARD_DIRECTORY.as_posix(),
-        "panel_directory_template": "dashboards/workspace/panels/<panel_id>",
-        "bridge": {
-            "version": DASHBOARD_BRIDGE_VERSION,
-            "methods": ["subscribe(listener)"],
-            "snapshot_fields": ["scope", "sources"],
-            "frame_sources": {
-                "mode": "live",
-                "max_per_panel": MAX_WORKSPACE_FRAME_SOURCES,
-                "value": "JPEG data URL from the selected step's latest publish_frame call",
-            },
-            "declaration_example": {
-                "versions": [DASHBOARD_BRIDGE_VERSION],
-                "sources": [
-                    {"id": "main-duration", "sheet": ".", "field": "duration_ms"},
-                    {"id": "camera", "sheet": "flows/Vision AI", "mode": "live", "frame": {"step": "Camera"}},
-                ],
-            },
-        },
     }

@@ -612,7 +612,9 @@ class ApplicationDashboardTests(unittest.TestCase):
                     self.assertIn("Pass sheet: null for the Workspace Dashboard", tools["inspect_dashboards"].description)
                     instructions = client.instructions or ""
                     self.assertIn("inspect_dashboards with sheet: null", instructions)
-                    self.assertIn("read_workspace_text and write_workspace_text", instructions)
+                    self.assertIn("add_dashboard_placement", instructions)
+                    self.assertIn("remove_dashboard_placement", instructions)
+                    self.assertIn("source sheet", instructions)
                     self.assertIn("Use a browser for visual checks only if the user explicitly asks", instructions)
 
                     denied = call(portal, client, "inspect_dashboards", workspace_id=denied_id)
@@ -637,30 +639,15 @@ class ApplicationDashboardTests(unittest.TestCase):
                     self.assertIn(resize_guidance, instructions)
                     self.assertIn("If the user explicitly requests browser verification", resize_guidance)
 
-                    def inspect_workspace_panels():
+                    def inspect_workspace_dashboard():
                         inspected = call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=None)
                         self.assertFalse(inspected.is_error, inspected.content)
                         data = output(inspected)
                         self.assertNotIn("workflow", data)
                         self.assertNotIn("nodes", data)
-                        return data["workspace"]["panels"]
+                        return data["workspace"]
 
-                    self.assertEqual(inspect_workspace_panels(), [])
-                    workspace_asset = {"workspace_id": workspace_id, "path": "dashboards/workspace/index.html"}
-                    wrote = call(portal, client, "write_workspace_text", **workspace_asset,
-                                 revision="missing", text="<h1>Workspace overview</h1>")
-                    self.assertFalse(wrote.is_error, wrote.content)
-                    saved = call(portal, client, "read_workspace_text", **workspace_asset)
-                    self.assertFalse(saved.is_error, saved.content)
-                    edited = call(portal, client, "write_workspace_text", **workspace_asset,
-                                  revision=output(saved)["revision"], text="<h1>Workspace status</h1>")
-                    self.assertFalse(edited.is_error, edited.content)
-                    self.assertEqual(output(call(portal, client, "read_workspace_text", **workspace_asset))["text"],
-                                     "<h1>Workspace status</h1>")
-                    panels = inspect_workspace_panels()
-                    self.assertEqual(len(panels), 1)
-                    self.assertEqual(panels[0]["assets"], [workspace_asset["path"]])
-                    self.assertTrue(panels[0]["ready"])
+                    self.assertEqual(inspect_workspace_dashboard(), {"placements": [], "catalog": []})
 
                     opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
                     self.assertFalse(opened.is_error, opened.content[0].text)
@@ -716,6 +703,65 @@ class ApplicationDashboardTests(unittest.TestCase):
                             "ready": True,
                         }],
                     }])
+                    expected_catalog = [
+                        {"sheet": ".", "sheet_name": "Main", "scope": None, "id": "default", "label": "Overview"},
+                        {"sheet": ".", "sheet_name": "Main", "scope": "Start", "id": "default", "label": "Overview"},
+                    ]
+                    self.assertEqual(after["workspace"], {"placements": [], "catalog": expected_catalog})
+                    self.assertEqual(inspect_workspace_dashboard(), {"placements": [], "catalog": expected_catalog})
+
+                    bad_placement = call(
+                        portal, client, "add_dashboard_placement",
+                        workspace_id=workspace_id, sheet="Main", scope="UnknownNode", panel_id="default",
+                    )
+                    self.assertTrue(bad_placement.is_error)
+
+                    placed_workflow = call(
+                        portal, client, "add_dashboard_placement",
+                        workspace_id=workspace_id, sheet=".", scope=None, panel_id="default",
+                    )
+                    self.assertFalse(placed_workflow.is_error, placed_workflow.content[0].text)
+                    placed_node = call(
+                        portal, client, "add_dashboard_placement",
+                        workspace_id=workspace_id, sheet="Main", scope="Start", panel_id="default",
+                    )
+                    self.assertFalse(placed_node.is_error, placed_node.content[0].text)
+                    placements = output(placed_node)["placements"]
+                    self.assertEqual(
+                        [(p["sheet"], p["sheet_name"], p["scope"], p["panel_id"], p["available"]) for p in placements],
+                        [
+                            (".", "Main", None, "default", True),
+                            (".", "Main", "Start", "default", True),
+                        ],
+                    )
+                    self.assertEqual(inspect_workspace_dashboard()["placements"], placements)
+
+                    page.goto(f"{url}/workspaces/{workspace_id}/")
+                    page.get_by_role("button", name="Dashboard", exact=True).click()
+                    board = page.get_by_role("dialog", name="Workspace dashboard").frame_locator(
+                        'iframe[title="Workspace Dashboard"]'
+                    )
+                    expect(
+                        board.get_by_role("region", name="Main · Workflow · Overview", exact=True)
+                        .frame_locator("iframe").get_by_role("heading", name="Overview")
+                    ).to_be_visible()
+                    expect(
+                        board.get_by_role("region", name="Main · Start · Overview", exact=True)
+                        .frame_locator("iframe").get_by_role("heading", name="Start")
+                    ).to_be_visible()
+
+                    missing_remove = call(
+                        portal, client, "remove_dashboard_placement",
+                        workspace_id=workspace_id, placement_id="f" * 32,
+                    )
+                    self.assertTrue(missing_remove.is_error)
+                    removed = call(
+                        portal, client, "remove_dashboard_placement",
+                        workspace_id=workspace_id, placement_id=placements[0]["id"],
+                    )
+                    self.assertFalse(removed.is_error, removed.content[0].text)
+                    self.assertEqual([p["scope"] for p in output(removed)["placements"]], ["Start"])
+                    self.assertTrue((root / "dashboards/workflow/index.html").is_file())
 
                     closed = call(
                         portal, client, "close_sheet",
@@ -1061,7 +1107,6 @@ class ApplicationDashboardTests(unittest.TestCase):
                     for path, source in (
                         ("dashboards/workflow/panels/rate-chart/index.html", "<main><h1>Rate</h1><button id='custom-btn'>Inspect</button></main>\n"),
                         ("dashboards/workflow/panels/rate-chart/style.css", "button { background: transparent; border: 0; }\n"),
-                        ("dashboards/workspace/index.html", "<h1>Workspace metrics</h1>\n"),
                         ("dashboards/nodes/Step%2FOne/index.html", "<main><h1>Encoded</h1></main>\n"),
                     ):
                         wrote = call(
@@ -1080,7 +1125,9 @@ class ApplicationDashboardTests(unittest.TestCase):
                     self.assertEqual(inspected["nodes"][0]["step_id"], "Step/One")
                     workspace_panels = output(call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=None))
                     self.assertEqual(workspace_panels["workspace"], inspected["workspace"])
-                    self.assertEqual(workspace_panels["workspace"]["panels"][0]["assets"], ["dashboards/workspace/index.html"])
+                    self.assertEqual(workspace_panels["workspace"]["catalog"], [
+                        {"sheet": ".", "sheet_name": "Main", "scope": None, "id": "rate-chart", "label": "rate chart"},
+                    ])
                     closed = call(
                         portal, client, "close_sheet",
                         workspace_id=workspace_id, sheet="Main", session_id=session_id,
@@ -1194,6 +1241,19 @@ class ApplicationDashboardTests(unittest.TestCase):
                         f"{workspace_url}/dashboard/placements", headers={"Origin": url},
                         data={"action": "add", "sheet": ".", "scope": "Retired", "id": "retired"},
                     ).status, 404)
+                    added_placement = page.request.post(
+                        f"{workspace_url}/dashboard/placements", headers={"Origin": url},
+                        data={"action": "add", "sheet": ".", "scope": None, "id": "shared"},
+                    )
+                    self.assertEqual(added_placement.status, 200, added_placement.text())
+                    mcp_result = call(portal, client, "inspect_dashboards", workspace_id=workspace_id, sheet=None)
+                    self.assertFalse(mcp_result.is_error, mcp_result.content[0].text)
+                    mcp_workspace = output(mcp_result)["workspace"]
+                    self.assertEqual(mcp_workspace["catalog"], catalog)
+                    self.assertEqual(
+                        [(p["sheet"], p["sheet_name"], p["scope"], p["panel_id"], p["available"]) for p in mcp_workspace["placements"]],
+                        [(".", "Main", None, "shared", True)],
+                    )
 
                     page.goto(f"{workspace_url}/")
                     flow = page.frame_locator('iframe[title="Main flow"]')

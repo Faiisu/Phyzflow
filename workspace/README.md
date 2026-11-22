@@ -40,7 +40,7 @@ Authorized MCP clients have full flow-development parity inside their granted Wo
 
 - **Workspace and sheet management:** `list_workspaces`, `inspect_workspace`, `create_sheet`, `rename_sheet`, and `delete_sheet`.
 - **Sheet editing sessions:** `open_sheet`, `heartbeat_sheet`, `stage_draft`, and `close_sheet`.
-- **Files, source, and dashboards:** `list_files`, `read_file`, `search_code`, `write_file`, `apply_patch`, and `inspect_dashboards`.
+- **Files, source, and dashboards:** `list_files`, `read_file`, `search_code`, `write_file`, `apply_patch`, `inspect_dashboards`, `add_dashboard_placement`, and `remove_dashboard_placement`.
 - **Node settings:** `read_node_settings` and `update_node_setting`.
 - **Validation and execution:** `validate_flow`, `run_flow`, `run_all_flows`, and `stop_flow`.
 - **Inspection, logs, and dependencies:** `inspect_execution`, `read_console_logs`, `configure_console_logs`, and `install_dependencies` (targeting the granted Workspace's `.venv` only).
