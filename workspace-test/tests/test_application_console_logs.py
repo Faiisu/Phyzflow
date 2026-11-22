@@ -371,6 +371,7 @@ def start(mode):
 
                 main.locator("#input").fill('{"mode": "continuous"}')
                 main.get_by_role("button", name="Run with this input").click()
+                expect(page.get_by_role("tab", name="Main")).to_contain_text("Running")
                 main_console = main.get_by_role("region", name="Run console")
                 expect(main_console.get_by_label("stdout")).to_contain_text("Continuous day 1 stdout")
                 expect(main_console.get_by_label("stderr")).to_contain_text("Continuous day 1 stderr")
@@ -397,7 +398,10 @@ def start(mode):
                 (root / "finish-continuous").touch()
                 expect(page.get_by_role("tab", name="Main")).to_contain_text("Succeeded")
 
+                frame = page.locator('iframe[title="Main flow"]')
+                previous_view = frame.get_attribute("src")
                 page.get_by_role("button", name="Reload flow").click()
+                expect(frame).not_to_have_attribute("src", previous_view, timeout=15_000)
                 expect(main.get_by_role("button", name="Inspect Start")).to_be_visible()
                 expect(main_console.get_by_label("stdout")).to_contain_text("Continuous day 2 stdout")
                 expect(main_console.get_by_label("stdout")).to_contain_text("Continuous day 3 stdout")

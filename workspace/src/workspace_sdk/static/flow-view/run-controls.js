@@ -437,10 +437,27 @@ export function initRunControls({
   });
   if (recoveryView) saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
 
-  function loadConsole(consoleData) {
-    if (consoleData?.settings) applyConsoleSettings(consoleData.settings);
-    if (!consoleRunId && !runInProgress && consoleData?.events?.length) {
-      clearConsole();
+  async function loadConsole(initialData) {
+    const runId = parentRunId;
+    let consoleData = initialData;
+    if (consoleData === undefined) {
+      saveConsoleLogs.disabled = consoleRetentionDays.disabled = true;
+      try {
+        const response = await fetch("console-logs");
+        if (!response.ok) return;
+        consoleData = await response.json();
+      } catch {
+        return;
+      } finally {
+        if (stopPhase !== "stopped") saveConsoleLogs.disabled = consoleRetentionDays.disabled = false;
+      }
+    }
+    if (stopPhase === "stopped") return;
+    applyConsoleSettings(consoleData?.settings);
+    if (
+      !parentRunning && runId === parentRunId && !consoleRunId && !runInProgress && !observedRun && !runStatus &&
+      Array.isArray(consoleData?.events)
+    ) {
       for (const entry of consoleData.events) showMessage(entry);
     }
   }

@@ -503,6 +503,10 @@ def sample_input(root: Path) -> dict:
     return sample["input"]
 
 
+def recovery_graph_revision(steps: list[dict]) -> str:
+    return blake2b(json.dumps(steps, sort_keys=True).encode()).hexdigest()
+
+
 def serve(
     flow: Flow, root: Path, port: int, loaded_sources: dict[Path, str],
     *, zoom: ZoomSettings, ipv4: str = "127.0.0.1", on_ready: Callable[[str, list[dict]], None] | None = None,
@@ -532,6 +536,7 @@ def serve(
             ],
         })
 
+    graph_revision = recovery_graph_revision(graph)
     node_files_by_id = {step["id"]: step["file"] for step in graph}
     defaults_files = setting_files(root, steps)
     default_input = sample_input(root)
@@ -552,19 +557,14 @@ def serve(
             return steps if scope == "workflow" else (steps[int(scope)],)
 
         def all_dashboard_panels(self) -> dict[str, list[dict]]:
-            return {
-                "workflow": dashboard_panels(root, None),
-                **{str(index): dashboard_panels(root, step.id) for index, step in enumerate(steps)},
-            }
-
-        def initial_console_logs(self) -> dict | None:
-            try:
-                current_settings = console_logs.settings()
-                events = console_logs.read_run(None)
-            except (OSError, ValueError):
-                return None
-            resolved = events[0]["run_id"] if events else None
-            return {"settings": current_settings, "run_id": resolved, "events": events}
+            scopes = [("workflow", None), *((str(index), step.id) for index, step in enumerate(steps))]
+            panels = {}
+            for scope, step_id in scopes:
+                try:
+                    panels[scope] = dashboard_panels(root, step_id)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+            return panels
 
         def dashboard_live_placement(self, query: str) -> None:
             try:
@@ -631,9 +631,8 @@ def serve(
                 edit_lock = SheetEditLease(root).status(self.headers.get("X-Phyzflow-Edit-Session"))
                 self.send_json({
                     "name": root.name, "steps": graph, "input": default_input, "output": flow.output.step_id,
-                    "zoom": zoom, "edit_running_source": run_token is not None, "edit_lock": edit_lock,
-                    "dashboard_panels": self.all_dashboard_panels(),
-                    "console_logs": self.initial_console_logs(),
+                    "zoom": zoom, "graph_revision": graph_revision,
+                    "edit_running_source": run_token is not None, "edit_lock": edit_lock,
                 })
             elif self.path == "/status":
                 self.send_json({"status": "running" if sheet_busy(root) else live_buffer.status()})
@@ -648,6 +647,8 @@ def serve(
                     self.send_json({"panels": dashboard_panels(root, step_id)})
                 except IndexError:
                     self.send_json({"error": "Dashboard scope not found."}, HTTPStatus.NOT_FOUND)
+                except (OSError, RuntimeError, ValueError):
+                    self.send_json({"error": "Could not list dashboard panels."}, HTTPStatus.INTERNAL_SERVER_ERROR)
             elif match := re.fullmatch(f"/{ASSET_ROUTE}", self.path):
                 scope = match[1]
                 panel_id = match[2]

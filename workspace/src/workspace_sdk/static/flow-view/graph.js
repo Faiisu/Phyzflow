@@ -2,6 +2,9 @@ import { createEdgeRouter, pointAlongEdge, traceEdge } from "../edge-routing.js"
 import { createCanvasLayout, snapStep } from "../canvas-layout.js";
 import { element, inputBindings } from "./display.js";
 
+const maximumEdgeBitmapSide = 8192;
+const maximumEdgeBitmapPixels = 16 * 1024 * 1024;
+
 export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, showNodeFiles }) {
   const graph = document.querySelector("#graph");
   const canvas = graph.querySelector("canvas");
@@ -34,6 +37,17 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
   const zoomStep = 25;
   let zoomFloor = minimumZoom;
   let edgePoints = [];
+  let paintViewportEdges = null;
+  let viewportEdgeFrame = null;
+
+  function scheduleViewportEdgePaint() {
+    if (!paintViewportEdges || viewportEdgeFrame !== null) return;
+    viewportEdgeFrame = requestAnimationFrame(() => {
+      viewportEdgeFrame = null;
+      paintViewportEdges?.();
+    });
+  }
+  graphViewport.addEventListener("scroll", scheduleViewportEdgePaint);
 
   function layoutSize(element) {
     const style = getComputedStyle(element);
@@ -108,6 +122,7 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
     zoomReset.disabled = graphZoom === 100;
     centerGraph.disabled = false;
     fitGraph.disabled = nodes.size === 0;
+    scheduleViewportEdgePaint();
   }
 
   function cancelWheelZoom() {
@@ -449,23 +464,37 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
     }
   }
 
-  function drawEdges(steps) {
-    const { left, top, right, bottom } = graphDrawingBounds(graph.offsetWidth, graph.offsetHeight);
-    const width = right - left;
-    const height = bottom - top;
-    const scale = window.devicePixelRatio || 1;
+  function paintEdgeBitmap(strokes, vertical, left, top, width, height, pixelRatio, zoom) {
     canvas.style.left = `${left}px`;
     canvas.style.top = `${top}px`;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
-    canvas.width = Math.ceil(width * scale);
-    canvas.height = Math.ceil(height * scale);
+    const bitmapWidth = Math.ceil(width * pixelRatio);
+    const bitmapHeight = Math.ceil(height * pixelRatio);
+    if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
+    if (canvas.height !== bitmapHeight) canvas.height = bitmapHeight;
     const ctx = canvas.getContext("2d");
-    ctx.scale(scale, scale);
+    ctx.resetTransform();
+    ctx.clearRect(0, 0, bitmapWidth, bitmapHeight);
+    ctx.scale(pixelRatio, pixelRatio);
     ctx.translate(-left, -top);
-    const vertical = narrowGraph.matches;
     if (vertical) ctx.transform(0, 1, 1, 0, 0, 0);
     ctx.lineJoin = "round";
+    for (const { line, arrow, color, lineWidth } of strokes) {
+      ctx.lineWidth = Math.max(lineWidth, 1 / zoom);
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.stroke(line);
+      ctx.fill(arrow);
+    }
+  }
+
+  function drawEdges(steps) {
+    const { left, top, right, bottom } = graphDrawingBounds(graph.offsetWidth, graph.offsetHeight);
+    const width = right - left;
+    const height = bottom - top;
+    const pixelRatio = window.devicePixelRatio || 1;
+    const vertical = narrowGraph.matches;
     const screenCards = steps.map(step => {
       const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = nodes.get(step.id).node;
       return { left: offsetLeft, right: offsetLeft + offsetWidth, top: offsetTop, bottom: offsetTop + offsetHeight };
@@ -482,6 +511,7 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
     const edges = steps.flatMap((step, target) => step.dependencies.map(source => ({
       step, source, target, direction: activeNode === step.id ? "in" : activeNode === source ? "out" : null,
     })));
+    const strokes = [];
     const tags = [];
     const labelBoxes = [];
     edgePoints = [];
@@ -490,17 +520,13 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
       for (const point of path.points) edgePoints.push(vertical ? { x: point.y, y: point.x } : point);
       const end = path.points.at(-1);
       const color = edge.direction ? edgeColors[edge.direction] : "#73788770";
-      ctx.lineWidth = edge.direction ? 2.2 : 1.4;
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      traceEdge(ctx, path);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(end.x, end.y);
-      ctx.lineTo(end.x - 6, end.y - 4);
-      ctx.lineTo(end.x - 6, end.y + 4);
-      ctx.fill();
+      const line = new Path2D();
+      traceEdge(line, path);
+      const arrow = new Path2D();
+      arrow.moveTo(end.x, end.y);
+      arrow.lineTo(end.x - 6, end.y - 4);
+      arrow.lineTo(end.x - 6, end.y + 4);
+      strokes.push({ line, arrow, color, lineWidth: edge.direction ? 2.2 : 1.4 });
       if (!edge.direction) continue;
       const bindings = inputBindings(edge.step, edge.source).join(", ");
       const tag = element("span", bindings, "edge-label");
@@ -525,6 +551,27 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
       tags.push(tag);
     }
     edgeLabels.replaceChildren(...tags);
+
+    const bitmapWidth = Math.ceil(width * pixelRatio);
+    const bitmapHeight = Math.ceil(height * pixelRatio);
+    const needsViewportBitmap = Math.max(bitmapWidth, bitmapHeight) > maximumEdgeBitmapSide ||
+      bitmapWidth * bitmapHeight > maximumEdgeBitmapPixels;
+    if (needsViewportBitmap) {
+      paintViewportEdges = () => {
+        const { clientWidth, clientHeight } = graphViewport;
+        if (!clientWidth || !clientHeight) return;
+        const zoom = graphZoom / 100;
+        const { graphX, graphY } = graphAnchor(0, 0);
+        const density = Math.min(pixelRatio, maximumEdgeBitmapSide / Math.max(clientWidth, clientHeight),
+          Math.sqrt(maximumEdgeBitmapPixels / (clientWidth * clientHeight)));
+        paintEdgeBitmap(strokes, vertical, graphX, graphY, clientWidth / zoom, clientHeight / zoom,
+          density * zoom, zoom);
+      };
+      paintViewportEdges();
+    } else {
+      paintViewportEdges = null;
+      paintEdgeBitmap(strokes, vertical, left, top, width, height, pixelRatio, 1);
+    }
   }
 
   return {

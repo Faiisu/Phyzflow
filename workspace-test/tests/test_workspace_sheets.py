@@ -11,12 +11,54 @@ from urllib.parse import urljoin
 from urllib.request import urlopen
 
 from playwright.sync_api import expect
+from workspace_sdk.sheets import create_sheet
 from workspace_sdk.ui_settings import load_ui_settings
 
 from browser_support import browser_page, local_ui, show_panel
 
 
 class WorkspaceSheetTests(unittest.TestCase):
+    def test_workspace_link_opens_only_the_selected_sheet(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            source = """\
+from workspace_sdk import Flow, Output, Step
+
+flow = Flow((), (Step("Main node", lambda: 1, {}),), Output("Main node"))
+"""
+            (root / "flow.py").write_text(source, encoding="utf-8")
+            create_sheet(root, "Linked").write_text(source.replace("Main node", "Linked node"), encoding="utf-8")
+            opened = []
+
+            def observe_open(request):
+                if request.method == "POST" and request.url.endswith("/open"):
+                    opened.append(request.url)
+
+            page.on("request", observe_open)
+            with local_ui(root) as (url, _):
+                main = page.frame_locator('iframe[title="Main flow"]')
+                linked = page.frame_locator('iframe[title="Linked flow"]')
+                page.goto(f"{url}/#flow-tab-1")
+                expect(page.get_by_role("tab", name="Linked")).to_have_attribute("aria-selected", "true")
+                expect(linked.get_by_role("button", name="Inspect Linked node")).to_be_visible()
+                expect(page.locator('iframe[title="Main flow"]')).to_have_count(0)
+                self.assertEqual(opened, [f"{url}/flows/1/open"])
+
+                page.get_by_role("tab", name="Main").click()
+                expect(main.get_by_role("button", name="Inspect Main node")).to_be_visible()
+                self.assertEqual(opened, [f"{url}/flows/1/open", f"{url}/flows/0/open"])
+
+                page.get_by_role("button", name="Delete Linked").click()
+                page.get_by_role("dialog", name="Delete sheet?").get_by_role("button", name="Delete sheet").click()
+                expect(page.get_by_role("tab", name="Linked")).to_have_count(0)
+                for fragment in ("#flow-tab-1", "#missing"):
+                    with self.subTest(fragment=fragment):
+                        page.goto("about:blank")
+                        opened.clear()
+                        page.goto(f"{url}/{fragment}")
+                        expect(main.get_by_role("button", name="Inspect Main node")).to_be_visible()
+                        self.assertEqual(opened, [f"{url}/flows/0/open"])
+
     def test_editing_sheet_flow_source_saves_to_disk_and_applies_on_reload(self):
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve()

@@ -9,14 +9,14 @@ from playwright.sync_api import sync_playwright
 
 
 @contextmanager
-def browser_page(*, show_scrollbars=False):
+def browser_page(*, show_scrollbars=False, device_scale_factor=1):
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             channel=None if sys.platform == "win32" else "chrome",
             ignore_default_args=["--hide-scrollbars"] if show_scrollbars else None,
         )
         try:
-            yield browser.new_page(viewport={"width": 1440, "height": 900})
+            yield browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=device_scale_factor)
         finally:
             browser.close()
 

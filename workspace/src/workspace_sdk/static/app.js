@@ -111,26 +111,7 @@ try {
   const response = await fetch("project");
   if (!response.ok) throw new Error("Could not load the project graph. Restart Workspace and try again.");
   const project = await response.json();
-  let consoleData = null;
-  if (!recoveryView) {
-    if (project.console_logs !== undefined) {
-      consoleData = project.console_logs;
-    } else {
-      const consoleResponse = await fetch("console-logs").catch(() => null);
-      consoleData = consoleResponse?.ok ? await consoleResponse.json().catch(() => null) : null;
-    }
-  }
-  run.loadConsole(consoleData);
   editor.loadProject(project);
-  const { canvasLayout } = graph;
-  if (!recoveryView) {
-    dashboards = initDashboards(
-      project,
-      canvasLayout.revealDashboard,
-      canvasLayout.releaseDashboard,
-      canvasLayout.setVisualizeModeLayout,
-    );
-  }
   const name = document.querySelector("#project-name");
   if (name) {
     name.textContent = project.name;
@@ -138,7 +119,18 @@ try {
     name.hidden = false;
   }
   graph.positionGraph(project);
-  if (!recoveryView) run.loadSample(project.input);
+  if (!recoveryView) {
+    const { canvasLayout } = graph;
+    dashboards = initDashboards(
+      project,
+      canvasLayout.revealDashboard,
+      canvasLayout.releaseDashboard,
+      canvasLayout.setVisualizeModeLayout,
+    );
+    run.loadSample(project.input);
+    dashboards.loadPanels();
+    void run.loadConsole(project.console_logs);
+  }
 } catch (error) {
   run.showLoadError(error);
 }

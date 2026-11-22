@@ -18,6 +18,7 @@ export function initNodeSource({ recoveryView, getStopPhase, isRunInProgress }) 
   let editRunningSource = false;
   let sheetEditLock = null;
   let nodeFilesEditLock = null;
+  let graphRevision = null;
 
   function sourceLanguage(path) {
     if (path.endsWith(".py")) return "python";
@@ -167,8 +168,15 @@ export function initNodeSource({ recoveryView, getStopPhase, isRunInProgress }) 
     return getStopPhase() === "stopped" ? window.parent.phyzflowRecoveryNodeBase?.(window) ?? "" : "";
   }
 
+  function recoveryHeaders() {
+    if (graphRevision && (recoveryView || getStopPhase() === "stopped")) {
+      return { "X-Phyzflow-Graph-Revision": graphRevision };
+    }
+    return {};
+  }
+
   async function requestSource(index, data, signal) {
-    const headers = { "Content-Type": "application/json" };
+    const headers = { "Content-Type": "application/json", ...recoveryHeaders() };
     const sessionId = currentEditSessionId();
     if (sessionId) headers["X-Phyzflow-Edit-Session"] = sessionId;
     const response = await fetch(`${nodeFilesBase()}node-source/${index}`, {
@@ -318,6 +326,7 @@ export function initNodeSource({ recoveryView, getStopPhase, isRunInProgress }) 
     nodeFilesTree.replaceChildren();
     nodeFilesMessage.textContent = "Loading files…";
     if (!nodeFilesDialog.open) nodeFilesDialog.showModal();
+    const loadError = "Could not load the node files. Close this view and try again.";
     try {
       if (window.parent !== window && window.parent.phyzflowAcquireEditLock) {
         nodeFilesEditLock = await window.parent.phyzflowAcquireEditLock(window);
@@ -327,9 +336,11 @@ export function initNodeSource({ recoveryView, getStopPhase, isRunInProgress }) 
         }
         if (nodeFilesEditLock.editLock) sheetEditLock = nodeFilesEditLock.editLock;
       }
-      const response = await fetch(`${nodeFilesBase()}node-files/${index}`, { signal: request.signal });
-      if (!response.ok) throw new Error();
-      const { path, entries, truncated, settings } = await response.json();
+      const response = await fetch(`${nodeFilesBase()}node-files/${index}`, {
+        headers: recoveryHeaders(), signal: request.signal,
+      });
+      const { path, entries, truncated, settings, error } = await response.json().catch(() => ({}));
+      if (!response.ok || path === undefined) throw new Error(error ?? loadError);
       if (request.signal.aborted) return;
       if (path === null) {
         nodeFilesMessage.textContent = "No source file was found inside this flow.";
@@ -348,13 +359,14 @@ export function initNodeSource({ recoveryView, getStopPhase, isRunInProgress }) 
       } else if (preferSettings && settings) await openSource(index, settings);
       else if (files.includes(source) || line !== null) await openSource(index, source, line);
     } catch (error) {
-      if (!request.signal.aborted) nodeFilesMessage.textContent = "Could not load the node files. Close this view and try again.";
+      if (!request.signal.aborted) nodeFilesMessage.textContent = error.message || loadError;
     }
   }
 
 
   function loadProject(project) {
     editRunningSource = project.edit_running_source;
+    graphRevision = project.graph_revision;
     sheetEditLock = (window.parent !== window ? window.parent.phyzflowSheetEditLock?.(window) : null) ?? project.edit_lock ?? null;
     syncEditLockUI();
   }

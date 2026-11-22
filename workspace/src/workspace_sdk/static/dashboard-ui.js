@@ -481,16 +481,20 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
   });
 
-  if (visualizeDrawer) {
-    const refreshVisibleDrawer = () => {
-      if (!visualizeDrawer.hidden) refreshVisualizeList();
-    };
-    new MutationObserver(refreshVisibleDrawer).observe(visualizeDrawer, { attributeFilter: ["hidden"] });
+  function refreshVisibleDrawer() {
+    if (!visualizeDrawer.hidden) void refreshVisualizeList();
+  }
+
+  function loadPanels() {
+    if (!visualizeDrawer) return;
     if (project.dashboard_panels && typeof project.dashboard_panels === "object") {
       renderVisualizeScopes(project.dashboard_panels);
     } else {
       refreshVisibleDrawer();
     }
+  }
+  if (visualizeDrawer) {
+    new MutationObserver(refreshVisibleDrawer).observe(visualizeDrawer, { attributeFilter: ["hidden"] });
   }
   document.querySelector("#visualize-refresh")?.addEventListener("click", () => {
     refreshVisualizeList();
@@ -568,5 +572,5 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
     }
   }
 
-  return { open, track };
+  return { loadPanels, open, track };
 }

@@ -11,6 +11,85 @@ TELEMETRY = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Tel
 
 
 class GraphDependenciesTests(unittest.TestCase):
+    def test_large_graph_paints_edges_on_a_high_dpi_display(self):
+        with TemporaryDirectory() as temporary, browser_page(device_scale_factor=2) as page:
+            root = Path(temporary).resolve()
+            (root / "flow.py").write_text("""\
+from workspace_sdk import Flow, Output, Step
+
+def start():
+    return 0
+
+def advance(previous):
+    return previous + 1
+
+steps = (Step("Step 0", start, {}),) + tuple(
+    Step(f"Step {index}", advance, {"previous": Output(f"Step {index - 1}")})
+    for index in range(1, 150)
+)
+flow = Flow((), steps, Output("Step 149"))
+""", encoding="utf-8")
+            with local_ui(root) as (url, _):
+                page.goto(url)
+                sheet = page.frame_locator('iframe[title="Main flow"]')
+                first = sheet.get_by_role("button", name="Inspect Step 0", exact=True)
+                last = sheet.get_by_role("button", name="Inspect Step 148", exact=True)
+                fit = sheet.get_by_role("button", name="Fit graph", exact=True)
+                expect(first).to_be_visible()
+                expect(fit).to_be_enabled()
+
+                def outgoing_edge_is_painted(button):
+                    return button.evaluate("""async button => {
+                        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                        const card = button.closest(".node");
+                        const next = card.nextElementSibling;
+                        const canvas = card.parentElement.querySelector("canvas");
+                        const cardBounds = card.getBoundingClientRect();
+                        const nextBounds = next.getBoundingClientRect();
+                        const bounds = canvas.getBoundingClientRect();
+                        const scaleX = canvas.width / bounds.width;
+                        const scaleY = canvas.height / bounds.height;
+                        const x = Math.floor((cardBounds.right - bounds.left) * scaleX);
+                        const y = Math.floor(((cardBounds.top + cardBounds.bottom) / 2 - bounds.top) * scaleY);
+                        const gap = Math.max(1, Math.ceil((nextBounds.left - cardBounds.right) * scaleX / 3));
+                        const pixels = canvas.getContext("2d").getImageData(x, y - 2, gap, 5).data;
+                        return pixels.some((value, index) => index % 4 === 3 && value > 0);
+                    }""")
+
+                self.assertTrue(outgoing_edge_is_painted(first))
+                fit.click()
+                self.assertTrue(outgoing_edge_is_painted(last))
+
+                sheet.locator("#zoom-reset").click()
+                first.scroll_into_view_if_needed()
+                self.assertTrue(outgoing_edge_is_painted(first))
+
+                viewport = sheet.get_by_role("region", name="Flow dependencies")
+                viewport_box = viewport.bounding_box()
+                assert viewport_box is not None
+                scroll_left = viewport.evaluate("element => element.scrollLeft")
+                pan_x = viewport_box["x"] + viewport_box["width"] / 2
+                pan_y = viewport_box["y"] + viewport_box["height"] * .8
+                page.mouse.move(pan_x, pan_y)
+                page.mouse.down()
+                page.mouse.move(pan_x - 60, pan_y, steps=4)
+                page.mouse.up()
+                self.assertGreater(viewport.evaluate("element => element.scrollLeft"), scroll_left)
+                self.assertTrue(outgoing_edge_is_painted(first))
+
+                box = first.bounding_box()
+                assert box is not None
+                x = box["x"] + box["width"] / 2
+                y = box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x, y + 40, steps=4)
+                page.mouse.up()
+                moved = first.bounding_box()
+                assert moved is not None
+                self.assertGreater(moved["y"], box["y"])
+                self.assertTrue(outgoing_edge_is_painted(first))
+
     def test_connections_avoid_card_interiors_before_and_after_a_drag(self):
         with local_ui(TELEMETRY, single_flow=True) as (url, _), browser_page() as page:
             page.goto(url)

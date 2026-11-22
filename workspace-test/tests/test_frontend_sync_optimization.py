@@ -1,6 +1,7 @@
 import gzip
 from http.client import HTTPConnection
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -10,6 +11,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import expect
 
 from browser_support import browser_page, local_ui
+from workspace_sdk.console import ConsoleLogStore
 from workspace_sdk.sheets import create_sheet, source_stamp
 from workspace_sdk.workspace_ui.flow_sheet import FlowSheet
 
@@ -75,6 +77,91 @@ def http_post(url: str, payload: dict | None = None):
 
 
 class FrontendSyncOptimizationTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix" and os.geteuid() != 0, "Requires POSIX folder permissions.")
+    def test_dashboard_discovery_failure_leaves_graph_and_other_panels_available(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            (root / "flow.py").write_text(SIMPLE_FLOW, encoding="utf-8")
+            unreadable = root / "dashboards" / "workflow" / "panels"
+            unreadable.mkdir(parents=True)
+            node_dashboard = root / "dashboards" / "nodes" / "Ping"
+            node_dashboard.mkdir(parents=True)
+            (node_dashboard / "index.html").write_text("<h1>Ping overview</h1>", encoding="utf-8")
+            unreadable.chmod(0o100)
+            try:
+                with local_ui(root) as (url, _):
+                    page.goto(url)
+                    view_url = f"{url}/flows/0/view"
+                    view = page.frame_locator('iframe[title="Main flow"]')
+                    expect(view.get_by_role("button", name="Inspect Ping")).to_be_visible()
+                    expect(page.get_by_role("button", name="Run flow")).to_be_enabled()
+                    panel = view.locator('[data-vis-node="Ping"][data-vis-panel="default"]')
+                    expect(panel).to_be_visible()
+                    project = page.request.get(f"{view_url}/project")
+                    self.assertTrue(project.ok)
+                    self.assertNotIn("dashboard_panels", project.json())
+                    broken_scope = page.request.get(f"{view_url}/dashboard-panels/workflow")
+                    self.assertEqual(broken_scope.status, 500)
+                    page.route(f"{view_url}/dashboard-panels", lambda route: route.fulfill(status=404))
+                    with page.expect_response(f"{view_url}/dashboard-panels/0"):
+                        page.reload()
+                    panel.click()
+                    expect(view.frame_locator('iframe[title="Ping dashboard"]').get_by_text("Ping overview")).to_be_visible()
+            finally:
+                unreadable.chmod(0o700)
+
+    def test_saved_console_loads_asynchronously_without_overwriting_a_new_run(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            root = Path(temp).resolve()
+            flow_source = SIMPLE_FLOW.replace(
+                '    return {"ok": True}', '    print("Fresh run output")\n    return {"ok": True}',
+            )
+            (root / "flow.py").write_text(flow_source, encoding="utf-8")
+            console = ConsoleLogStore(root)
+            console.update_settings({"retention_days": 12})
+            console.append("a" * 32, "stdout", "Saved console output\n")
+            with local_ui(root) as (url, _):
+                view_url = f"{url}/flows/0/view"
+                delayed_console = []
+
+                def delay_console(route):
+                    if route.request.method == "GET":
+                        delayed_console.append(route)
+                    else:
+                        route.continue_()
+
+                page.route(f"{view_url}/console-logs", delay_console)
+                page.route("**/live-run*", lambda route: route.fulfill(json={"running": False, "events": []}))
+                with page.expect_request(f"{view_url}/console-logs"):
+                    page.goto(url)
+                view = page.frame_locator('iframe[title="Main flow"]')
+                run = page.get_by_role("button", name="Run flow")
+                stdout = view.get_by_role("log", name="stdout")
+                retention = view.get_by_label("Retention (days)")
+                expect(view.get_by_role("button", name="Inspect Ping")).to_be_visible()
+                expect(run).to_be_enabled()
+                expect(stdout).to_be_empty()
+                expect(retention).to_be_disabled()
+                project = page.request.get(f"{view_url}/project")
+                self.assertTrue(project.ok)
+                self.assertNotIn("console_logs", project.json())
+                saved = page.request.get(f"{view_url}/console-logs").json()
+                delayed_console.pop().continue_()
+                expect(stdout).to_contain_text("Saved console output")
+                expect(retention).to_have_value("12")
+                expect(retention).to_be_enabled()
+
+                with page.expect_request(f"{view_url}/console-logs"):
+                    page.reload()
+                run.click()
+                expect(stdout).to_contain_text("Fresh run output")
+                expect(view.locator("#status")).to_have_text("Succeeded")
+                with page.expect_response(f"{view_url}/console-logs"):
+                    delayed_console.pop().fulfill(json=saved)
+                expect(stdout).to_have_text("Fresh run output")
+                expect(retention).to_have_value("12")
+                expect(retention).to_be_enabled()
+
     def test_conditional_etag_gzip_and_incremental_live_run(self):
         with TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -242,18 +329,24 @@ class FrontendSyncOptimizationTests(unittest.TestCase):
                     self.assertEqual(post_status, 200)
                 responses = []
                 page.on("response", lambda resp: responses.append((resp.url, resp.status)))
-                page.goto(url)
+                with page.expect_response(f"{url}/flows/0/view/console-logs"):
+                    page.goto(url)
                 first_view = page.frame_locator('iframe[title="Main flow"]')
                 expect(first_view.get_by_role("button", name="Inspect Ping")).to_be_visible(timeout=15_000)
 
-                page.get_by_role("tab", name="Second").click()
+                with page.expect_response(f"{url}/flows/1/view/console-logs"):
+                    page.get_by_role("tab", name="Second").click()
                 second_view = page.frame_locator('iframe[title="Second flow"]')
                 expect(second_view.get_by_role("button", name="Inspect Work")).to_be_visible(timeout=15_000)
                 expect(second_view.locator('[data-vis-node=""][data-vis-panel="beta"]')).to_be_visible()
                 initial_console_calls = [entry for entry in responses if "/console-logs" in entry[0]]
                 initial_panel_calls = [entry for entry in responses if "/dashboard-panels" in entry[0]]
-                self.assertEqual(initial_console_calls, [])
-                self.assertEqual(initial_panel_calls, [])
+                self.assertCountEqual(initial_console_calls, [
+                    (f"{url}/flows/0/view/console-logs", 200), (f"{url}/flows/1/view/console-logs", 200),
+                ])
+                self.assertCountEqual(initial_panel_calls, [
+                    (f"{url}/flows/0/view/dashboard-panels", 200), (f"{url}/flows/1/view/dashboard-panels", 200),
+                ])
 
                 page.wait_for_timeout(400)
                 responses.clear()

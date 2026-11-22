@@ -34,6 +34,7 @@ from ..web import (
     STATIC,
     UIRequestHandler,
     is_flow_view_route,
+    recovery_graph_revision,
 )
 from .dashboard_data import placement_snapshot
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
@@ -394,6 +395,13 @@ def workspace_dispatch(
                     self.request.send_error(HTTPStatus.NOT_FOUND)
                     return
                 graph = sheet.recovery_graph or sheet.source_graph()
+                revision_header = self.request.headers.get("X-Phyzflow-Graph-Revision")
+                if revision_header is not None and revision_header != recovery_graph_revision(graph["steps"]):
+                    self.request.send_json(
+                        {"error": "The recovery graph changed. Reload the flow and reopen its node files."},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
                 if node >= len(graph["steps"]):
                     self.request.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -610,7 +618,8 @@ def workspace_dispatch(
                 if sheet is None:
                     self.request.send_error(HTTPStatus.NOT_FOUND)
                 elif recovery[2] == "/project":
-                    self.request.send_json(graph if graph is not None else sheet.source_graph())
+                    graph = graph if graph is not None else sheet.source_graph()
+                    self.request.send_json({**graph, "graph_revision": recovery_graph_revision(graph["steps"])})
                 elif asset := FLOW_VIEW_ASSETS.get(recovery[2]):
                     name, content_type = asset
                     self.request.send_static_asset(STATIC / name, content_type)
@@ -764,7 +773,9 @@ def workspace_dispatch(
                         "editor": True, "revision": sheet.revision, "status": sheet.status(), "startup": sheet.startup,
                     })
                 else:
-                    self.request.send_json({"error": str(error) or "The flow process exited."}, HTTPStatus.BAD_REQUEST)
+                    self.request.send_json({
+                        "error": str(error) or "The flow process exited.", "revision": sheet.revision,
+                    }, HTTPStatus.BAD_REQUEST)
 
     def dispatch(request: UIRequestHandler, path: str) -> None:
         if is_closing():

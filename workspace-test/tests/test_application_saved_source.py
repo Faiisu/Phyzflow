@@ -1,6 +1,7 @@
+from hashlib import sha256
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import json
 import unittest
 
 from playwright.sync_api import expect
@@ -18,6 +19,88 @@ def open_node_files(graph, node="Start"):
 
 
 class ApplicationSavedSourceTests(unittest.TestCase):
+    def test_recovery_preview_refreshes_without_remapping_stale_node_requests(self):
+        with TemporaryDirectory() as temp, browser_page() as page:
+            parent = Path(temp).resolve()
+            root, state = parent / "Recovery preview", parent / "state"
+            with application(state) as url:
+                workspace = create_workspace(page, url, state, root)
+                flow = root / "flow.py"
+                start = root / "nodes/start/entrypoint.py"
+                original = start.read_text()
+                invalid = "def invalid(\n"
+                start.write_text(invalid)
+                workspace.click()
+                graph = page.frame_locator('iframe[title="Main recovery graph"]')
+                with page.expect_request(lambda request: request.url.endswith("/recovery/node-files/0")) as listing:
+                    files = open_node_files(graph)
+                revision = listing.value.headers["x-phyzflow-graph-revision"]
+                editor = files.get_by_role("textbox", name="Source code")
+                expect(editor).to_have_value(invalid)
+                editor.fill(original)
+
+                second = root / "nodes/second/entrypoint.py"
+                second.parent.mkdir()
+                second.write_text(invalid)
+                flow.write_text(flow.read_text().replace("nodes.start.", "nodes.second.").replace('"Start"', '"Second"'))
+                base = f"{page.url}flows/0/recovery/"
+                headers = {"X-Phyzflow-Graph-Revision": revision}
+                stale_list = page.request.get(f"{base}node-files/0", headers=headers)
+                self.assertEqual(stale_list.status, 409)
+                stale_read = page.request.post(
+                    f"{base}node-source/0", headers={**headers, "Origin": url},
+                    data={"path": "nodes/second/entrypoint.py"},
+                )
+                self.assertEqual(stale_read.status, 409)
+                save = files.get_by_role("button", name="Save", exact=True)
+                with page.expect_request(lambda request: request.url.endswith("/recovery/node-source/0")) as saving:
+                    save.click()
+                expect(files.locator("#node-source-message")).to_contain_text("The recovery graph changed.")
+                expect(editor).to_have_value(original)
+                self.assertEqual(start.read_text(), invalid)
+                stale_save = page.request.post(
+                    f"{base}node-source/0",
+                    headers={**headers, "Origin": url, "X-Phyzflow-Edit-Session": saving.value.headers[
+                        "x-phyzflow-edit-session"
+                    ]},
+                    data={"path": "nodes/second/entrypoint.py", "source": original,
+                          "revision": sha256(invalid.encode()).hexdigest()},
+                )
+                self.assertEqual(stale_save.status, 409)
+                self.assertEqual(second.read_text(), invalid)
+
+                reload_flow = page.get_by_role("button", name="Reload flow")
+                page.once("dialog", lambda dialog: dialog.dismiss())
+                reload_flow.click()
+                expect(files).to_be_visible()
+                expect(editor).to_have_value(original)
+                page.once("dialog", lambda dialog: dialog.accept())
+                reload_flow.click()
+                expect(graph.get_by_role("button", name="Inspect Second")).to_be_visible()
+                expect(graph.get_by_role("button", name="Inspect Start")).to_have_count(0)
+                files = open_node_files(graph, "Second")
+                expect(files.locator("#node-source-name")).to_have_text("nodes/second/entrypoint.py")
+                files.get_by_role("textbox", name="Source code").fill(original)
+                files.get_by_role("button", name="Save", exact=True).click()
+                expect(files.locator("#node-source-message")).to_contain_text("Saved.")
+                self.assertEqual(second.read_text(), original)
+                files.get_by_role("button", name="Close node files").click()
+                start.write_text(original)
+                reload_flow.click()
+                live = page.frame_locator('iframe[title="Main flow"]')
+                expect(live.get_by_role("button", name="Inspect Second")).to_be_visible()
+                page.get_by_role("button", name="Run flow", exact=True).click()
+                expect(page.locator("#workspace-flow-status")).to_have_text("Succeeded")
+
+            second.write_text(invalid)
+            with application(state) as url:
+                sign_in(page, url, state)
+                page.get_by_role("link", name=root.name).click()
+                graph = page.frame_locator('iframe[title="Main recovery graph"]')
+                expect(graph.get_by_role("button", name="Inspect Second")).to_be_visible()
+                files = open_node_files(graph, "Second")
+                expect(files.get_by_role("textbox", name="Source code")).to_have_value(invalid)
+
     def test_repair_a_broken_node_file_after_reopening_the_workspace(self):
         for failing_run in (False, True):
             with self.subTest(failing_run=failing_run), TemporaryDirectory() as temp, browser_page() as page:

@@ -180,12 +180,19 @@ runSheet.addEventListener("click", async () => {
 
 function showRecoveryGraph(sheet, visible) {
   if (!sheet) return;
-  if (visible && !sheet.recoveryFrame) {
+  const previous = sheet.recoveryFrame;
+  if (visible && (!previous || sheet.recoveryFrameRevision !== sheet.revision)) {
     const frame = element("iframe", "", "sheet-recovery");
     frame.title = `${sheet.name} recovery graph`;
     frame.src = `./flows/${sheet.index}/recovery/`;
     sheet.recoveryFrame = frame;
-    sheet.view.append(frame);
+    sheet.recoveryFrameRevision = sheet.revision;
+    if (previous) {
+      if (sheet.activeEditors.has(previous.contentWindow)) void releaseSheetEdit(sheet, previous.contentWindow);
+      previous.replaceWith(frame);
+    } else {
+      sheet.view.append(frame);
+    }
   }
   if (sheet.recoveryFrame) sheet.recoveryFrame.hidden = !visible;
 }
@@ -277,7 +284,9 @@ async function command(sheet, action, body = null) {
   const response = await fetch(`./flows/${sheet.index}/${action}`, options);
   const data = await response.json();
   if (!response.ok) {
-    throw Object.assign(new Error(data.error ?? "The action failed."), { status: data.status, deferred: data.deferred });
+    throw Object.assign(new Error(data.error ?? "The action failed."), {
+      status: data.status, deferred: data.deferred, revision: data.revision,
+    });
   }
   return data;
 }
@@ -307,8 +316,11 @@ function showFrame(sheet, revision) {
 async function openFlow(sheet, action = "open", automaticSource = null) {
   if (sheet.pending || ((action === "reload" || sheet.frameStopped) && !mayReplaceView(sheet))) return;
   const previous = { status: sheet.status, error: sheet.error, reloadError: sheet.reloadError };
-  const frozen = automaticSource && sheet.frame?.contentDocument?.documentElement;
-  if (frozen) frozen.inert = true;
+  const frozen = [
+    automaticSource && sheet.frame?.contentDocument?.documentElement,
+    action === "reload" && sheet.recoveryFrame?.contentDocument?.documentElement,
+  ].filter(Boolean);
+  for (const root of frozen) root.inert = true;
   sheet.watching = true;
   sheet.pending = true;
   sheet.version++;
@@ -334,11 +346,12 @@ async function openFlow(sheet, action = "open", automaticSource = null) {
       sheet.reloadError = error.message;
       updateStatus(sheet, error.status);
     } else {
+      sheet.revision = error.revision ?? sheet.revision;
       sheet.error = error.message;
       updateStatus(sheet, "unavailable");
     }
   } finally {
-    if (frozen) frozen.inert = false;
+    for (const root of frozen) root.inert = false;
     sheet.pending = false;
     sheet.version++;
     updateStatus(sheet, sheet.status);
@@ -544,14 +557,16 @@ function showCurrentSheet() {
   else showNotice();
 }
 
-function syncSheets(flows) {
+function syncSheets(flows, preferredHash = "") {
   flows.forEach((flow, index) => {
     const sheet = sheets[index];
     if (flow === null) removeSheet(index);
     else if (sheet === undefined) sheets[index] = makeSheet(flow, index);
     else if (sheet && sheet.name !== flow.name) updateSheetName(sheet, flow.name);
   });
-  showCurrentSheet();
+  const linkedSheet = preferredHash && sheets.find(sheet => sheet && preferredHash === `#${sheet.tab.id}`);
+  if (linkedSheet) selectSheet(linkedSheet);
+  else showCurrentSheet();
 }
 
 window.phyzflowOpenDashboardSource = async index => {
@@ -660,9 +675,7 @@ try {
   showFormatNotice(workspace.format_notice);
   runAll.hidden = !workspace.run_all;
   editRunningSource = workspace.edit_running_source;
-  syncSheets(workspace.flows);
-  const linkedSheet = sheets.find(sheet => sheet && location.hash === `#${sheet.tab.id}`);
-  if (linkedSheet && linkedSheet !== active) selectSheet(linkedSheet);
+  syncSheets(workspace.flows, location.hash);
   newSheet.disabled = false;
   startWorkspaceSync(initial.etag);
 } catch (error) {
