@@ -82,3 +82,22 @@ class WorkspaceDashboardPlacementTests(unittest.TestCase):
                 self.assertEqual(first.bounding_box(), first_bounds)
                 self.assertEqual(renamed.bounding_box(), second_bounds)
                 self.assertEqual((legacy / "index.html").read_text(encoding="utf-8"), "<h1>Standalone source</h1>")
+
+                (node / "index.html").write_text("<h1>Updated source</h1>", encoding="utf-8")
+                renamed.get_by_role("button", name="Reload dashboard").click()
+                expect(renamed.frame_locator("iframe").get_by_role("heading", name="Updated source")).to_be_visible()
+
+                (node / "index.html").unlink()
+                renamed.get_by_role("button", name="Reload dashboard").click()
+                expect(renamed.get_by_text("Source panel unavailable.")).to_be_visible()
+                expect(first.frame_locator("iframe").get_by_role("heading", name="First source")).to_be_visible()
+
+                menu.click()
+                board.get_by_role("button", name="Remove placement: Main · Workflow · Overview").click()
+                expect(first).to_have_count(0)
+                self.assertEqual((workflow / "index.html").read_text(encoding="utf-8"), "<h1>First source</h1>")
+                placement_url = f"{page.url.rstrip('/')}/dashboard/placements"
+                response = page.request.post(placement_url, headers={"Origin": url}, data={
+                    "action": "add", "sheet": str(root.parent / "another-workspace"), "scope": None, "id": "default",
+                })
+                self.assertEqual(response.status, 404)
