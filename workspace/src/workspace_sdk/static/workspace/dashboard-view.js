@@ -227,6 +227,7 @@ function openPanel(placement) {
       if (signal.aborted) return;
       frameSession = mountDashboardFrame(preview, assets, heading.textContent, {
         subscribeOnly: true, onReady: followPlacement,
+        fileURL: placement.scope === null ? `placement-assets/${placement.id}/file` : null,
       });
       message.textContent = "";
     } catch (error) {

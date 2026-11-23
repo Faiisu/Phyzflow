@@ -62,7 +62,9 @@ def register_sheet_tools(server, access: WorkspaceAccess) -> None:
     @server.tool(description=(
         "Inspect dashboard panels, asset paths, theme contract, and resize guidance through MCP. "
         "Pass sheet: null for the Workspace Dashboard catalog and placements or a sheet name for its Workflow and Node panels. "
-        "Use the MCP file tools to edit the returned assets in their source sheet. A browser URL is not required."
+        "Use the MCP file tools to edit the returned assets in their source sheet. "
+        "For a Workflow panel declaring file_root in bridge.json, use read_workspace_text or "
+        "begin_workspace_transfer with the Workspace-relative file_root and file path."
     ))
     def inspect_dashboards(workspace_id: str, sheet: str | None = "Main") -> dict:
         if sheet is None:

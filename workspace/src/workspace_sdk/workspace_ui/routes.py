@@ -37,6 +37,7 @@ from ..web import (
     recovery_graph_revision,
 )
 from .dashboard_data import placement_snapshot
+from .dashboard_files import send_dashboard_file
 from .files import send_workspace_files
 from .flow_sheet import FlowSheet, ReloadConflict, ReloadDeferred
 
@@ -51,6 +52,8 @@ EDIT_LOCK_PATH = re.compile(r"/flows/([0-9]{1,8})/edit-lock")
 WORKSPACE_VISUALIZE_LAYOUT = "/dashboard/visualize-layout"
 WORKSPACE_PLACEMENTS = "/dashboard/placements"
 PLACEMENT_ASSET_PATH = re.compile(r"/dashboard/placement-assets/([0-9a-f]{32})(/data)?")
+PLACEMENT_FILE_PATH = re.compile(r"/dashboard/placement-assets/([0-9a-f]{32})/file")
+WORKFLOW_FILE_PATH = re.compile(r"/flows/([0-9]{1,8})/(?:revision/([0-9]{1,8})/)?view/dashboard-files/([A-Za-z0-9._-]+)")
 WORKSPACE_ASSETS = {
     "/": ("workspace.html", "text/html"),
     "/workspace.css": ("workspace.css", "text/css"),
@@ -98,6 +101,7 @@ def workspace_dispatch(
     root, sheets, sheets_lock, *, interpreter, is_closing, discovered_sheets,
     create_workspace_sheet, rename_workspace_sheet, delete_workspace_sheet, run_all_sheets, workspace_id, run_state,
     dashboard_state, inspect_workspace_dashboard, add_workspace_dashboard_placement, remove_workspace_dashboard_placement,
+    protected_folders,
 ):
     dashboard_id = workspace_id or "."
 
@@ -598,6 +602,37 @@ def workspace_dispatch(
             route, _, query = self.path.partition("?")
             if route == "/files":
                 send_workspace_files(self.request, root, route, query, sheets_lock, is_closing)
+                return
+            if file_route := WORKFLOW_FILE_PATH.fullmatch(route):
+                index = int(file_route[1])
+                with sheets_lock:
+                    sheet = sheets[index] if index < len(sheets) else None
+                if sheet is None or sheet.closing or is_closing():
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                else:
+                    if file_route[2] is not None and int(file_route[2]) != sheet.revision:
+                        self.request.send_error(HTTPStatus.CONFLICT)
+                    else:
+                        send_dashboard_file(self.request, root, sheet.root, file_route[3], query, protected_folders)
+                return
+            if file_route := PLACEMENT_FILE_PATH.fullmatch(route):
+                placement = (
+                    dashboard_state.find_workspace_placement(dashboard_id, file_route[1])
+                    if dashboard_state is not None and not is_closing()
+                    else None
+                )
+                if placement is None or placement["scope"] is not None:
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                try:
+                    sheet = find_sheet_by_path(root, placement["sheet"])
+                except (OSError, ValueError):
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                if sheet not in dashboard_sheets():
+                    self.request.send_error(HTTPStatus.NOT_FOUND)
+                else:
+                    send_dashboard_file(self.request, root, sheet, placement["panel_id"], query, protected_folders)
                 return
             if self.path == WORKSPACE_VISUALIZE_LAYOUT:
                 self.visualize_layout()
