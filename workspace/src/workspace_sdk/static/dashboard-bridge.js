@@ -79,7 +79,7 @@ export const SHARED_DASHBOARD_THEME_CSS = `:root {
   :where(canvas) { height: clamp(8.5rem, 46vh, 14rem); }
 }`;
 
-function childBridge(version, subscribeOnly) {
+function childBridge(version, subscribeOnly, fileAccess) {
   let snapshot;
   let request = 0;
   const listeners = new Set();
@@ -91,6 +91,13 @@ function childBridge(version, subscribeOnly) {
       if (snapshot) listener(snapshot);
       return () => listeners.delete(listener);
     },
+  };
+  if (fileAccess) bridge.readFile = (path) => {
+    const id = ++request;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      parent.postMessage({ type: "dashboard-read-file", id, path }, "*");
+    });
   };
   if (!subscribeOnly) Object.assign(bridge, {
     openNode(nodeId) {
@@ -113,6 +120,12 @@ function childBridge(version, subscribeOnly) {
     if (event.data?.type === "dashboard-data") {
       snapshot = event.data.snapshot;
       for (const listener of listeners) listener(snapshot);
+    } else if (event.data?.type === "dashboard-file-result") {
+      const job = pending.get(event.data.id);
+      if (!job?.reject) return;
+      pending.delete(event.data.id);
+      if (event.data.file instanceof ArrayBuffer) job.resolve(event.data.file);
+      else job.reject(new Error("Dashboard file unavailable."));
     } else if (event.data?.type === "dashboard-setting-result") {
       pending.get(event.data.id)?.(event.data.result);
       pending.delete(event.data.id);
@@ -120,21 +133,24 @@ function childBridge(version, subscribeOnly) {
   });
 }
 
-function supportedBridgeVersions(assets) {
-  if (!Object.hasOwn(assets, "bridge.json")) return [1];
-  let versions;
+function bridgeManifest(assets) {
+  if (!Object.hasOwn(assets, "bridge.json")) return { versions: [1] };
   try {
-    versions = JSON.parse(assets["bridge.json"])?.versions;
+    return JSON.parse(assets["bridge.json"]);
   } catch {
     throw new Error("Invalid bridge.json. Declare Dashboard Bridge versions as a non-empty list of positive integers.");
   }
+}
+
+function supportedBridgeVersions(assets) {
+  const versions = bridgeManifest(assets)?.versions;
   if (!Array.isArray(versions) || !versions.length || !versions.every(version => Number.isSafeInteger(version) && version > 0)) {
     throw new Error("Invalid bridge.json. Declare Dashboard Bridge versions as a non-empty list of positive integers.");
   }
   return versions;
 }
 
-function frameDocument(assets, subscribeOnly) {
+function frameDocument(assets, subscribeOnly, fileAccess) {
   const themeCss = JSON.stringify(SHARED_DASHBOARD_THEME_CSS).replaceAll("<", "\\u003c");
   const css = JSON.stringify(assets["style.css"] ?? "").replaceAll("<", "\\u003c");
   const scripts = JSON.stringify(
@@ -142,9 +158,9 @@ function frameDocument(assets, subscribeOnly) {
   ).replaceAll("<", "\\u003c");
   return `<!doctype html>
     <meta charset="utf-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; ${fileAccess ? "media-src blob:; " : ""}base-uri 'none'; form-action 'none'">
     <script>
-    (${childBridge})(${assets.bridge_version}, ${subscribeOnly});
+    (${childBridge})(${assets.bridge_version}, ${subscribeOnly}, ${fileAccess});
     (() => {
       const themeStyle = document.createElement("style");
       themeStyle.dataset.phyzflowTheme = "true";
@@ -166,7 +182,7 @@ function frameDocument(assets, subscribeOnly) {
     ${assets["index.html"]}`;
 }
 
-export function createDashboardFrame(assets, title, subscribeOnly = false) {
+export function createDashboardFrame(assets, title, subscribeOnly = false, fileAccess = false) {
   const supported = supportedBridgeVersions(assets);
   if (!supported.includes(assets.bridge_version)) {
     throw new Error(`Incompatible Dashboard Bridge. Observed version ${assets.bridge_version}. Supported versions ${supported.join(", ")}.`);
@@ -175,7 +191,7 @@ export function createDashboardFrame(assets, title, subscribeOnly = false) {
   frame.title = title;
   frame.setAttribute("sandbox", "allow-scripts allow-forms");
   frame.referrerPolicy = "no-referrer";
-  frame.srcdoc = frameDocument(assets, subscribeOnly);
+  frame.srcdoc = frameDocument(assets, subscribeOnly, fileAccess);
   return frame;
 }
 
@@ -191,11 +207,13 @@ export async function fetchJSON(path, errorMessage, options) {
   return data;
 }
 
-export function mountDashboardFrame(preview, assets, title, { subscribeOnly = false, onReady, onMessage } = {}) {
-  const frame = createDashboardFrame(assets, title, subscribeOnly);
+export function mountDashboardFrame(preview, assets, title, { subscribeOnly = false, onReady, onMessage, fileURL } = {}) {
+  const fileAccess = Boolean(fileURL && typeof bridgeManifest(assets)?.file_root === "string");
+  const frame = createDashboardFrame(assets, title, subscribeOnly, fileAccess);
   const controller = new AbortController();
   const { signal } = controller;
   let ready = false;
+  let pendingFile;
   const session = {
     signal,
     send(message) {
@@ -213,6 +231,24 @@ export function mountDashboardFrame(preview, assets, title, { subscribeOnly = fa
       if (ready) return;
       ready = true;
       onReady?.(session);
+    } else if (event.data?.type === "dashboard-read-file") {
+      const { id, path } = event.data;
+      if (!fileAccess || !Number.isSafeInteger(id) || typeof path !== "string" || path.length > 1024) return;
+      pendingFile?.abort();
+      const download = new AbortController();
+      pendingFile = download;
+      const url = new URL(fileURL, document.baseURI);
+      url.searchParams.set("path", path);
+      void fetch(url, { signal: AbortSignal.any([signal, download.signal]), cache: "no-store" })
+        .then((response) => {
+          if (!response.ok || response.headers.get("Content-Type") !== "application/octet-stream") throw new Error();
+          return response.arrayBuffer();
+        })
+        .then((file) => {
+          if (!signal.aborted) frame.contentWindow?.postMessage({ type: "dashboard-file-result", id, file }, "*", [file]);
+        }, () => {
+          if (!signal.aborted) frame.contentWindow?.postMessage({ type: "dashboard-file-result", id }, "*");
+        });
     } else if (!subscribeOnly) {
       onMessage?.(event.data, session);
     }

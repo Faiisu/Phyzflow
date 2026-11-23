@@ -241,6 +241,7 @@ def serve_application(state_dir: Path, port: int | None = None, *, ipv4: str | N
                     interpreter=interpreter,
                     workspace_id=workspace_id,
                     run_state=run_state,
+                    protected_folders=access.protected_folders,
                     app_closing=shutdown_event.is_set,
                 )
             return mounted[workspace_id]

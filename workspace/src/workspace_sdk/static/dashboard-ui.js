@@ -158,6 +158,7 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
         if (signal.aborted) return;
         frameSession = mountDashboardFrame(preview, assets, heading.textContent, {
           onReady: panel.sendSnapshot,
+          fileURL: panel.scope === null ? `dashboard-files/${panelPath || "default"}` : null,
           onMessage: handleDashboardMessage,
         });
         message.textContent = "";

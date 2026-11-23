@@ -39,6 +39,7 @@ def workspace_routes(
     workspace_id: str | None = None,
     run_state: RunStateStore | None = None,
     dashboard_state: RunStateStore | None = None,
+    protected_folders: tuple[Path, ...] = (),
     app_closing: Callable[[], bool] = lambda: False,
 ):
     def make_sheet(title: str, path: Path) -> FlowSheet:
@@ -410,6 +411,7 @@ def workspace_routes(
         workspace_id=workspace_id,
         run_state=run_state,
         dashboard_state=active_dashboard_state,
+        protected_folders=protected_folders,
         inspect_workspace_dashboard=inspect_workspace_dashboard,
         add_workspace_dashboard_placement=add_workspace_dashboard_placement,
         remove_workspace_dashboard_placement=remove_workspace_dashboard_placement,

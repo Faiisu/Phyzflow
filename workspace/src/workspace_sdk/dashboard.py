@@ -86,6 +86,11 @@ DASHBOARD_THEME_REFERENCE = {
             "openPanel(panelId, nodeId)",
             "setSetting(nodeId, name, value, mode)",
         ],
+        "workflow_files": {
+            "declaration": {"versions": [1], "file_root": "reports"},
+            "method": "readFile(path)",
+            "mcp": ["read_workspace_text", "begin_workspace_transfer"],
+        },
         "snapshot_fields": [
             "scope",
             "nodeId",
