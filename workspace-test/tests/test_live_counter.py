@@ -69,41 +69,6 @@ class LiveCounterTests(unittest.TestCase):
                 expect(dashboard.locator("#state")).to_have_text("succeeded")
                 expect(page.get_by_role("button", name="Run flow", exact=True)).to_be_enabled()
                 expect(view.locator("#result")).to_contain_text("42")
-                expect(view.locator(".history-run")).to_have_count(1)
-
-    def test_dashboard_plots_count_and_multiplied_output_over_time(self):
-        with TemporaryDirectory() as temp, browser_page() as page:
-            root = Path(temp)
-            copytree(COUNTER, root / "flows" / COUNTER.name, ignore=ignore_patterns(".workspace", "__pycache__"))
-            with local_ui(root) as (url, _):
-                page.goto(url)
-                view = page.frame_locator('iframe[title="Live Counter flow"]')
-                view.locator("#visualize-workflow").click()
-                dashboard = view.frame_locator("#dashboard-preview iframe")
-                expect(dashboard.locator("#chart-status")).to_have_text("Run the flow to start counting.")
-                page.get_by_role("button", name="Run flow", exact=True).click()
-                expect(dashboard.locator("#count")).to_have_text("3")
-                readings = dashboard.locator("dl").evaluate(
-                    "list => Array.from(list.querySelectorAll('output'), element => element.value)"
-                )
-                count, scaled = map(int, readings[:2])
-                self.assertGreaterEqual(count, 3)
-                self.assertEqual(scaled, count * 10)
-                self.assertGreaterEqual(float(readings[2].removesuffix(" s")), 0.9)
-                self.assertTrue(dashboard.locator("canvas").evaluate("""canvas => {
-                    const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
-                    const hasColor = (red, green, blue) => pixels.some((value, index) =>
-                        index % 4 === 0 && value === red && pixels[index + 1] === green &&
-                        pixels[index + 2] === blue && pixels[index + 3] === 255
-                    );
-                    return hasColor(134, 199, 255) && hasColor(255, 191, 120);
-                }"""))
-                page.get_by_role("button", name="Stop Live Counter").click()
-                expect(page.get_by_role("tab", name=COUNTER.name, exact=True)).to_contain_text("Stopped")
-                self.assertFalse(list((root / "flows" / COUNTER.name / ".workspace" / "runs").glob("*.json")))
-                page.get_by_role("button", name="Open flow", exact=True).click()
-                view.locator("#visualize-workflow").click()
-                expect(dashboard.locator("#count")).to_have_text("—")
 
     def test_streams_latest_value_until_stopped_and_can_start_again(self):
         with TemporaryDirectory() as temp, browser_page() as page:

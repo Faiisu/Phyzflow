@@ -96,7 +96,11 @@ def placement_snapshot(sheet, placement: dict) -> dict:
         "mode": "saved" if saved is not None else "live",
         "timestamp": (run.get("finished_at") or run["started_at"]) if run is not None else None,
         "graph": [
-            {"id": step["id"], "dependencies": step.get("dependencies", []) if node_id is None else []}
+            {
+                "id": step["id"],
+                "dependencies": step.get("dependencies", []) if node_id is None else [],
+                "loop_dependencies": step.get("loop_dependencies", []) if node_id is None else [],
+            }
             for step in (sheet.recovery_graph or {}).get("steps", [])
             if node_id is None or step["id"] == node_id
         ],

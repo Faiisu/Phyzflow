@@ -15,12 +15,20 @@ class Output:
 
 
 @dataclass(frozen=True)
+class LoopOutput:
+    step_id: str
+    initial: Any = None
+    until: Callable[[Any], bool] | None = None
+    max_iterations: int | None = None
+
+
+@dataclass(frozen=True)
 class Step:
     """A callable node. With track_generator, it stays running until its generator closes."""
 
     id: str
     function: Callable[..., Any]
-    arguments: dict[str, Input | Output]
+    arguments: dict[str, Input | Output | LoopOutput]
     capture_samples: bool = False
     track_generator: bool = False
     settings: dict[str, NodeSetting] = field(default_factory=dict)

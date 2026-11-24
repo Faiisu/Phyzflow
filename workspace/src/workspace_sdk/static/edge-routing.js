@@ -100,28 +100,70 @@ function createDetourRouter(cards, padding) {
   };
 }
 
+function pathClearsBoxes(points, boxes, sourceIndex, targetIndex) {
+  const innerBoxes = boxes.filter((_, index) => index !== sourceIndex && index !== targetIndex);
+  for (let i = 0; i < points.length - 1; i++) {
+    const obstacles = i === 0 || i === points.length - 2 ? innerBoxes : boxes;
+    if (!clearSegment(points[i], points[i + 1], obstacles)) return false;
+  }
+  return true;
+}
+
+function loopCurve(start, end, cards, expanded, sourceIndex, targetIndex, lane = 0) {
+  const out = 22 + lane * 10;
+  const source = cards[sourceIndex];
+  const target = cards[targetIndex];
+  const exitX = Math.max(start.x + out, source.right + out);
+  const entryX = Math.min(end.x - out, target.left - out);
+  const spanLeft = Math.min(entryX, source.left, target.left) - 6;
+  const spanRight = Math.max(exitX, source.right, target.right) + 6;
+  const spanned = cards.filter(card => card.right >= spanLeft && card.left <= spanRight);
+  const maxBottom = Math.max(...spanned.map(card => card.bottom));
+  const minTop = Math.min(...spanned.map(card => card.top));
+  const offset = 24 + lane * 18;
+  for (const laneY of [maxBottom + offset, minTop - offset]) {
+    const points = [
+      start,
+      { x: exitX, y: start.y },
+      { x: exitX, y: laneY },
+      { x: entryX, y: laneY },
+      { x: entryX, y: end.y },
+      end,
+    ];
+    if (pathClearsBoxes(points, expanded, sourceIndex, targetIndex)) {
+      return { points, radius: 14, loop: true };
+    }
+  }
+  return null;
+}
+
 export function createEdgeRouter(cards) {
   const expanded = cards.map(card => expand(card, clearance));
   let detour;
   let tightDetour;
-  return (sourceIndex, targetIndex) => {
+  return (sourceIndex, targetIndex, { loop = false, lane = 0 } = {}) => {
     const source = cards[sourceIndex];
     const target = cards[targetIndex];
     const start = { x: source.right + 3, y: (source.top + source.bottom) / 2 };
     const end = { x: target.left - 4, y: (target.top + target.bottom) / 2 };
-    const otherCards = expanded.filter((_, index) => index !== sourceIndex && index !== targetIndex);
-    const cubic = directCurve(start, end, otherCards);
-    if (cubic) return { points: [start, end], cubic };
+    if (loop) {
+      const arc = loopCurve(start, end, cards, expanded, sourceIndex, targetIndex, lane);
+      if (arc) return arc;
+    } else {
+      const otherCards = expanded.filter((_, index) => index !== sourceIndex && index !== targetIndex);
+      const cubic = directCurve(start, end, otherCards);
+      if (cubic) return { points: [start, end], cubic };
+    }
 
     detour ??= createDetourRouter(cards, clearance);
     const path = detour(start, end, sourceIndex, targetIndex);
-    if (path) return path;
+    if (path) return { ...path, loop };
     tightDetour ??= createDetourRouter(cards, 3);
     const tightPath = tightDetour(start, end, sourceIndex, targetIndex);
-    if (tightPath) return tightPath;
+    if (tightPath) return { ...tightPath, loop };
 
     // A card can physically cover a port while the user drags it.
-    return { points: [start, end], cubic: [
+    return { points: [start, end], loop, cubic: [
       start, { x: start.x + clearance, y: start.y },
       { x: end.x - clearance, y: end.y }, end,
     ] };
@@ -172,4 +214,15 @@ export function pointAlongEdge({ points, cubic }, fraction) {
     remaining -= length;
   }
   return points.at(-1);
+}
+
+export function tangentAlongEdge(path, fraction) {
+  const delta = 0.01;
+  const a = pointAlongEdge(path, Math.max(0, fraction - delta));
+  const b = pointAlongEdge(path, Math.min(1, fraction + delta));
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return { x: 1, y: 0 };
+  return { x: dx / length, y: dy / length };
 }

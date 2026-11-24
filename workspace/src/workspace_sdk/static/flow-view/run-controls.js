@@ -119,10 +119,14 @@ export function initRunControls({
       return;
     }
     const entry = nodes.get(message.step_id);
-    const { node, state, duration, index } = entry;
+    const { node, state, iterations, duration, index } = entry;
     entry.blockedBy = message.blocked_by;
     node.dataset.state = message.status;
     state.textContent = labels[message.status];
+    if (message.iteration != null) {
+      iterations.textContent = `${message.iteration}×`;
+      iterations.hidden = false;
+    }
     duration.textContent = formatDuration(message.duration_ms);
     duration.hidden = !duration.textContent;
     if (graph.activeNode === message.step_id) showInspectorState(message.status, duration.textContent);
@@ -221,10 +225,12 @@ export function initRunControls({
     liveOutput = null;
     inspector.resetTiming();
     for (const entry of nodes.values()) {
-      const { node, state, duration } = entry;
+      const { node, state, iterations, duration } = entry;
       entry.blockedBy = undefined;
       delete node.dataset.state;
       state.textContent = "Idle";
+      iterations.textContent = "";
+      iterations.hidden = true;
       duration.textContent = "";
       duration.hidden = true;
     }

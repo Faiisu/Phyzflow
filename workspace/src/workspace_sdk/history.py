@@ -36,7 +36,9 @@ class RunHistory:
                 )
                 if key in event
             })
-            if event["status"] == "running":
+            if "iteration" in event:
+                step["iterations"] = max(step.get("iterations", 0), event["iteration"])
+            if event["status"] == "running" and "started_at" not in step:
                 step["started_at"] = event["time"]
             elif event["status"] in ("succeeded", "failed", "stopped"):
                 step["finished_at"] = event["time"]

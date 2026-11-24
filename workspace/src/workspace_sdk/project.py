@@ -10,14 +10,15 @@ from pathlib import Path
 import sys
 import tomllib
 from types import CodeType
-from typing import Callable
+from typing import Any, Callable
 
-from .flow import Flow, Input, Output, Step
+from .flow import Flow, Input, LoopOutput, Output, Step
 from .node_settings import NodeSetting, parse_setting_defaults
 from .node_sources import node_settings_path, read_node_source
 
 
 WORKSPACE_FORMAT_VERSION = 1
+DEFAULT_MAX_LOOP_ITERATIONS = 100
 
 
 class ValidationError(ValueError):
@@ -69,6 +70,32 @@ def relative_source(root: Path, filename: str | None) -> str | None:
     return filename
 
 
+def _reachable_steps(forward_children: dict[str, list[str]], start: str) -> set[str]:
+    visited = {start}
+    pending = [start]
+    while pending:
+        current = pending.pop()
+        for child in forward_children.get(current, ()):
+            if child not in visited:
+                visited.add(child)
+                pending.append(child)
+    return visited
+
+
+def flow_loops(flow: Flow) -> list[dict[str, Any]]:
+    return [
+        {
+            "from": reference.step_id,
+            "to": step.id,
+            "argument": name,
+            "max_iterations": reference.max_iterations,
+        }
+        for step in flow.steps
+        for name, reference in step.arguments.items()
+        if isinstance(reference, LoopOutput)
+    ]
+
+
 def ordered_steps(flow: Flow) -> tuple[Step, ...]:
     steps = {step.id: step for step in flow.steps}
     if len(steps) != len(flow.steps):
@@ -80,19 +107,50 @@ def ordered_steps(flow: Flow) -> tuple[Step, ...]:
         )
         for step in flow.steps
     }
+    forward_children: dict[str, list[str]] = {step.id: [] for step in flow.steps}
     for step_id, dependencies in graph.items():
         for dependency in dependencies:
             if dependency not in steps:
                 raise ValidationError(f"{step_id} depends on unknown step {dependency!r}.")
+            forward_children[dependency].append(step_id)
     if flow.output.step_id not in steps:
         raise ValidationError(f"Unknown output step {flow.output.step_id!r}.")
     if steps[flow.output.step_id].track_generator:
         raise ValidationError("A tracked generator must be consumed inside the flow.")
     try:
-        return tuple(steps[step_id] for step_id in TopologicalSorter(graph).static_order())
+        ordered = tuple(steps[step_id] for step_id in TopologicalSorter(graph).static_order())
     except CycleError as error:
         cycle = " -> ".join(error.args[1])
         raise ValidationError(f"Dependency cycle: {cycle}.") from error
+
+    reachability: dict[str, set[str]] = {}
+    for step in ordered:
+        for name, reference in step.arguments.items():
+            if not isinstance(reference, LoopOutput):
+                continue
+            if reference.step_id not in steps:
+                raise ValidationError(f"{step.id} depends on unknown step {reference.step_id!r}.")
+            if steps[reference.step_id].track_generator:
+                raise ValidationError("A tracked generator must be consumed inside the flow.")
+            if reference.until is not None and not callable(reference.until):
+                raise ValidationError(f"{step.id} loop input {name!r} until condition must be callable.")
+            if reference.max_iterations is not None and (
+                type(reference.max_iterations) is not int or reference.max_iterations < 1
+            ):
+                raise ValidationError(
+                    f"{step.id} loop input {name!r} max_iterations must be a positive integer."
+                )
+            if reference.until is None and reference.max_iterations is None:
+                raise ValidationError(
+                    f"{step.id} loop input {name!r} must specify 'until' or 'max_iterations'."
+                )
+            reachable = reachability.setdefault(step.id, _reachable_steps(forward_children, step.id))
+            if reference.step_id not in reachable:
+                raise ValidationError(
+                    f"{step.id} loop input {name!r} from {reference.step_id!r} does not form a cycle; "
+                    f"use Output({reference.step_id!r}) for forward dependencies."
+                )
+    return ordered
 
 
 def validate_bindings(flow: Flow, steps: tuple[Step, ...]) -> None:
@@ -107,7 +165,7 @@ def validate_bindings(flow: Flow, steps: tuple[Step, ...]) -> None:
         for reference in step.arguments.values():
             if isinstance(reference, Input) and reference.name not in flow.inputs:
                 raise ValidationError(f"{step.id} uses unknown flow input {reference.name!r}.")
-            if not isinstance(reference, (Input, Output)):
+            if not isinstance(reference, (Input, Output, LoopOutput)):
                 raise ValidationError(f"{step.id} arguments must refer to flow inputs or step outputs.")
         try:
             signature(step.function).bind(**step.arguments)

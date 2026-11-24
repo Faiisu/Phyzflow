@@ -80,7 +80,7 @@ if __name__ == "__main__":
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--check":
         from contextlib import redirect_stdout
-        from workspace_sdk.project import ValidationError, load_project, workspace_format_notice
+        from workspace_sdk.project import ValidationError, flow_loops, load_project, workspace_format_notice
         from workspace_sdk.sheets import workspace_root_for_sheet
 
         target = Path(sys.argv[2])
@@ -89,7 +89,7 @@ if __name__ == "__main__":
         try:
             workspace_format_notice(Path(sys.argv[3]) if len(sys.argv) > 3 else workspace_root_for_sheet(root))
             with redirect_stdout(sys.stderr), load_project(root, None) as flow:
-                payload = {"valid": True, "steps": [step.id for step in flow.steps]}
+                payload = {"valid": True, "steps": [step.id for step in flow.steps], "loops": flow_loops(flow)}
         except ValidationError as error:
             file, line = _extract_location(error, root, include_tb=False)
             payload = {"valid": False, "stage": "validation", "error": str(error)}

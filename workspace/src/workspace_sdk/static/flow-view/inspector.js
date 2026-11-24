@@ -10,6 +10,8 @@ export function initInspector({ graph, showNodeFiles, openDashboard }) {
   const executionNote = document.querySelector("#execution-note");
   const executionTiming = document.querySelector("#execution-timing");
   const executionStatus = document.querySelector("#execution-status");
+  const executionIterationsRow = document.querySelector("#execution-iterations-row");
+  const executionIterations = document.querySelector("#execution-iterations");
   const executionStarted = document.querySelector("#execution-started");
   const executionFinished = document.querySelector("#execution-finished");
   const executionDuration = document.querySelector("#execution-duration");
@@ -70,6 +72,9 @@ export function initInspector({ graph, showNodeFiles, openDashboard }) {
     }
 
     executionStatus.textContent = labels[timing.status] ?? "Unavailable";
+    const iterations = timing.iterations;
+    executionIterationsRow.hidden = !(iterations > 0);
+    if (iterations > 0) executionIterations.textContent = String(iterations);
     const skipped = timing.status === "skipped";
     const running = timing.status === "running";
     showExecutionTime(executionStarted, skipped ? null : timing.started_at, skipped ? "Not run" : "Unavailable");
@@ -124,8 +129,11 @@ export function initInspector({ graph, showNodeFiles, openDashboard }) {
 
     const timing = currentNodeTiming.get(message.step_id) ?? {};
     timing.status = message.status;
+    if (message.iteration != null) {
+      timing.iterations = Math.max(timing.iterations ?? 0, message.iteration);
+    }
     if (message.status === "running") {
-      timing.started_at = message.time;
+      timing.started_at ??= message.time;
       delete timing.liveMetrics;
     } else if (message.status !== "skipped") {
       timing.finished_at = message.time;
@@ -183,16 +191,30 @@ export function initInspector({ graph, showNodeFiles, openDashboard }) {
 
     const inputs = step.arguments.map(argument => {
       const item = element("li", argument.name);
-      item.append(argument.kind === "node"
-        ? dependencyButton(argument.source)
-        : element("small", `Run input · ${argument.source}`));
+      if (argument.kind === "loop") {
+        const suffix = argument.max_iterations ? `Loop · max ${argument.max_iterations}` : "Loop";
+        item.append(dependencyButton(argument.source), element("small", suffix, "edge-loop-tag"));
+      } else if (argument.kind === "node") {
+        item.append(dependencyButton(argument.source));
+      } else {
+        item.append(element("small", `Run input · ${argument.source}`));
+      }
       return item;
     });
-    const feeds = project.steps.filter(next => next.dependencies.includes(step.id)).map(next => {
-      const item = element("li", "");
-      item.append(dependencyButton(next.id), element("small", inputBindings(next, step.id).join(", ")));
-      return item;
-    });
+    const feeds = [];
+    for (const next of project.steps) {
+      if (next.dependencies.includes(step.id)) {
+        const item = element("li", "");
+        item.append(dependencyButton(next.id), element("small", inputBindings(next, step.id, "node").join(", ")));
+        feeds.push(item);
+      }
+      if ((next.loop_dependencies ?? []).includes(step.id)) {
+        const item = element("li", "");
+        const bindings = inputBindings(next, step.id, "loop").join(", ");
+        item.append(dependencyButton(next.id), element("small", `${bindings} · Loop`, "edge-loop-tag"));
+        feeds.push(item);
+      }
+    }
     if (step.id === project.output) feeds.push(element("li", "Run output"));
     document.querySelector("#inspector-inputs").replaceChildren(...(inputs.length ? inputs : [element("li", "None")]));
     document.querySelector("#inspector-feeds").replaceChildren(...(feeds.length ? feeds : [element("li", "None")]));

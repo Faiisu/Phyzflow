@@ -4,4 +4,6 @@ FLOW_AUTHORING_GUIDANCE = (
     "Use separate steps for distinct stages such as Prepare, Predict, and Decide when they benefit from separate visibility. "
     "Keep closely related operations in the same step as helpers. A single step is appropriate for a single stage. "
     "Use flow.py to wire directly callable Python functions and follow the sheet's existing source layout. "
+    "Use LoopOutput(step_id, initial=..., until=..., max_iterations=...) to create directed loop back-edges "
+    "from a downstream or same step back to an earlier step while keeping Output dependencies acyclic. "
 )
