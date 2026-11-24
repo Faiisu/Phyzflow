@@ -20,7 +20,7 @@ from .dashboard import (
     dashboard_assets, dashboard_panels,
 )
 from .dashboard_editor import SOURCE_ROUTE as DASHBOARD_SOURCE_ROUTE, send_dashboard_edit
-from .flow import Flow, Output
+from .flow import Flow, LoopOutput, Output
 from .history import RunHistory
 from .node_sources import SourceChanged, edit_source_file, node_files, node_source_path
 from .node_settings import LiveSettings, SettingsStore, parse_setting_defaults
@@ -526,11 +526,15 @@ def serve(
             "dependencies": list(dict.fromkeys(
                 ref.step_id for ref in step.arguments.values() if isinstance(ref, Output)
             )),
+            "loop_dependencies": list(dict.fromkeys(
+                ref.step_id for ref in step.arguments.values() if isinstance(ref, LoopOutput)
+            )),
             "arguments": [
                 {
                     "name": name,
-                    "source": ref.step_id if isinstance(ref, Output) else ref.name,
-                    "kind": "node" if isinstance(ref, Output) else "input",
+                    "source": ref.step_id if isinstance(ref, (Output, LoopOutput)) else ref.name,
+                    "kind": "loop" if isinstance(ref, LoopOutput) else "node" if isinstance(ref, Output) else "input",
+                    **({"max_iterations": ref.max_iterations} if isinstance(ref, LoopOutput) and ref.max_iterations is not None else {}),
                 }
                 for name, ref in step.arguments.items()
             ],
@@ -590,9 +594,11 @@ def serve(
                         elif kind in ("running", "succeeded", "failed", "stopped", "skipped"):
                             entry = nodes.setdefault(step, {"id": step})
                             entry["status"] = kind
-                            if kind == "running":
+                            if "iteration" in event:
+                                entry["iterations"] = max(entry.get("iterations", 0), event["iteration"])
+                            if kind == "running" and "started_at" not in entry:
                                 entry["started_at"] = event["time"]
-                            elif kind != "skipped":
+                            elif kind not in ("running", "skipped"):
                                 entry["finished_at"] = event["time"]
                             entry.update({field: event[field] for field in ("duration_ms", "metrics") if field in event})
                     data = {

@@ -94,7 +94,7 @@ class ExternalRun:
     def record(self, event):
         if event.keys() & {'output_preview', 'live_frame', 'live_metrics', 'setting_change'}:
             return
-        safe = {name: event[name] for name in ('run_id', 'step_id', 'status', 'time', 'duration_ms', 'blocked_by') if name in event}
+        safe = {name: event[name] for name in ('run_id', 'step_id', 'status', 'time', 'duration_ms', 'blocked_by', 'iteration') if name in event}
         if event.get('file'):
             safe['file'] = relative_source(self.root, event['file'])
             safe['line'] = event.get('line')

@@ -4,14 +4,14 @@ import { initDashboardEditor } from "./dashboard-editor.js";
 const primaryBoard = document.querySelector("#dashboard");
 
 const runFields = ["id", "status", "started_at", "finished_at", "duration_ms", "source_version"];
-const nodeFields = ["id", "status", "started_at", "finished_at", "duration_ms", "blocked_by", "metrics", "error_type"];
+const nodeFields = ["id", "status", "started_at", "finished_at", "duration_ms", "iterations", "blocked_by", "metrics", "error_type"];
 
 function pick(record, keys) {
   return Object.fromEntries(keys.filter(key => Object.hasOwn(record, key)).map(key => [key, record[key]]));
 }
 
 export function initDashboards(project, revealBoard, releaseBoard = () => {}, setVisualizeModeLayout = () => {}) {
-  const graph = project.steps.map(step => pick(step, ["id", "dependencies"]));
+  const graph = project.steps.map(step => pick(step, ["id", "dependencies", "loop_dependencies"]));
   let liveRun = null;
   let stopped = false;
   let cloneCounter = 0;
@@ -564,7 +564,8 @@ export function initDashboards(project, revealBoard, releaseBoard = () => {}, se
           liveRun.steps.push(step);
         }
         Object.assign(step, pick(event, nodeFields));
-        if (status === "running") step.started_at = time;
+        if (event.iteration != null) step.iterations = Math.max(step.iterations ?? 0, event.iteration);
+        if (status === "running") step.started_at ??= time;
         else if (status !== "skipped") step.finished_at = time;
       }
     }

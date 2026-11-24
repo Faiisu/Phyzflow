@@ -167,6 +167,21 @@ def declared_graph(root: Path, files: set[str], *, require_export: bool = False)
     if not isinstance(steps, (ast.Tuple, ast.List)):
         return []
 
+    def referenced_steps(call_name: str) -> list[str]:
+        if arguments is None:
+            return []
+        refs = []
+        for ref in ast.walk(arguments):
+            if not (isinstance(ref, ast.Call) and isinstance(ref.func, ast.Name) and ref.func.id == call_name):
+                continue
+            target = ref.args[0] if ref.args else next(
+                (kw.value for kw in ref.keywords if kw.arg == "step_id"),
+                None,
+            )
+            if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                refs.append(target.value)
+        return list(dict.fromkeys(refs))
+
     graph = {}
     for step in steps.elts:
         if not isinstance(step, ast.Call) or not isinstance(step.func, ast.Name) or step.func.id != "Step":
@@ -177,16 +192,17 @@ def declared_graph(root: Path, files: set[str], *, require_export: bool = False)
         if not isinstance(name, ast.Constant) or not isinstance(name.value, str) or name.value in graph:
             return []
         path = imports.get(function.id, "flow.py") if isinstance(function, ast.Name) else "flow.py"
-        dependencies = list(dict.fromkeys(
-            ref.args[0].value for ref in ast.walk(arguments)
-            if isinstance(ref, ast.Call) and isinstance(ref.func, ast.Name) and ref.func.id == "Output"
-            and ref.args and isinstance(ref.args[0], ast.Constant) and isinstance(ref.args[0].value, str)
-        )) if arguments is not None else []
+        dependencies = referenced_steps("Output")
+        loop_dependencies = referenced_steps("LoopOutput")
         graph[name.value] = {
             "id": name.value, "source": path, "file": path, "description": "",
-            "dependencies": dependencies, "arguments": [],
+            "dependencies": dependencies, "loop_dependencies": loop_dependencies, "arguments": [],
         }
-    if any(dependency not in graph for step in graph.values() for dependency in step["dependencies"]):
+    if any(
+        dependency not in graph
+        for step in graph.values()
+        for dependency in (*step["dependencies"], *step["loop_dependencies"])
+    ):
         return []
     try:
         order = tuple(TopologicalSorter({key: step["dependencies"] for key, step in graph.items()}).static_order())

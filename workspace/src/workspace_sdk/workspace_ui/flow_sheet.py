@@ -481,7 +481,7 @@ class FlowSheet:
             steps = [
                 {"id": path.parent.as_posix() if path.name == "entrypoint.py" else path.as_posix(),
                  "source": path.as_posix(), "file": path.as_posix(), "description": "",
-                 "dependencies": [], "arguments": []}
+                 "dependencies": [], "loop_dependencies": [], "arguments": []}
                 for path in paths if path.as_posix() == "flow.py" or (
                     len(path.parts) == 3 and path.parts[0] == "nodes" and path.name == "entrypoint.py"
                 )

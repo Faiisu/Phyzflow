@@ -120,10 +120,12 @@ def _summarize_attempt(attempt, flow_sheet) -> dict:
             step["started_at"] = event.get("time")
         if event.get("status") in ("succeeded", "failed", "stopped", "skipped"):
             step["finished_at"] = event.get("time")
+        if "iteration" in event:
+            step["iterations"] = max(step.get("iterations", 0), event["iteration"])
         for key in (
             "status", "duration_ms", "file", "line", "source_target",
             "error_type", "diagnostic_error_type", "traceback",
-            "blocked_by", "metrics", "reasons", "output_preview",
+            "blocked_by", "metrics", "reasons", "output_preview", "iteration",
         ):
             if key in event:
                 step[key] = event[key]

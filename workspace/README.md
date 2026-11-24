@@ -122,6 +122,8 @@ Double-click a node under `nodes/` to open its `settings.json` first. The file i
 
 Set `track_generator=True` on a step that returns a Python generator for a downstream node to iterate. The producer stays Running while the iterator is open and succeeds when the iterator is exhausted. Its duration covers the iterator's lifetime, including time between values. The Runner closes unfinished generators at the end of the run and records them as Stopped. The consumer can call `publish_output(value)` to show the latest bounded JSON preview during the run. Live previews are ephemeral.
 
+Use `LoopOutput(step_id, initial=None, *, until=None, max_iterations=None)` in `Step.arguments` to declare a directed loop back-edge from a downstream step (or the same step for a self-loop) back to an earlier step while keeping forward `Output` edges acyclic. On the first iteration, the loop argument receives `initial`; after each iteration completes, it receives the latest output of `step_id`. Provide `until` (a callable checked against the producer's output after each iteration, defaulting `max_iterations` to `100` if omitted) or a positive integer `max_iterations` for a fixed iteration count. If `until` is not satisfied within `max_iterations`, the loop head fails with `LoopLimitError` and skips downstream steps.
+
 Open a node’s **Execution** tab to see its status and timing. While the node runs, call `publish_metrics("Indexing", {"Progress (%)": 60, "Rows per second": 42})` from its Python code to update **Live progress and metrics**. Use `record_metrics` for measurements you want to keep in the completed run.
 
 ## Build a dashboard for a workflow or node

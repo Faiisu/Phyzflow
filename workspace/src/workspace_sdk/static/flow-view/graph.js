@@ -1,4 +1,4 @@
-import { createEdgeRouter, pointAlongEdge, traceEdge } from "../edge-routing.js";
+import { createEdgeRouter, pointAlongEdge, tangentAlongEdge, traceEdge } from "../edge-routing.js";
 import { createCanvasLayout, snapStep } from "../canvas-layout.js";
 import { element, inputBindings } from "./display.js";
 
@@ -320,6 +320,7 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
     const { steps } = project;
     const rows = new Map();
     const producers = new Set(steps.flatMap(step => step.dependencies));
+    const loopProducers = new Set(steps.flatMap(step => step.loop_dependencies ?? []));
     for (const [index, step] of steps.entries()) {
       const column = Math.max(0, ...step.dependencies.map(id => nodes.get(id).column)) + 1;
       const row = (rows.get(column) ?? 0) + 1;
@@ -328,13 +329,17 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
       const node = element("article", "", "node");
       node.style.setProperty("--level", column);
       node.style.setProperty("--lane", row);
-      node.classList.toggle("has-input", step.dependencies.length > 0);
-      node.classList.toggle("has-output", producers.has(step.id));
+      const loopDependencies = step.loop_dependencies ?? [];
+      node.classList.toggle("has-input", step.dependencies.length > 0 || loopDependencies.length > 0);
+      node.classList.toggle("has-output", producers.has(step.id) || loopProducers.has(step.id));
+      node.classList.toggle("has-loop", loopDependencies.length > 0 || loopProducers.has(step.id));
       const state = element("p", "Idle", "state badge");
+      const iterations = element("span", "", "node-iterations");
+      iterations.hidden = true;
       const duration = element("span", "", "node-duration");
       duration.hidden = true;
       const metrics = element("div", "", "node-metrics");
-      metrics.append(state, duration);
+      metrics.append(state, iterations, duration);
       const number = String(index + 1).padStart(2, "0");
       const select = element("button", "", "inspect-node");
       select.type = "button";
@@ -365,12 +370,18 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
       if (step.dependencies.length) {
         node.append(element("p", `Depends on ${step.dependencies.join(", ")}`, "sr-only"));
       }
+      if (loopDependencies.length) {
+        node.append(element("p", `Loops from ${loopDependencies.join(", ")}`, "sr-only"));
+      }
       graph.append(node);
-      nodes.set(step.id, { node, column, state, duration, select, outlineSelect, index });
+      nodes.set(step.id, { node, column, state, iterations, duration, select, outlineSelect, index });
     }
-    const count = steps.reduce((total, step) => total + step.dependencies.length, 0);
+    const forwardCount = steps.reduce((total, step) => total + step.dependencies.length, 0);
+    const loopCount = steps.reduce((total, step) => total + (step.loop_dependencies?.length ?? 0), 0);
+    const count = forwardCount + loopCount;
+    const loopSummary = loopCount ? ` (${loopCount} ${loopCount === 1 ? "loop" : "loops"})` : "";
     document.querySelector("#graph-summary").textContent =
-      `${steps.length} ${steps.length === 1 ? "node" : "nodes"} / ${count} ${count === 1 ? "edge" : "edges"}`;
+      `${steps.length} ${steps.length === 1 ? "node" : "nodes"} / ${count} ${count === 1 ? "edge" : "edges"}${loopSummary}`;
     layoutGraph(graphZoom, true);
     if (steps.length) {
       inspectNode(steps[0], project);
@@ -480,19 +491,31 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
     ctx.translate(-left, -top);
     if (vertical) ctx.transform(0, 1, 1, 0, 0, 0);
     ctx.lineJoin = "round";
-    for (const { line, arrow, color, lineWidth } of strokes) {
+    for (const { line, arrows, color, lineWidth, dashed } of strokes) {
       ctx.lineWidth = Math.max(lineWidth, 1 / zoom);
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
+      ctx.setLineDash(dashed ? [6, 4] : []);
       ctx.stroke(line);
-      ctx.fill(arrow);
+      ctx.setLineDash([]);
+      for (const arrow of arrows) ctx.fill(arrow);
     }
   }
 
+  function directionalArrow(tip, dir, size = 6, width = 4) {
+    const arrow = new Path2D();
+    const backX = tip.x - dir.x * size;
+    const backY = tip.y - dir.y * size;
+    const perpX = -dir.y * width;
+    const perpY = dir.x * width;
+    arrow.moveTo(tip.x, tip.y);
+    arrow.lineTo(backX + perpX, backY + perpY);
+    arrow.lineTo(backX - perpX, backY - perpY);
+    return arrow;
+  }
+
   function drawEdges(steps) {
-    const { left, top, right, bottom } = graphDrawingBounds(graph.offsetWidth, graph.offsetHeight);
-    const width = right - left;
-    const height = bottom - top;
+    let { left, top, right, bottom } = graphDrawingBounds(graph.offsetWidth, graph.offsetHeight);
     const pixelRatio = window.devicePixelRatio || 1;
     const vertical = narrowGraph.matches;
     const screenCards = steps.map(step => {
@@ -508,31 +531,47 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
       in: style.getPropertyValue("--edge-in").trim(),
       out: style.getPropertyValue("--edge-out").trim(),
     };
-    const edges = steps.flatMap((step, target) => step.dependencies.map(source => ({
-      step, source, target, direction: activeNode === step.id ? "in" : activeNode === source ? "out" : null,
+    const loopColor = style.getPropertyValue("--edge-loop").trim() || "#c792ea";
+    const forwardEdges = steps.flatMap((step, target) => step.dependencies.map(source => ({
+      step, source, target, loop: false,
+      direction: activeNode === step.id ? "in" : activeNode === source ? "out" : null,
     })));
+    let loopLane = 0;
+    const loopEdges = steps.flatMap((step, target) => (step.loop_dependencies ?? []).map(source => ({
+      step, source, target, loop: true, lane: loopLane++,
+      direction: activeNode === step.id ? "in" : activeNode === source ? "out" : null,
+    })));
+    const edges = [...forwardEdges, ...loopEdges];
     const strokes = [];
     const tags = [];
     const labelBoxes = [];
     edgePoints = [];
     for (const edge of [...edges.filter(edge => !edge.direction), ...edges.filter(edge => edge.direction)]) {
-      const path = route(nodes.get(edge.source).index, edge.target);
-      for (const point of path.points) edgePoints.push(vertical ? { x: point.y, y: point.x } : point);
+      const path = route(nodes.get(edge.source).index, edge.target, { loop: edge.loop, lane: edge.lane ?? 0 });
+      for (const point of path.points) {
+        const screenPoint = vertical ? { x: point.y, y: point.x } : point;
+        edgePoints.push(screenPoint);
+        left = Math.min(left, screenPoint.x - 16);
+        top = Math.min(top, screenPoint.y - 16);
+        right = Math.max(right, screenPoint.x + 16);
+        bottom = Math.max(bottom, screenPoint.y + 16);
+      }
       const end = path.points.at(-1);
-      const color = edge.direction ? edgeColors[edge.direction] : "#73788770";
+      const color = edge.direction ? edgeColors[edge.direction] : edge.loop ? `${loopColor}b3` : "#73788770";
       const line = new Path2D();
       traceEdge(line, path);
-      const arrow = new Path2D();
-      arrow.moveTo(end.x, end.y);
-      arrow.lineTo(end.x - 6, end.y - 4);
-      arrow.lineTo(end.x - 6, end.y + 4);
-      strokes.push({ line, arrow, color, lineWidth: edge.direction ? 2.2 : 1.4 });
+      const arrows = [directionalArrow(end, { x: 1, y: 0 })];
+      if (edge.loop) {
+        arrows.push(directionalArrow(pointAlongEdge(path, 0.5), tangentAlongEdge(path, 0.5), 6.5, 4.2));
+      }
+      strokes.push({ line, arrows, color, lineWidth: edge.direction ? 2.2 : edge.loop ? 1.8 : 1.4, dashed: edge.loop });
       if (!edge.direction) continue;
-      const bindings = inputBindings(edge.step, edge.source).join(", ");
+      const bindings = inputBindings(edge.step, edge.source, edge.loop ? "loop" : "node").join(", ");
       const tag = element("span", bindings, "edge-label");
       tag.dataset.direction = edge.direction;
-      const halfWidth = (bindings.length * 6 + 8) / 2;
-      const above = !vertical && Boolean(path.cubic);
+      if (edge.loop) tag.dataset.loop = "true";
+      const halfWidth = (bindings.length * 6 + (edge.loop ? 18 : 8)) / 2;
+      const above = !vertical && (Boolean(path.cubic) || edge.loop);
       const candidates = [.5, .64, .36, .77, .23].map(fraction => {
         const point = pointAlongEdge(path, fraction);
         const x = vertical ? point.y : point.x;
@@ -552,6 +591,8 @@ export function initGraph({ recoveryView, fitOnOpen, onSelect, revealInspector, 
     }
     edgeLabels.replaceChildren(...tags);
 
+    const width = right - left;
+    const height = bottom - top;
     const bitmapWidth = Math.ceil(width * pixelRatio);
     const bitmapHeight = Math.ceil(height * pixelRatio);
     const needsViewportBitmap = Math.max(bitmapWidth, bitmapHeight) > maximumEdgeBitmapSide ||

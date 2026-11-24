@@ -55,9 +55,12 @@ export function blockedByText(blockers, statusFor) {
   return `Blocked by ${names.join(", ")}`;
 }
 
-export function inputBindings(step, source) {
+export function inputBindings(step, source, kind = null) {
   return step.arguments
-    .filter(argument => argument.kind === "node" && argument.source === source)
+    .filter(argument => (
+      (kind ? argument.kind === kind : argument.kind === "node" || argument.kind === "loop")
+      && argument.source === source
+    ))
     .map(argument => argument.name);
 }
 
