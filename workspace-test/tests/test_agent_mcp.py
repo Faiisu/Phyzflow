@@ -1,11 +1,12 @@
 """Public MCP subprocess -> verified TLS relay -> real authenticated Edge."""
 import asyncio
-import json
 import importlib.util
-from pathlib import Path
+import json
 import sys
 import time
 import unittest
+from pathlib import Path
+
 import test_agent_remote as remote_fixture
 
 
@@ -32,6 +33,15 @@ class MCPAgentTests(unittest.TestCase):
         async with Client(params, raise_exceptions=False) as client:
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
             self.assertIn('write_file', tools)
+            read_only = {'list_devices', 'inspect_project', 'list_files', 'read_file', 'search_code',
+                         'validate_flow', 'get_job', 'read_job_output'}
+            for name, tool in tools.items():
+                self.assertTrue(tool.title, name)
+                self.assertIs(tool.annotations.read_only_hint, name in read_only, name)
+                self.assertIsNotNone(tool.annotations.destructive_hint, name)
+                self.assertEqual(tool.output_schema['type'], 'object', name)
+                for parameter, schema in tool.input_schema.get('properties', {}).items():
+                    self.assertTrue(schema.get('description'), f'{name}.{parameter}')
             self.assertEqual(set(tools['apply_patch'].input_schema['required']),
                 {'request_id', 'device_id', 'project_id', 'path', 'revision', 'old_text', 'new_text'})
             async def call(name, **args):

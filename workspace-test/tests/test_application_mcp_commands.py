@@ -1,15 +1,12 @@
-import json
 import os
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from time import monotonic, sleep
-import unittest
 from zipfile import ZipFile
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_edit_locks import issue_token, wait_for
 from test_application_mcp import mcp_client, output
@@ -28,6 +25,7 @@ EXPECTED_TOOLS = {
     "inspect_dashboards",
     "add_dashboard_placement",
     "remove_dashboard_placement",
+    "inspect_sheet",
     "open_sheet",
     "heartbeat_sheet",
     "stage_draft",
@@ -56,14 +54,28 @@ EXPECTED_TOOLS = {
     "write_workspace_text",
     "move_workspace_file",
     "delete_workspace_file",
-    "begin_workspace_transfer",
+    "begin_workspace_file_upload",
+    "begin_workspace_file_download",
     "write_workspace_chunk",
     "read_workspace_chunk",
-    "finish_workspace_transfer",
+    "finish_workspace_upload",
+    "finish_workspace_download",
     "cancel_workspace_transfer",
 }
 
 FORBIDDEN_TOOLS = {"run_command", "update_workspace", "restart_workspace"}
+SUPERSEDED_TOOLS = {"begin_workspace_transfer", "finish_workspace_transfer"}
+READ_ONLY_TOOLS = {
+    "list_workspaces", "inspect_workspace", "inspect_dashboards", "inspect_sheet", "list_files", "read_file",
+    "search_code", "read_node_settings", "validate_flow", "inspect_execution", "read_console_logs",
+    "list_workspace_files", "list_workspace_uploads", "stat_workspace_file", "read_workspace_text",
+    "begin_workspace_file_download", "read_workspace_chunk", "finish_workspace_download",
+}
+DESTRUCTIVE_TOOLS = {
+    "delete_sheet", "remove_dashboard_placement", "write_file", "apply_patch", "update_node_setting",
+    "stop_flow", "configure_console_logs", "install_dependencies", "write_workspace_text",
+    "move_workspace_file", "delete_workspace_file", "begin_workspace_file_upload", "finish_workspace_upload",
+}
 
 
 def create_two_workspaces(page, url: str, state: Path, parent: Path) -> tuple[str, str, str]:
@@ -124,9 +136,24 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                 allowed_id, denied_id, token = create_two_workspaces(page, url, state, parent)
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    tools = {tool.name for tool in portal.call(client.list_tools).tools}
+                    listed = {tool.name: tool for tool in portal.call(client.list_tools).tools}
+                    tools = set(listed)
                     self.assertTrue(EXPECTED_TOOLS.issubset(tools), f"Missing tools: {sorted(EXPECTED_TOOLS - tools)}")
                     self.assertTrue(FORBIDDEN_TOOLS.isdisjoint(tools), f"Unexpected forbidden tools: {sorted(FORBIDDEN_TOOLS & tools)}")
+                    self.assertTrue(SUPERSEDED_TOOLS.isdisjoint(tools), f"Superseded tools: {sorted(SUPERSEDED_TOOLS & tools)}")
+                    for name, tool in listed.items():
+                        with self.subTest(tool=name):
+                            self.assertLessEqual(len(name), 64)
+                            self.assertTrue(tool.title)
+                            self.assertEqual(tool.annotations.title, tool.title)
+                            self.assertIs(tool.annotations.read_only_hint, name in READ_ONLY_TOOLS)
+                            self.assertIs(tool.annotations.destructive_hint, name in DESTRUCTIVE_TOOLS)
+                            self.assertIsNotNone(tool.annotations.idempotent_hint)
+                            self.assertIsNotNone(tool.annotations.open_world_hint)
+                            self.assertEqual(tool.output_schema["type"], "object")
+                            for parameter, schema in tool.input_schema.get("properties", {}).items():
+                                self.assertTrue(schema.get("description"), f"{name}.{parameter} lacks a description")
+                    self.assertNotIn("mode", listed["open_sheet"].input_schema["properties"])
 
                     for forbidden_name, args in (
                         ("run_command", {"workspace_id": allowed_id, "program": "python", "argv": ["-V"]}),
@@ -147,7 +174,7 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                         ("inspect_dashboards", {"workspace_id": denied_id}),
                         ("add_dashboard_placement", {"workspace_id": denied_id, "sheet": "Main", "scope": None, "panel_id": "default"}),
                         ("remove_dashboard_placement", {"workspace_id": denied_id, "placement_id": "0" * 32}),
-                        ("open_sheet", {"workspace_id": denied_id, "sheet": "Main", "mode": "edit"}),
+                        ("open_sheet", {"workspace_id": denied_id, "sheet": "Main"}),
                         ("list_files", {"workspace_id": denied_id}),
                         ("read_file", {"workspace_id": denied_id, "path": "flow.py"}),
                         ("search_code", {"workspace_id": denied_id, "query": "Flow"}),
@@ -240,7 +267,7 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                     self.assertEqual(len(search_res["matches"]), 1)
                     self.assertEqual(search_res["matches"][0]["path"], "nodes/start/entrypoint.py")
 
-                    opened = output(call_tool(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Analysis", mode="edit"))
+                    opened = output(call_tool(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Analysis"))
                     session_a = opened["session_id"]
 
                     analysis_root = workspace_root / "flows" / "Analysis"
@@ -322,7 +349,7 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                 token = issue_token(page, url, "Autonomous Author", [workspace_id])
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened_main = output(call_tool(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit"))
+                    opened_main = output(call_tool(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main"))
                     session_main = opened_main["session_id"]
 
                     broken_flow = call_tool(
@@ -422,10 +449,12 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                         ),
                         (
                             "dashboards/workflow/dashboard.js",
-                            'const out = document.querySelector("#status-text");\n'
-                            'workspaceDashboard.subscribe(({ run }) => {\n'
-                            '  out.value = run?.status ?? "idle";\n'
-                            '});\n',
+                            (
+                                'const out = document.querySelector("#status-text");\n'
+                                'workspaceDashboard.subscribe(({ run }) => {\n'
+                                '  out.value = run?.status ?? "idle";\n'
+                                '});\n'
+                            ),
                         ),
                     ):
                         dash_write = call_tool(
@@ -476,7 +505,7 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                     self.assertEqual(settings_after["settings"]["Prepare"]["multiplier"]["value"], 5)
 
                     self.assertFalse(call_tool(portal, client, "create_sheet", workspace_id=workspace_id, name="Worker").is_error)
-                    opened_worker = output(call_tool(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Worker", mode="edit"))
+                    opened_worker = output(call_tool(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Worker"))
                     session_worker = opened_worker["session_id"]
                     worker_rev = output(call_tool(
                         portal, client, "read_file",
@@ -615,7 +644,7 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                     panel = main_frame.frame_locator("#dashboard-preview iframe")
                     expect(panel.get_by_role("heading", name="MCP Overview")).to_be_visible()
 
-                    opened_del = output(call_tool(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Worker", mode="edit"))
+                    opened_del = output(call_tool(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Worker"))
                     deleted_with_lock = call_tool(
                         portal, client, "delete_sheet",
                         workspace_id=workspace_id, sheet="Worker", session_id=opened_del["session_id"],

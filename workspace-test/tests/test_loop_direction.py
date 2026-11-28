@@ -1,24 +1,31 @@
 import json
-from pathlib import Path
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
 from test_application import application
 from test_application_edit_locks import wait_for
 from test_application_mcp import mcp_client, output
 from test_application_mcp_commands import call_tool, create_two_workspaces
-from workspace_sdk import Flow, Input, LoopOutput, NodeSetting, Output, Step, apply_node_settings, run
+from workspace_sdk import (
+    Flow,
+    Input,
+    LoopOutput,
+    NodeSetting,
+    Output,
+    Step,
+    apply_node_settings,
+    run,
+)
 from workspace_sdk.history import RunHistory
 from workspace_sdk.node_settings import LiveSettings
 from workspace_sdk.project import ValidationError, flow_loops, ordered_steps
 from workspace_sdk.sheets import declared_graph
-
 
 LOOP_FLOW_SOURCE = """\
 from workspace_sdk import Flow, Input, LoopOutput, Output, Step
@@ -339,9 +346,9 @@ class LoopValidationAndExecutionTests(unittest.TestCase):
             root = Path(temp)
             (root / "pyproject.toml").write_text("[tool.workspace]\nformat_version = 1\n", encoding="utf-8")
             (root / "flow.py").write_text(LOOP_FLOW_SOURCE, encoding="utf-8")
-            check = subprocess.run([str(executable), "check"], cwd=root, capture_output=True, text=True)
+            check = subprocess.run([str(executable), "check"], cwd=root, capture_output=True, text=True, check=False)
             self.assertEqual(check.returncode, 0, check.stderr)
-            run_res = subprocess.run([str(executable), "run", '{"target": 3}'], cwd=root, capture_output=True, text=True)
+            run_res = subprocess.run([str(executable), "run", '{"target": 3}'], cwd=root, capture_output=True, text=True, check=False)
             self.assertEqual(run_res.returncode, 0, run_res.stderr)
             self.assertEqual(json.loads(run_res.stdout), {"published_attempt": 3, "approved": True})
 
@@ -444,7 +451,7 @@ class LoopMcpTests(unittest.TestCase):
             with application(state) as url:
                 allowed_id, denied_id, token = create_two_workspaces(page, url, state, parent)
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened = output(call_tool(portal, client, "open_sheet", workspace_id=allowed_id, sheet="Main", mode="edit"))
+                    opened = output(call_tool(portal, client, "open_sheet", workspace_id=allowed_id, sheet="Main"))
                     session_id = opened["session_id"]
                     flow_rev = output(call_tool(portal, client, "read_file", workspace_id=allowed_id, path="flow.py", sheet="Main"))["revision"]
                     write_res = call_tool(

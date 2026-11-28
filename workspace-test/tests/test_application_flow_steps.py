@@ -1,12 +1,11 @@
+import re
+import unittest
 from datetime import datetime
 from pathlib import Path
-import re
 from tempfile import TemporaryDirectory
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 
 

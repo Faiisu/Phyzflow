@@ -1,14 +1,13 @@
-from pathlib import Path
-from shutil import rmtree
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from shutil import rmtree
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application
 from test_application_delete_workspace import confirm_workspace_deletion
 from test_application_lifecycle import create_workspace, process_exited, wait_for

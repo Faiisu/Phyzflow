@@ -1,7 +1,7 @@
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import sys
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from test_agent_jobs import running_agent, wait_job
 

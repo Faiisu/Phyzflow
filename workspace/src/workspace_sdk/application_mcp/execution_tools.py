@@ -1,20 +1,19 @@
-from http.client import HTTPConnection, HTTPException
 import json
 import re
-from typing import Literal
+from http.client import HTTPConnection, HTTPException
+from typing import Annotated, Any, Literal
 
 from ..console import ConsoleLogStore
 from ..execution import FlowBusy
 from ..history import RunHistory
-
 from .access import WorkspaceAccess, ensure_not_protected, resolve_workspace_sheet
-
 
 RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
 def _ensure_worker_url(flow_sheet) -> str:
     from mcp.server.mcpserver.exceptions import ToolError
+
     from ..workspace_ui import ReloadConflict
 
     try:
@@ -151,9 +150,16 @@ def _summarize_attempt(attempt, flow_sheet) -> dict:
 
 def register_execution_tools(server, access: WorkspaceAccess) -> None:
     from mcp.server.mcpserver.exceptions import ToolError
+    from pydantic import Field
 
-    @server.tool(description="Read declared node setting definitions and current saved values for a sheet.")
-    async def read_node_settings(workspace_id: str, sheet: str = "Main") -> dict:
+    from .tool_contract import RunId, SheetName, WorkspaceId, read_tool, write_tool
+
+    @server.tool(**read_tool(
+        "Read node settings",
+        "Return each node's declared settings with their types, defaults, and saved values for a sheet. "
+        "Use update_node_setting to change one.",
+    ))
+    async def read_node_settings(workspace_id: WorkspaceId, sheet: SheetName = "Main") -> dict[str, Any]:
         from anyio import to_thread
 
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
@@ -162,16 +168,26 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
         )
         return {"sheet": sheet, "settings": settings}
 
-    @server.tool(description="Save a node setting for the next run or queue a live setting update on an active run.")
+    @server.tool(**write_tool(
+        "Update node setting",
+        "Set one node setting. mode 'next' saves the value for future runs; mode 'live' sends it to the "
+        "running flow without saving it.",
+        destructive=True,
+        idempotent=True,
+    ))
     async def update_node_setting(
-        workspace_id: str,
-        node_id: str,
-        name: str,
-        value: bool | int | float | str,
-        sheet: str = "Main",
-        mode: Literal["next", "live"] = "next",
-        run_id: str | None = None,
-    ) -> dict:
+        workspace_id: WorkspaceId,
+        node_id: Annotated[str, Field(description="Step ID that declares the setting.")],
+        name: Annotated[str, Field(description="Setting name as listed by read_node_settings.")],
+        value: Annotated[bool | int | float | str, Field(description="New value matching the setting's declared type.")],
+        sheet: SheetName = "Main",
+        mode: Annotated[Literal["next", "live"], Field(
+            description="'next' saves for the next run; 'live' updates the active run.",
+        )] = "next",
+        run_id: Annotated[str | None, Field(
+            description="Active run to update in 'live' mode. Omit to use the sheet's running run.",
+        )] = None,
+    ) -> dict[str, Any]:
         from anyio import to_thread
 
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
@@ -191,8 +207,20 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
         )
         return {"sheet": sheet, "node_id": node_id, **result}
 
-    @server.tool(description="Start a flow run managed by the Workspace lifecycle.")
-    def run_flow(workspace_id: str, sheet: str = "Main", input: dict | None = None) -> dict:
+    @server.tool(**write_tool(
+        "Run flow",
+        "Start a run of the sheet's latest saved flow and return its run_id without waiting for it to finish. "
+        "Flow code runs with the host account's access. Use inspect_execution to follow steps and results.",
+        destructive=False,
+        open_world=True,
+    ))
+    def run_flow(
+        workspace_id: WorkspaceId,
+        sheet: SheetName = "Main",
+        input: Annotated[dict | None, Field(
+            description="JSON object passed to the flow's inputs. Omit for an empty input.",
+        )] = None,
+    ) -> dict[str, Any]:
         from ..workspace_ui import ReloadConflict
 
         if input is not None and not isinstance(input, dict):
@@ -204,8 +232,14 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error)) from None
         return {"run_id": attempt.run_id, "sheet": sheet, "status": attempt.status}
 
-    @server.tool(description="Start every idle sheet in a granted Workspace concurrently without disturbing running sheets.")
-    async def run_all_flows(workspace_id: str) -> dict:
+    @server.tool(**write_tool(
+        "Run all flows",
+        "Start every idle sheet in the Workspace concurrently with an empty input. Sheets already running keep "
+        "their current run. Returns the run ID of each started sheet and any per-sheet start errors.",
+        destructive=False,
+        open_world=True,
+    ))
+    async def run_all_flows(workspace_id: WorkspaceId) -> dict[str, Any]:
         from anyio import to_thread
 
         root = access.workspace(workspace_id)
@@ -217,8 +251,13 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error) or "Could not run Workspace sheets.") from None
         return {"workspace_id": workspace_id, **result}
 
-    @server.tool(description="Stop an active flow run managed by the Workspace.")
-    def stop_flow(workspace_id: str, sheet: str = "Main") -> dict:
+    @server.tool(**write_tool(
+        "Stop flow",
+        "Stop the sheet's active run and the work running in its process. Returns the sheet status afterward.",
+        destructive=True,
+        idempotent=True,
+    ))
+    def stop_flow(workspace_id: WorkspaceId, sheet: SheetName = "Main") -> dict[str, Any]:
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         try:
             flow_sheet.stop()
@@ -226,8 +265,14 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
             raise ToolError(str(error)) from None
         return {"sheet": sheet, "status": flow_sheet.status()}
 
-    @server.tool(description="Inspect active run status, step timing and diagnostics, and run history for a sheet.")
-    def inspect_execution(workspace_id: str, sheet: str = "Main", run_id: str | None = None) -> dict:
+    @server.tool(**read_tool(
+        "Inspect execution",
+        "Return a run's status, per-step timing, metrics, errors with source locations, and result, plus the "
+        "20 most recent runs. Defaults to the active or latest run. Use read_console_logs for stdout and stderr.",
+    ))
+    def inspect_execution(
+        workspace_id: WorkspaceId, sheet: SheetName = "Main", run_id: RunId = None,
+    ) -> dict[str, Any]:
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         history = RunHistory(flow_sheet.root)
         try:
@@ -244,7 +289,7 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
                 raise ToolError(str(error) or "Could not read run history.") from None
             active_run = _summarize_attempt(attempt, flow_sheet) if attempt is not None and attempt.run_id == run_id else None
             if record is None and active_run is None:
-                raise ToolError(f"Unknown run {run_id!r}.")
+                raise ToolError(f"Unknown run {run_id!r}. Call inspect_execution without run_id to list recent runs.")
             return {
                 "sheet": sheet,
                 "status": flow_sheet.status(),
@@ -268,8 +313,14 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
             "recent_runs": recent_runs,
         }
 
-    @server.tool(description="Read saved or live console logs and current log settings for a sheet.")
-    def read_console_logs(workspace_id: str, sheet: str = "Main", run_id: str | None = None) -> dict:
+    @server.tool(**read_tool(
+        "Read console logs",
+        "Return a run's stdout and stderr, from live output or saved logs, with the sheet's log settings. "
+        "Defaults to the active or latest run. Use inspect_execution for step status and results.",
+    ))
+    def read_console_logs(
+        workspace_id: WorkspaceId, sheet: SheetName = "Main", run_id: RunId = None,
+    ) -> dict[str, Any]:
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         store = ConsoleLogStore(flow_sheet.root)
         try:
@@ -311,13 +362,19 @@ def register_execution_tools(server, access: WorkspaceAccess) -> None:
             "stderr": stderr,
         }
 
-    @server.tool(description="Update per-sheet console log saving and retention settings.")
+    @server.tool(**write_tool(
+        "Configure console logs",
+        "Change whether a sheet saves console logs and how many days they are kept. Omitted fields keep their "
+        "current value. Shorter retention removes older saved logs.",
+        destructive=True,
+        idempotent=True,
+    ))
     def configure_console_logs(
-        workspace_id: str,
-        sheet: str = "Main",
-        save_logs: bool | None = None,
-        retention_days: int | None = None,
-    ) -> dict:
+        workspace_id: WorkspaceId,
+        sheet: SheetName = "Main",
+        save_logs: Annotated[bool | None, Field(description="Whether to save console output for new runs.")] = None,
+        retention_days: Annotated[int | None, Field(description="Days to keep saved logs.")] = None,
+    ) -> dict[str, Any]:
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         changes: dict[str, bool | int] = {}
         if save_logs is not None:

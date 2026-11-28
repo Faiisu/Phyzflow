@@ -70,6 +70,7 @@ To try the dashboard examples, run `.venv/bin/workspace --project workspace-test
 
 - [Create, edit, and remove dashboard panels](docs/dashboard-editor.md)
 - [Application specification](docs/application-spec.md)
+- [MCP tool contract](docs/mcp-tools.md)
 - [Feature specs and implementation tickets](.scratch/)
 - [macOS launcher and CLI commands for AI agents](workspace/README.md)
 - [Sample flows, configuration, and tests](workspace-test/README.md)

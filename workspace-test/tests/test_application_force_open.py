@@ -1,16 +1,15 @@
-from pathlib import Path
 import json
 import os
-from tempfile import TemporaryDirectory
-from threading import Thread
-from time import monotonic, sleep
 import unittest
+from concurrent.futures import ThreadPoolExecutor, wait
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import monotonic, sleep
 
 import anyio
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_mcp import call, mcp_client, output
 
@@ -82,7 +81,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a,
                     portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b,
                 ):
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_a = output(opened)["session_id"]
 
@@ -102,7 +101,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                         beat_data = output(beat)
                         self.assertTrue(beat_data["locked"])
                         self.assertFalse(beat_data["stale"])
-                        denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                        denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main")
                         self.assertTrue(denied_b.is_error)
 
                     expect(page.locator("#edit-lock-message")).not_to_contain_text("Possibly stale")
@@ -111,13 +110,13 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(page.locator("#edit-lock-message")).to_contain_text("Possibly stale")
                     expect(page.locator("#edit-lock-message")).to_contain_text("Client A")
 
-                    readonly = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="read"))
+                    readonly = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Main"))
                     self.assertTrue(readonly["edit_lock"]["stale"])
                     self.assertFalse(readonly["edit_lock"]["disconnected"])
                     self.assertTrue(readonly["read_only"])
 
                     second_root = root / "flows" / "Second"
-                    opened_second = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Second", mode="edit")
+                    opened_second = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Second")
                     self.assertFalse(opened_second.is_error, opened_second.content[0].text)
                     session_second = output(opened_second)["session_id"]
                     second_rev = output(call(portal, client_a, "read_file", workspace_id=workspace_id, path="flow.py", sheet="Second"))["revision"]
@@ -135,17 +134,19 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     self.assertFalse(written.is_error, written.content[0].text)
 
                     async def drop_connection_during_validate():
-                        async with mcp_client(url, token_a) as transient_client:
-                            async with anyio.create_task_group() as tg:
-                                async def invoke():
-                                    await transient_client.call_tool(
-                                        "validate_flow",
-                                        {"workspace_id": workspace_id, "sheet": "Second", "session_id": session_second},
-                                    )
-                                tg.start_soon(invoke)
-                                while not (second_root / "disconnect-started").is_file():
-                                    await anyio.sleep(0.02)
-                                tg.cancel_scope.cancel()
+                        async with (
+                            mcp_client(url, token_a) as transient_client,
+                            anyio.create_task_group() as tg,
+                        ):
+                            async def invoke():
+                                await transient_client.call_tool(
+                                    "validate_flow",
+                                    {"workspace_id": workspace_id, "sheet": "Second", "session_id": session_second},
+                                )
+                            tg.start_soon(invoke)
+                            while not (second_root / "disconnect-started").is_file():
+                                await anyio.sleep(0.02)
+                            tg.cancel_scope.cancel()
 
                     portal.call(drop_connection_during_validate)
 
@@ -154,7 +155,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(page.locator("#edit-lock-message")).to_contain_text("Disconnected")
                     expect(page.locator("#edit-lock-message")).to_contain_text("Client A")
 
-                    second_read = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Second", mode="read"))
+                    second_read = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Second"))
                     self.assertTrue(second_read["edit_lock"]["stale"])
                     self.assertTrue(second_read["edit_lock"]["disconnected"])
 
@@ -172,7 +173,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a,
                     portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b,
                 ):
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     heartbeat_iso = output(opened)["edit_lock"]["last_heartbeat"]
                     expected_heartbeat = heartbeat_iso.split(".", 1)[0].replace("T", " ").removesuffix("+00:00") + " UTC"
@@ -197,7 +198,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(confirm_dialog).to_be_hidden()
                     expect(page.locator("#edit-lock-message")).to_contain_text("Possibly stale")
 
-                    denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertTrue(denied_b.is_error)
 
                     page.get_by_role("button", name="Edit flow.py").click()
@@ -223,7 +224,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(node_dialog.get_by_role("textbox", name="Source code")).not_to_be_editable()
                     node_dialog.get_by_role("button", name="Close node files").click()
 
-                    still_locked = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="read"))
+                    still_locked = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Main"))
                     self.assertTrue(still_locked["read_only"])
                     self.assertTrue(still_locked["edit_lock"]["locked"])
 
@@ -238,7 +239,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                 token_b = issue_token(page, url, "Client B", [workspace_id])
 
                 with portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a:
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_a = output(opened)["session_id"]
 
@@ -292,18 +293,11 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     self.assertTrue(output(staged)["edit_lock"]["has_unsaved_draft"])
                     self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
 
-                    validate_outcomes = []
-
-                    def run_stuck_validate():
-                        try:
-                            validate_outcomes.append(
-                                call(portal, client_a, "validate_flow", workspace_id=workspace_id, sheet="Main", session_id=session_a)
-                            )
-                        except BaseException as exc:
-                            validate_outcomes.append(exc)
-
-                    worker = Thread(target=run_stuck_validate, daemon=True)
-                    worker.start()
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    stuck_validation = executor.submit(
+                        call, portal, client_a, "validate_flow",
+                        workspace_id=workspace_id, sheet="Main", session_id=session_a,
+                    )
                     wait_for(lambda: (root / "stuck-started").is_file() and (root / "stuck-pid").is_file())
                     stuck_pid = int((root / "stuck-pid").read_text(encoding="utf-8"))
                     self.assertFalse(process_exited(stuck_pid))
@@ -319,8 +313,9 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(confirm_dialog).to_be_hidden()
 
                     wait_for(lambda: process_exited(stuck_pid))
-                    worker.join(timeout=5)
-                    self.assertFalse(worker.is_alive())
+                    wait([stuck_validation], timeout=5)
+                    self.assertTrue(stuck_validation.done())
+                    executor.shutdown(wait=False)
                     expect(page.locator("#edit-lock-message")).to_be_hidden()
 
                     flow = page.frame_locator('iframe[title="Main flow"]')
@@ -389,7 +384,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     self.assertEqual((root / "nodes/start/entrypoint.py").read_text(encoding="utf-8"), saved_node)
 
                 with portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b:
-                    opened_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened_b.is_error, opened_b.content[0].text)
                     self.assertFalse(call(
                         portal, client_b, "close_sheet",
@@ -410,7 +405,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a,
                     portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b,
                 ):
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_a = output(opened)["session_id"]
 
@@ -435,7 +430,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                         sheet="Main", session_id=session_a,
                     )
                     self.assertFalse(wrote_node.is_error, wrote_node.content[0].text)
-                    after_write_status = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="read"))
+                    after_write_status = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Main"))
                     self.assertFalse(after_write_status["edit_lock"]["has_unsaved_draft"])
 
                     flow_read = output(call(portal, client_a, "read_file", workspace_id=workspace_id, path="flow.py", sheet="Main"))
@@ -479,7 +474,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
 
                     denied_b_during_web_edit = call(
                         portal, client_b, "open_sheet",
-                        workspace_id=workspace_id, sheet="Main", mode="edit",
+                        workspace_id=workspace_id, sheet="Main",
                     )
                     self.assertTrue(denied_b_during_web_edit.is_error)
                     self.assertIn("Web", denied_b_during_web_edit.content[0].text)
@@ -491,20 +486,26 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(result).to_be_visible()
                     self.assertEqual(json.loads(result.inner_text()), {"message": "Saved output"})
 
-            with application(state) as restarted_url:
-                with portal.wrap_async_context_manager(mcp_client(restarted_url, token_a)) as old_after_restart:
-                    rejected_after_restart = call(
-                        portal, old_after_restart, "write_file",
-                        workspace_id=workspace_id, path="flow.py",
-                        revision=output(wrote_flow)["revision"],
-                        source=saved_flow.replace('"Saved Node"', '"Zombie"'),
-                        sheet="Main", session_id=session_a,
-                    )
-                    self.assertTrue(rejected_after_restart.is_error)
-                    self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
+            with (
+                application(state) as restarted_url,
+                portal.wrap_async_context_manager(mcp_client(restarted_url, token_a)) as old_after_restart,
+            ):
+                rejected_after_restart = call(
+                    portal, old_after_restart, "write_file",
+                    workspace_id=workspace_id, path="flow.py",
+                    revision=output(wrote_flow)["revision"],
+                    source=saved_flow.replace('"Saved Node"', '"Zombie"'),
+                    sheet="Main", session_id=session_a,
+                )
+                self.assertTrue(rejected_after_restart.is_error)
+                self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
 
     def test_invalidated_sessions_are_not_evicted_after_many_force_opens(self):
-        from workspace_sdk.sheet_locks import MAX_TRACKED_SESSIONS, SheetEditLease, SheetLockedError
+        from workspace_sdk.sheet_locks import (
+            MAX_TRACKED_SESSIONS,
+            SheetEditLease,
+            SheetLockedError,
+        )
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

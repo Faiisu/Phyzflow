@@ -1,14 +1,13 @@
 import json
 import os
-from pathlib import Path
 import signal
+import unittest
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import sleep
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application
 from test_application_lifecycle import create_workspace, process_exited, wait_for
 from workspace_sdk.sheets import create_sheet
@@ -110,7 +109,7 @@ def start():
                 previous_units = units.stat().st_size
                 attempts = set()
                 for index in range(4):
-                    wait_for(lambda: len(starts()) > index)
+                    wait_for(lambda index=index: len(starts()) > index)
                     expect(main).to_contain_text("Running")
                     if index < 3:
                         expect(frame.get_by_label("stdout")).to_contain_text("Entered the first step: Explicit input")
@@ -120,10 +119,10 @@ def start():
                     pid, value, child_pid = starts()[index]
                     self.assertEqual(value, "Explicit input")
                     kill_worker(pid)
-                    wait_for(lambda: process_exited(pid))
-                    wait_for(lambda: process_exited(child_pid))
+                    wait_for(lambda pid=pid: process_exited(pid))
+                    wait_for(lambda child_pid=child_pid: process_exited(child_pid))
                     self.assertEqual(states()["Other"]["run_id"], other_id)
-                    wait_for(lambda: units.stat().st_size > previous_units)
+                    wait_for(lambda previous_units=previous_units: units.stat().st_size > previous_units)
                     previous_units = units.stat().st_size
 
                 expect(main).to_contain_text("Failed")

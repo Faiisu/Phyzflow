@@ -1,11 +1,10 @@
 import unittest
 from uuid import uuid4
 
-from playwright.sync_api import expect
-
-from browser_support import browser_page, local_ui
-from test_auto_reload import FLOW, sheet_view, write_sheet
 import test_agent
+from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
+from test_auto_reload import FLOW, sheet_view, write_sheet
 
 
 class AgentEditUITests(unittest.TestCase):

@@ -1,10 +1,10 @@
+import sys
+import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
 from time import monotonic, sleep
-import sys
-import unittest
 
 from workspace_sdk.agent import AgentClient, create_agent_server
 
@@ -82,26 +82,29 @@ class AgentJobTests(unittest.TestCase):
                 'def work(): return {"model": os.environ.get("MODEL_LOCATION"), '
                 '"secret": os.environ.get("AGENT_AMBIENT_SECRET"), "python": sys.executable}\n'
                 'flow=Flow((),(Step("Work",work,{}),),Output("Work"))\n')
-            with patch.dict(os.environ, {'AGENT_AMBIENT_SECRET': 'private-sentinel', 'PYTHONPATH': str(ambient), 'PYTHONHOME': '/invalid/ambient/python'}):
-                with running_agent(root, commands=['python'], inference_environment={'MODEL_LOCATION': '/models/approved'}) as client:
-                    for operation in ('validate_flow', 'run_flow'):
-                        started = client.request(operation, 'demo', operation)
-                        self.assertTrue(started['ok'], started)
-                        job = wait_job(client, started['result']['job_id'])
-                        self.assertEqual(job['status'], 'succeeded', job)
-                        if operation == 'run_flow':
-                            self.assertEqual(job['result']['output'], {'model': '/models/approved', 'secret': None, 'python': sys.executable})
-                    rejected = client.request('client-env', 'demo', 'run_flow', {'environment': {'MODEL_LOCATION': 'client override'}})
-                    self.assertFalse(rejected['ok'], rejected)
-                    command = client.request('command-env', 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'import os; print(os.environ.get("MODEL_LOCATION")); print(os.environ.get("AGENT_AMBIENT_SECRET")); print(os.environ.get("PYTHONPATH"))']})
-                    self.assertEqual(wait_job(client, command['result']['job_id'])['status'], 'succeeded')
-                    output = client.request('command-output', 'demo', 'read_job_output', {'job_id': command['result']['job_id']})
-                    self.assertEqual(output['result']['content'], 'None\nNone\nNone\n')
+            with (
+                patch.dict(os.environ, {'AGENT_AMBIENT_SECRET': 'private-sentinel', 'PYTHONPATH': str(ambient), 'PYTHONHOME': '/invalid/ambient/python'}),
+                running_agent(root, commands=['python'], inference_environment={'MODEL_LOCATION': '/models/approved'}) as client,
+            ):
+                for operation in ('validate_flow', 'run_flow'):
+                    started = client.request(operation, 'demo', operation)
+                    self.assertTrue(started['ok'], started)
+                    job = wait_job(client, started['result']['job_id'])
+                    self.assertEqual(job['status'], 'succeeded', job)
+                    if operation == 'run_flow':
+                        self.assertEqual(job['result']['output'], {'model': '/models/approved', 'secret': None, 'python': sys.executable})
+                rejected = client.request('client-env', 'demo', 'run_flow', {'environment': {'MODEL_LOCATION': 'client override'}})
+                self.assertFalse(rejected['ok'], rejected)
+                command = client.request('command-env', 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'import os; print(os.environ.get("MODEL_LOCATION")); print(os.environ.get("AGENT_AMBIENT_SECRET")); print(os.environ.get("PYTHONPATH"))']})
+                self.assertEqual(wait_job(client, command['result']['job_id'])['status'], 'succeeded')
+                output = client.request('command-output', 'demo', 'read_job_output', {'job_id': command['result']['job_id']})
+                self.assertEqual(output['result']['content'], 'None\nNone\nNone\n')
 
     def test_nested_validation_and_failure_diagnostics_are_safe_in_history(self):
-        from browser_support import local_ui
         import json
         from urllib.request import urlopen
+
+        from browser_support import local_ui
         with TemporaryDirectory() as temp:
             root = Path(temp).resolve() / 'project'
             root.mkdir()
@@ -133,7 +136,7 @@ class AgentJobTests(unittest.TestCase):
                         self.assertNotIn('private-request-value', response.read().decode())
 
     def test_open_browser_follows_agent_run_and_defers_reload(self):
-        from browser_support import local_ui, browser_page
+        from browser_support import browser_page, local_ui
         from playwright.sync_api import expect
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve() / 'project'
@@ -167,7 +170,7 @@ class AgentJobTests(unittest.TestCase):
                 expect(page.get_by_role('button', name='Run flow')).to_be_enabled()
 
     def test_frontend_blocks_editing_while_running_and_hides_history_panel(self):
-        from browser_support import local_ui, browser_page
+        from browser_support import browser_page, local_ui
         from playwright.sync_api import expect
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve() / 'project'
@@ -210,7 +213,7 @@ class AgentJobTests(unittest.TestCase):
                 dialog.get_by_role('button', name='Close', exact=True).click()
 
     def test_ui_run_blocks_agent_start_on_same_sheet(self):
-        from browser_support import local_ui, browser_page
+        from browser_support import browser_page, local_ui
         from playwright.sync_api import expect
         with TemporaryDirectory() as temp, browser_page() as page:
             root = Path(temp).resolve() / 'project'

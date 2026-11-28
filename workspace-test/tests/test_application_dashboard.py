@@ -1,17 +1,15 @@
+import json
+import unittest
 from pathlib import Path
 from shutil import copytree, ignore_patterns
 from tempfile import TemporaryDirectory
-import json
-import unittest
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_edit_locks import issue_token, wait_for_open_sheet
 from test_application_mcp import call, mcp_client, output
-
 
 LIVE_COUNTER = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Live Counter"
 
@@ -229,7 +227,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 flow = page.frame_locator('iframe[title="Main flow"]')
                 flow.locator("#enter-visualize-mode").click()
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content)
                     owner = output(opened)["edit_lock"]["owner"]
                     for label, path, scope in (
@@ -292,11 +290,11 @@ class ApplicationDashboardTests(unittest.TestCase):
                             editor.get_by_label("Scope").select_option(label=scope)
                             panel_id.fill("test-status")
                             expect(create).to_be_enabled()
-                            denied = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                            denied = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main")
                             self.assertTrue(denied.is_error)
                             self.assertIn("Web editor", denied.content[0].text)
 
-                            other = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Other", mode="edit")
+                            other = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Other")
                             self.assertFalse(other.is_error, other.content)
                             other_session = output(other)["session_id"]
                             other_write = call(
@@ -633,7 +631,7 @@ class ApplicationDashboardTests(unittest.TestCase):
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
                     tools = {tool.name: tool for tool in portal.call(client.list_tools).tools}
-                    self.assertIn("Pass sheet: null for the Workspace Dashboard", tools["inspect_dashboards"].description)
+                    self.assertIn("With sheet set to null, returns the Workspace Dashboard", tools["inspect_dashboards"].description)
                     instructions = client.instructions or ""
                     self.assertIn("inspect_dashboards with sheet: null", instructions)
                     self.assertIn("add_dashboard_placement", instructions)
@@ -673,7 +671,7 @@ class ApplicationDashboardTests(unittest.TestCase):
 
                     self.assertEqual(inspect_workspace_dashboard(), {"placements": [], "catalog": []})
 
-                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_id = output(opened)["session_id"]
 
@@ -810,7 +808,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 expect(flow.locator("#visualize-list")).to_contain_text("No dashboards found in this flow.")
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_id = output(opened)["session_id"]
 
@@ -909,7 +907,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 workspace_id, token = create_workspace_and_token(page, url, state, root)
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_id = output(opened)["session_id"]
 
@@ -1125,7 +1123,7 @@ class ApplicationDashboardTests(unittest.TestCase):
                 workspace_id, token = create_workspace_and_token(page, url, state, root)
 
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     session_id = output(opened)["session_id"]
 
                     for path, source in (

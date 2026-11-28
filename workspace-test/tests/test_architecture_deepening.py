@@ -1,8 +1,8 @@
 import json
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
-import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -18,7 +18,6 @@ from workspace_sdk.sheets import (
     source_stamp,
 )
 from workspace_sdk.ui_settings import (
-    DeploySettings,
     load_deploy_settings,
     load_ui_settings,
     read_project_settings,

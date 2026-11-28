@@ -1,18 +1,17 @@
-from contextlib import asynccontextmanager
 import json
+import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from secrets import token_urlsafe
 from tempfile import TemporaryDirectory
-import unittest
 
-from anyio.from_thread import start_blocking_portal
 import httpx2
+from anyio.from_thread import start_blocking_portal
+from browser_support import browser_page
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 from playwright.sync_api import expect
-
-from browser_support import browser_page
 from test_application import application, sign_in
 
 

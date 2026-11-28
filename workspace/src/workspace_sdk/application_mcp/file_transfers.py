@@ -1,12 +1,12 @@
+import json
+import os
+import re
 from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
 from contextlib import suppress
 from dataclasses import dataclass, field
 from hashlib import sha256
-import json
-import os
 from pathlib import Path
-import re
 from shutil import disk_usage
 from stat import S_IMODE
 from threading import Event, RLock, Thread
@@ -17,8 +17,17 @@ from uuid import uuid4
 from ..workspace_environment import is_protected_path
 from .access import ensure_not_protected
 from .file_paths import (
-    STAGING_PREFIX, atomic_move, checked_path, file_metadata, mutate_files, open_file,
-    path_info, relative_path, require_file, revision, verify_revision,
+    STAGING_PREFIX,
+    atomic_move,
+    checked_path,
+    file_metadata,
+    mutate_files,
+    open_file,
+    path_info,
+    relative_path,
+    require_file,
+    revision,
+    verify_revision,
 )
 from .upload_paths import UPLOAD_DIRECTORY, file_folder, file_name
 
@@ -50,6 +59,11 @@ class Transfer:
     upload_area: bool = False
 
 
+def ensure_direction(actual: str, requested: str) -> None:
+    if actual != requested:
+        raise ValueError(f"This transfer is {'an' if actual == 'upload' else 'a'} {actual}. Finish it with finish_workspace_{actual}.")
+
+
 def publish_file(stage: Path, target: Path, mode: str, info: os.stat_result | None) -> None:
     if mode == "missing":
         atomic_move(stage, target)
@@ -65,7 +79,7 @@ class FileTransfers:
         self.directory = directory
         self.lock = RLock()
         self.transfers: dict[str, Transfer] = {}
-        self.receipts: dict[str, tuple[str, str, float, dict]] = {}
+        self.receipts: dict[str, tuple[str, str, float, dict, str]] = {}
         self.stopping = Event()
         self.worker = Thread(target=self.sweep, daemon=True)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -112,7 +126,7 @@ class FileTransfers:
             allowed = self.access.tokens.workspace_ids(transfer.principal)
             if transfer.deadline <= now or not allowed or transfer.workspace_id not in allowed:
                 self.discard(identity)
-        for identity, (_, _, deadline, _) in list(self.receipts.items()):
+        for identity, (_, _, deadline, _, _) in list(self.receipts.items()):
             if deadline <= now:
                 self.receipts.pop(identity)
 
@@ -298,13 +312,15 @@ class FileTransfers:
             item.last_chunk = sha256(data).digest()
             return {"next_offset": item.offset}
 
-    def finish(self, identity: str, session_ids: dict[str, str]) -> dict:
+    def finish(self, identity: str, session_ids: dict[str, str], *, direction: str) -> dict:
         with self.access.file_gate, self.lock:
             receipt = self.receipts.get(identity)
             if receipt is not None and receipt[0] == self.access.principal() and receipt[2] > monotonic():
                 self.access.workspace(receipt[1])
+                ensure_direction(receipt[4], direction)
                 return receipt[3]
             item = self.get(identity)
+            ensure_direction("download" if item.stage is None else "upload", direction)
             if item.offset != item.size:
                 raise ValueError(f"Transfer is incomplete. Expected byte offset {item.offset}.")
             checksum = item.digest.hexdigest()
@@ -320,7 +336,9 @@ class FileTransfers:
             result["sha256"] = checksum
             if len(self.receipts) >= MAX_RECEIPTS:
                 self.receipts.pop(next(iter(self.receipts)))
-            self.receipts[identity] = (item.principal, item.workspace_id, monotonic() + IDLE_SECONDS, result)
+            self.receipts[identity] = (
+                item.principal, item.workspace_id, monotonic() + IDLE_SECONDS, result, direction,
+            )
             return result
 
     def commit_upload(self, item: Transfer, session_ids: dict[str, str]) -> dict:

@@ -1,20 +1,18 @@
 import gzip
-from http.client import HTTPConnection
 import json
 import os
+import unittest
+from http.client import HTTPConnection
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from playwright.sync_api import expect
-
 from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
 from workspace_sdk.console import ConsoleLogStore
 from workspace_sdk.sheets import create_sheet, source_stamp
 from workspace_sdk.workspace_ui.flow_sheet import FlowSheet
-
 
 FLOW_SOURCE = '''from pathlib import Path
 from time import sleep

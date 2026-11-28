@@ -1,16 +1,15 @@
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import json
 import os
-from shutil import copy2, copytree
 import subprocess
 import tomllib
 import unittest
+from pathlib import Path
+from shutil import copy2, copytree
+from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
-from playwright.sync_api import expect
-
 from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
 from test_application import application, project_python, sign_in
 
 

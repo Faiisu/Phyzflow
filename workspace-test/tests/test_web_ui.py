@@ -1,15 +1,12 @@
 import json
+import unittest
 from math import exp
-import os
 from pathlib import Path
 from shutil import copy2, copytree
 from tempfile import TemporaryDirectory
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page, local_ui, show_panel
-
+from playwright.sync_api import expect
 
 PROJECT = Path(__file__).resolve().parents[1]
 

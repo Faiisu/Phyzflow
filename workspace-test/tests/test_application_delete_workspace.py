@@ -1,20 +1,19 @@
-from contextlib import contextmanager
 import os
-from pathlib import Path
 import select
-from shutil import rmtree
 import signal
 import subprocess
 import sys
+import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from shutil import rmtree
 from tempfile import TemporaryDirectory
 from time import sleep
-import unittest
 from uuid import uuid4
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_lifecycle import create_workspace, process_exited, wait_for
 from test_application_mcp import call, mcp_client, output
@@ -81,8 +80,8 @@ from pathlib import Path
 from time import sleep
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-target = {repr(str(root))}
-race_log = Path({repr(str(race_log))})
+target = {str(root)!r}
+race_log = Path({str(race_log)!r})
 with Path("ticks").open("w", buffering=1) as output:
     while True:
         if not os.path.exists(target):
@@ -106,8 +105,8 @@ def handle_term(*_):
     stopping = True
 
 signal.signal(signal.SIGTERM, handle_term)
-target = {repr(str(root))}
-race_log = Path({repr(str(race_log))})
+target = {str(root)!r}
+race_log = Path({str(race_log)!r})
 with Path("ticks").open("w", buffering=1) as output:
     while not stopping:
         if not os.path.exists(target):
@@ -133,7 +132,7 @@ from pathlib import Path
 
 def start():
     Path("worker-pid").write_text(str(os.getpid()), encoding="utf-8")
-    child = subprocess.Popen([sys.executable, "-c", {repr(child_script)}])
+    child = subprocess.Popen([sys.executable, "-c", {child_script!r}])
     Path("child-pid").write_text(str(child.pid), encoding="utf-8")
     child.wait()
 ''',

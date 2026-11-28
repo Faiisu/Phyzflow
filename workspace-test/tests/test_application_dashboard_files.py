@@ -1,13 +1,12 @@
+import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlencode
-import unittest
-import wave
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application
 from test_application_dashboard import create_workspace_and_token
 from test_application_mcp import call, mcp_client, output

@@ -1,11 +1,11 @@
 import argparse
+import json
+import os
+import sys
 from base64 import b64decode, b64encode
 from contextlib import suppress
 from hashlib import file_digest, sha256
-import json
-import os
 from pathlib import Path
-import sys
 from tempfile import NamedTemporaryFile
 
 import anyio
@@ -39,7 +39,7 @@ async def upload(client: Client, args) -> dict:
             started = await call_tool(client, "begin_workspace_upload", **start_arguments)
         else:
             started = await call_tool(
-                client, "begin_workspace_transfer", direction="upload", revision=args.revision, **start_arguments,
+                client, "begin_workspace_file_upload", revision=args.revision, **start_arguments,
             )
         identity = started["transfer_id"]
         offset = 0
@@ -54,7 +54,7 @@ async def upload(client: Client, args) -> dict:
                     raise ValueError("The server reported an unexpected upload offset.")
                 offset = result["next_offset"]
             result = await call_tool(
-                client, "finish_workspace_transfer", retry=True, transfer_id=identity,
+                client, "finish_workspace_upload", retry=True, transfer_id=identity,
                 session_ids=dict(args.session),
             )
             finished = True
@@ -72,8 +72,8 @@ async def download(client: Client, args) -> dict:
     if os.path.lexists(destination):
         raise FileExistsError("The local destination already exists.")
     started = await call_tool(
-        client, "begin_workspace_transfer", workspace_id=args.workspace_id, path=args.remote_path,
-        direction="download", revision=args.revision,
+        client, "begin_workspace_file_download", workspace_id=args.workspace_id, path=args.remote_path,
+        revision=args.revision,
     )
     identity = started["transfer_id"]
     stage = None
@@ -94,7 +94,7 @@ async def download(client: Client, args) -> dict:
                 stream.write(data)
                 checksum.update(data)
                 offset = chunk["next_offset"]
-        result = await call_tool(client, "finish_workspace_transfer", retry=True, transfer_id=identity)
+        result = await call_tool(client, "finish_workspace_download", retry=True, transfer_id=identity)
         finished = True
         if result["sha256"] != checksum.hexdigest() or result["size"] != offset:
             raise ValueError("The downloaded size or SHA-256 does not match.")

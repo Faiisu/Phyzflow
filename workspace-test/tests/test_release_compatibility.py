@@ -1,17 +1,16 @@
-from datetime import datetime, timezone
-from hashlib import sha256
 import json
-from pathlib import Path
-from shutil import copytree, ignore_patterns
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from datetime import UTC, datetime
+from hashlib import sha256
 from io import BytesIO
+from pathlib import Path
+from shutil import copytree, ignore_patterns
+from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 from test_release_manifest import BUILDER, WORKSPACE, command, snapshot
-
 
 CHECK = WORKSPACE / "release" / "check_compatibility.py"
 
@@ -34,7 +33,7 @@ class ReleaseCompatibilityTests(unittest.TestCase):
         report = self.root / "compatibility.json"
         result = subprocess.run(
             [sys.executable, CHECK, wheel, "--report", report, "--source", self.root],
-            capture_output=True, text=True, cwd=self.root,
+            capture_output=True, text=True, cwd=self.root, check=False,
         )
         self.assertTrue(report.is_file(), f"{result.stdout}\n{result.stderr}")
         data = json.loads(report.read_text())
@@ -61,7 +60,7 @@ class ReleaseCompatibilityTests(unittest.TestCase):
             output = self.root / "macos-dist"
             package = subprocess.run(
                 ["sh", self.root / "workspace/release/macos/build.sh", output],
-                cwd=self.root, capture_output=True, text=True,
+                cwd=self.root, capture_output=True, text=True, check=False,
             )
             self.assertNotEqual(package.returncode, 0)
             self.assertIn("Untested compatibility combination", package.stderr)
@@ -96,9 +95,9 @@ class ReleaseCompatibilityTests(unittest.TestCase):
         builder = self.root / "workspace/release/macos/build.sh"
 
         def package():
-            before = datetime.now(timezone.utc)
+            before = datetime.now(UTC)
             artifact = Path(command("sh", builder, output, cwd=self.root))
-            after = datetime.now(timezone.utc)
+            after = datetime.now(UTC)
             published = json.loads(artifact.with_suffix(".zip.compatibility.json").read_text())
             self.assertEqual(published["artifact_sha256"], sha256(artifact.read_bytes()).hexdigest())
             self.assertLessEqual(before, datetime.fromisoformat(published["published_at"]))

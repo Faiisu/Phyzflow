@@ -1,14 +1,14 @@
-from contextlib import ExitStack
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from threading import Thread, Event
 import subprocess
 import sys
 import time
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Event, Thread
 
 from workspace_sdk.agent import AgentClient, create_agent_server
-from workspace_sdk.agent_remote import RemoteClient, EdgeConnector, create_router_server
+from workspace_sdk.agent_remote import EdgeConnector, RemoteClient, create_router_server
 
 
 class RemoteAgentTests(unittest.TestCase):
@@ -58,8 +58,8 @@ class RemoteAgentTests(unittest.TestCase):
         self.locals[name] = AgentClient(f'http://127.0.0.1:{local.server_port}', 'local-' + name + '-token-value')
         if response_gate is not None:
             # Delay acknowledgements at an actual HTTP boundary, leaving Edge execution real.
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
             from http.client import HTTPConnection
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
             port = local.server_port
             class DelayedResponse(BaseHTTPRequestHandler):
                 def log_message(self, *_):
@@ -218,9 +218,9 @@ class RemoteAgentTests(unittest.TestCase):
         gate = Event()
         self.connect('a', response_gate=gate)
         self.connect('b')
-        arguments = {'program': 'python', 'argv': ['-c',
+        arguments = {'program': 'python', 'argv': ['-c', (
             'from pathlib import Path; p=Path("executions.txt"); '
-            'p.open("a").write("started\\n"); print("one process")']}
+            'p.open("a").write("started\\n"); print("one process")')]}
         uncertain = self.client.request('same-mutation', 'a', 'demo', 'run_command', arguments)
         self.assertEqual(uncertain['error']['code'], 'delivery_unknown')
         gate.set()

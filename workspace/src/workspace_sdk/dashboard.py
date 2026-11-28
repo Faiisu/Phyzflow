@@ -89,7 +89,7 @@ DASHBOARD_THEME_REFERENCE = {
         "workflow_files": {
             "declaration": {"versions": [1], "file_root": "reports"},
             "method": "readFile(path)",
-            "mcp": ["read_workspace_text", "begin_workspace_transfer"],
+            "mcp": ["read_workspace_text", "begin_workspace_file_download"],
         },
         "snapshot_fields": [
             "scope",

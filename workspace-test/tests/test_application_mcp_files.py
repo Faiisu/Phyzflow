@@ -1,29 +1,32 @@
+import json
+import os
+import subprocess
+import sys
+import unittest
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from hashlib import file_digest, sha256
 from io import BytesIO
-import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 from uuid import uuid4
 from zipfile import ZipFile
 
-from anyio.from_thread import start_blocking_portal
 import httpx2
-from playwright.sync_api import expect
-
+from anyio.from_thread import start_blocking_portal
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_mcp import mcp_client, output
-from workspace_sdk.application_mcp.access import McpTokens, WorkspaceAccess, request_identity
+from workspace_sdk.application_mcp.access import (
+    McpTokens,
+    WorkspaceAccess,
+    request_identity,
+)
 from workspace_sdk.application_mcp.file_transfers import CHUNK_BYTES, FileTransfers
 
 
@@ -86,7 +89,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
             upload = subprocess.run([
                 sys.executable, "-m", "workspace_sdk.application_mcp.file_client",
                 "--url", url, "--workspace-id", workspace_id, "upload", "--uploads", str(source), path,
-            ], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, timeout=25)
+            ], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, timeout=25, check=False)
             self.assertEqual(upload.returncode, 0, upload.stderr)
             self.assertEqual(json.loads(upload.stdout)["sha256"], digest)
             saved = root / ".workspace/files" / path
@@ -120,7 +123,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                 "name": "competing.bin", "mimeType": "application/octet-stream", "buffer": b"browser upload",
             })
             expect(dialog.get_by_text("competing.bin", exact=True)).to_be_visible()
-            self.failed(call, "finish_workspace_transfer", "already exists", transfer_id=competing)
+            self.failed(call, "finish_workspace_upload", "already exists", transfer_id=competing)
             self.assertEqual((saved.parent / "competing.bin").read_bytes(), b"browser upload")
             self.ok(call, "cancel_workspace_transfer", transfer_id=competing)
 
@@ -133,7 +136,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                               size=0, sha256=sha256(b"").hexdigest())["transfer_id"]
             revoke()
             self.failed(call, "list_workspace_uploads", "Workspace access denied", **granted)
-            self.failed(call, "finish_workspace_transfer", "Workspace access denied", transfer_id=pending)
+            self.failed(call, "finish_workspace_upload", "Workspace access denied", transfer_id=pending)
             self.assertFalse((saved.parent / "pending.bin").exists())
 
     def test_installed_file_operations_and_sheet_leases(self):
@@ -217,52 +220,54 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                 zip_file.writestr("data.bin", b"\xff\x00" * (CHUNK_BYTES // 2) + b"tail")
             expected = archive.getvalue()
             digest = sha256(expected).hexdigest()
-            params = {"workspace_id": workspace_id, "path": "assets/binary.zip", "direction": "upload",
+            params = {"workspace_id": workspace_id, "path": "assets/binary.zip",
                       "revision": "missing", "size": len(expected), "sha256": digest}
-            self.failed(call, "begin_workspace_transfer", "insufficient", **{**params, "size": 10**18})
-            identity = self.ok(call, "begin_workspace_transfer", **params)["transfer_id"]
+            self.failed(call, "begin_workspace_file_upload", "insufficient", **{**params, "size": 10**18})
+            identity = self.ok(call, "begin_workspace_file_upload", **params)["transfer_id"]
             chunk = b64encode(expected[:CHUNK_BYTES]).decode()
             self.failed(call, "write_workspace_chunk", "Expected byte offset", transfer_id=identity, offset=1, data=chunk)
             self.failed(call, "write_workspace_chunk", "Base64", transfer_id=identity, offset=0, data="!!!")
             first = self.ok(call, "write_workspace_chunk", transfer_id=identity, offset=0, data=chunk)
             self.assertEqual(first, self.ok(call, "write_workspace_chunk", transfer_id=identity, offset=0, data=chunk))
             self.assertFalse((root / params["path"]).exists())
-            self.failed(call, "finish_workspace_transfer", "incomplete", transfer_id=identity)
+            self.failed(call, "finish_workspace_download", "finish_workspace_upload", transfer_id=identity)
+            self.failed(call, "finish_workspace_upload", "incomplete", transfer_id=identity)
             self.ok(call, "write_workspace_chunk", transfer_id=identity, offset=CHUNK_BYTES,
                     data=b64encode(expected[CHUNK_BYTES:]).decode())
-            finished = self.ok(call, "finish_workspace_transfer", transfer_id=identity)
-            self.assertEqual(finished, self.ok(call, "finish_workspace_transfer", transfer_id=identity))
+            finished = self.ok(call, "finish_workspace_upload", transfer_id=identity)
+            self.assertEqual(finished, self.ok(call, "finish_workspace_upload", transfer_id=identity))
             self.assertEqual(finished["sha256"], digest)
             self.assertEqual((root / params["path"]).read_bytes(), expected)
 
-            wrong = self.ok(call, "begin_workspace_transfer", **{
+            wrong = self.ok(call, "begin_workspace_file_upload", **{
                 **params, "sha256": "0" * 64, "revision": finished["revision"], "size": 1,
             })["transfer_id"]
             self.ok(call, "write_workspace_chunk", transfer_id=wrong, offset=0, data="YQ==")
-            self.failed(call, "finish_workspace_transfer", "SHA-256 does not match", transfer_id=wrong)
+            self.failed(call, "finish_workspace_upload", "SHA-256 does not match", transfer_id=wrong)
             self.assertEqual((root / params["path"]).read_bytes(), expected)
 
             path = "a-new-target"
             pending_data = b"new upload"
-            pending = self.ok(call, "begin_workspace_transfer", **{
+            pending = self.ok(call, "begin_workspace_file_upload", **{
                 **params, "path": path, "sha256": sha256(pending_data).hexdigest(), "size": len(pending_data),
             })["transfer_id"]
             self.ok(call, "write_workspace_chunk", transfer_id=pending, offset=0,
                     data=b64encode(pending_data).decode())
             (root / path).write_text("created while uploading")
-            self.failed(call, "finish_workspace_transfer", "revision changed", transfer_id=pending)
+            self.failed(call, "finish_workspace_upload", "revision changed", transfer_id=pending)
             self.assertEqual((root / path).read_text(), "created while uploading")
             self.ok(call, "cancel_workspace_transfer", transfer_id=pending)
 
-            read_args = {"workspace_id": workspace_id, "path": params["path"], "direction": "download"}
-            download = self.ok(call, "begin_workspace_transfer", **read_args)["transfer_id"]
+            read_args = {"workspace_id": workspace_id, "path": params["path"]}
+            download = self.ok(call, "begin_workspace_file_download", **read_args)["transfer_id"]
             first = self.ok(call, "read_workspace_chunk", transfer_id=download, offset=0)
             self.assertEqual(first, self.ok(call, "read_workspace_chunk", transfer_id=download, offset=0))
             last = self.ok(call, "read_workspace_chunk", transfer_id=download, offset=first["next_offset"])
             self.assertEqual(b64decode(first["data"]) + b64decode(last["data"]), expected)
-            self.assertEqual(self.ok(call, "finish_workspace_transfer", transfer_id=download)["sha256"], digest)
+            self.failed(call, "finish_workspace_upload", "finish_workspace_download", transfer_id=download)
+            self.assertEqual(self.ok(call, "finish_workspace_download", transfer_id=download)["sha256"], digest)
 
-            download = self.ok(call, "begin_workspace_transfer", **read_args)["transfer_id"]
+            download = self.ok(call, "begin_workspace_file_download", **read_args)["transfer_id"]
             with (root / params["path"]).open("ab") as stream:
                 stream.write(b"new")
             self.failed(call, "read_workspace_chunk", "changed during download", transfer_id=download, offset=0)
@@ -277,14 +282,14 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                 source.write_bytes(content)
                 for args in (["upload", str(source), name], ["download", name, str(destination)]):
                     result = subprocess.run([*command, *args], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token},
-                                            capture_output=True, text=True)
+                                            capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(json.loads(result.stdout)["sha256"], sha256(content).hexdigest())
                 self.assertEqual(destination.read_bytes(), content)
 
-            pending = self.ok(call, "begin_workspace_transfer", **{**params, "path": "pending"})["transfer_id"]
+            pending = self.ok(call, "begin_workspace_file_upload", **{**params, "path": "pending"})["transfer_id"]
             self.assertTrue(self.ok(call, "cancel_workspace_transfer", transfer_id=pending)["cancelled"])
-            pending = self.ok(call, "begin_workspace_transfer", **{**params, "path": "pending"})["transfer_id"]
+            pending = self.ok(call, "begin_workspace_file_upload", **{**params, "path": "pending"})["transfer_id"]
             revoke()
             self.failed(call, "write_workspace_chunk", "Workspace access denied", transfer_id=pending,
                         offset=0, data="YQ==")
@@ -346,7 +351,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                     start = monotonic()
                     timer = ["/usr/bin/time", "-l"] if sys.platform == "darwin" else []
                     result = subprocess.run([*timer, *command, *arguments],
-                                            env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True)
+                                            env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     print(f"{arguments[0]} elapsed: {monotonic() - start:.2f}s", flush=True)
                     if timer:
