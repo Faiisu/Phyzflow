@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, Popen
 from tempfile import TemporaryDirectory
+from typing import Any
 
 from ..agent_supervisor import spawn_supervised
 from ..sheet_locks import SheetLockedError
@@ -14,8 +15,16 @@ from .access import WorkspaceAccess, resolve_workspace_sheet
 def register_validation_tools(server, access: WorkspaceAccess) -> None:
     from mcp.server.mcpserver.exceptions import ToolError
 
-    @server.tool(description="Validate a sheet flow inside the Workspace Python environment.")
-    async def validate_flow(workspace_id: str, sheet: str = "Main", session_id: str | None = None) -> dict:
+    from .tool_contract import OptionalEditSession, SheetName, WorkspaceId, read_tool
+
+    @server.tool(**read_tool(
+        "Validate flow",
+        "Load the sheet's saved flow.py in the Workspace .venv without running any step. Returns valid, the "
+        "declared step IDs and loop edges, or the failing stage and error.",
+    ))
+    async def validate_flow(
+        workspace_id: WorkspaceId, sheet: SheetName = "Main", session_id: OptionalEditSession = None,
+    ) -> dict[str, Any]:
         from anyio import CancelScope, get_cancelled_exc_class, to_thread
 
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)

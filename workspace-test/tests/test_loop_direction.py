@@ -444,7 +444,7 @@ class LoopMcpTests(unittest.TestCase):
             with application(state) as url:
                 allowed_id, denied_id, token = create_two_workspaces(page, url, state, parent)
                 with portal.wrap_async_context_manager(mcp_client(url, token)) as client:
-                    opened = output(call_tool(portal, client, "open_sheet", workspace_id=allowed_id, sheet="Main", mode="edit"))
+                    opened = output(call_tool(portal, client, "open_sheet", workspace_id=allowed_id, sheet="Main"))
                     session_id = opened["session_id"]
                     flow_rev = output(call_tool(portal, client, "read_file", workspace_id=allowed_id, path="flow.py", sheet="Main"))["revision"]
                     write_res = call_tool(

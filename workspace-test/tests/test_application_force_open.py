@@ -82,7 +82,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a,
                     portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b,
                 ):
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_a = output(opened)["session_id"]
 
@@ -102,7 +102,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                         beat_data = output(beat)
                         self.assertTrue(beat_data["locked"])
                         self.assertFalse(beat_data["stale"])
-                        denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                        denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main")
                         self.assertTrue(denied_b.is_error)
 
                     expect(page.locator("#edit-lock-message")).not_to_contain_text("Possibly stale")
@@ -111,13 +111,13 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(page.locator("#edit-lock-message")).to_contain_text("Possibly stale")
                     expect(page.locator("#edit-lock-message")).to_contain_text("Client A")
 
-                    readonly = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="read"))
+                    readonly = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Main"))
                     self.assertTrue(readonly["edit_lock"]["stale"])
                     self.assertFalse(readonly["edit_lock"]["disconnected"])
                     self.assertTrue(readonly["read_only"])
 
                     second_root = root / "flows" / "Second"
-                    opened_second = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Second", mode="edit")
+                    opened_second = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Second")
                     self.assertFalse(opened_second.is_error, opened_second.content[0].text)
                     session_second = output(opened_second)["session_id"]
                     second_rev = output(call(portal, client_a, "read_file", workspace_id=workspace_id, path="flow.py", sheet="Second"))["revision"]
@@ -154,7 +154,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(page.locator("#edit-lock-message")).to_contain_text("Disconnected")
                     expect(page.locator("#edit-lock-message")).to_contain_text("Client A")
 
-                    second_read = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Second", mode="read"))
+                    second_read = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Second"))
                     self.assertTrue(second_read["edit_lock"]["stale"])
                     self.assertTrue(second_read["edit_lock"]["disconnected"])
 
@@ -172,7 +172,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a,
                     portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b,
                 ):
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     heartbeat_iso = output(opened)["edit_lock"]["last_heartbeat"]
                     expected_heartbeat = heartbeat_iso.split(".", 1)[0].replace("T", " ").removesuffix("+00:00") + " UTC"
@@ -197,7 +197,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(confirm_dialog).to_be_hidden()
                     expect(page.locator("#edit-lock-message")).to_contain_text("Possibly stale")
 
-                    denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    denied_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertTrue(denied_b.is_error)
 
                     page.get_by_role("button", name="Edit flow.py").click()
@@ -223,7 +223,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(node_dialog.get_by_role("textbox", name="Source code")).not_to_be_editable()
                     node_dialog.get_by_role("button", name="Close node files").click()
 
-                    still_locked = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="read"))
+                    still_locked = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Main"))
                     self.assertTrue(still_locked["read_only"])
                     self.assertTrue(still_locked["edit_lock"]["locked"])
 
@@ -238,7 +238,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                 token_b = issue_token(page, url, "Client B", [workspace_id])
 
                 with portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a:
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_a = output(opened)["session_id"]
 
@@ -389,7 +389,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     self.assertEqual((root / "nodes/start/entrypoint.py").read_text(encoding="utf-8"), saved_node)
 
                 with portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b:
-                    opened_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened_b = call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened_b.is_error, opened_b.content[0].text)
                     self.assertFalse(call(
                         portal, client_b, "close_sheet",
@@ -410,7 +410,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     portal.wrap_async_context_manager(mcp_client(url, token_a)) as client_a,
                     portal.wrap_async_context_manager(mcp_client(url, token_b)) as client_b,
                 ):
-                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="edit")
+                    opened = call(portal, client_a, "open_sheet", workspace_id=workspace_id, sheet="Main")
                     self.assertFalse(opened.is_error, opened.content[0].text)
                     session_a = output(opened)["session_id"]
 
@@ -435,7 +435,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
                         sheet="Main", session_id=session_a,
                     )
                     self.assertFalse(wrote_node.is_error, wrote_node.content[0].text)
-                    after_write_status = output(call(portal, client_b, "open_sheet", workspace_id=workspace_id, sheet="Main", mode="read"))
+                    after_write_status = output(call(portal, client_b, "inspect_sheet", workspace_id=workspace_id, sheet="Main"))
                     self.assertFalse(after_write_status["edit_lock"]["has_unsaved_draft"])
 
                     flow_read = output(call(portal, client_a, "read_file", workspace_id=workspace_id, path="flow.py", sheet="Main"))
@@ -479,7 +479,7 @@ class ApplicationForceOpenTests(unittest.TestCase):
 
                     denied_b_during_web_edit = call(
                         portal, client_b, "open_sheet",
-                        workspace_id=workspace_id, sheet="Main", mode="edit",
+                        workspace_id=workspace_id, sheet="Main",
                     )
                     self.assertTrue(denied_b_during_web_edit.is_error)
                     self.assertIn("Web", denied_b_during_web_edit.content[0].text)

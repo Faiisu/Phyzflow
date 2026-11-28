@@ -39,13 +39,15 @@ Select **MCP access** on the landing page, name the client, and select the Works
 Authorized MCP clients have full flow-development parity inside their granted Workspaces across these tool categories:
 
 - **Workspace and sheet management:** `list_workspaces`, `inspect_workspace`, `create_sheet`, `rename_sheet`, and `delete_sheet`.
-- **Sheet editing sessions:** `open_sheet`, `heartbeat_sheet`, `stage_draft`, and `close_sheet`.
+- **Sheet editing sessions:** `inspect_sheet` (read-only status and lock), `open_sheet` (acquires the edit lock), `heartbeat_sheet`, `stage_draft`, and `close_sheet`.
 - **Files, source, and dashboards:** `list_files`, `read_file`, `search_code`, `write_file`, `apply_patch`, `inspect_dashboards`, `add_dashboard_placement`, and `remove_dashboard_placement`.
 - **Node settings:** `read_node_settings` and `update_node_setting`.
 - **Validation and execution:** `validate_flow`, `run_flow`, `run_all_flows`, and `stop_flow`.
 - **Inspection, logs, and dependencies:** `inspect_execution`, `read_console_logs`, `configure_console_logs`, and `install_dependencies` (targeting the granted Workspace's `.venv` only).
 
 All MCP commands enforce live Workspace grants and keep application state, the Phyzflow source checkout, raw shell execution, and application updates or restarts outside the MCP boundary.
+
+Every tool declares a `title` and the `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` annotations, so MCP hosts can auto-approve reads and confirm destructive changes. Each tool either reads or changes state, never both. Results are JSON objects returned as `structuredContent` with a matching text block. Error messages name the tool that resolves the failure where one exists. See [MCP tool contract](../docs/mcp-tools.md) for the classification rules.
 
 ### Transfer and manage Workspace files
 
@@ -62,7 +64,7 @@ python -m workspace_sdk.application_mcp.file_client --url http://127.0.0.1:18080
 
 Upload is create-only by default. Use `--revision REVISION` to replace a known version. Use `--session SHEET_PATH=SESSION_ID` when the affected Sheet is locked. Downloads create a new local file and verify size and SHA-256 before publishing it.
 
-Clients using tools directly call `begin_workspace_transfer` with `workspace_id`, `path`, and `direction` (`upload` or `download`). Uploads also provide `revision`, `size`, and a lowercase hexadecimal `sha256`. Pass the returned `transfer_id` to `write_workspace_chunk` with `offset` and Base64 `data`, or to `read_workspace_chunk` with `offset` and an optional byte `count`. Continue at the returned `next_offset`. Retry the last chunk at the same offset after a lost response. Call `finish_workspace_transfer` once all bytes have been transferred, passing `session_ids` for locked upload targets. It returns the verified digest, byte size, and revision. Repeat finalization with the same transfer ID if its response was lost. Use `cancel_workspace_transfer` to discard a pending transfer.
+Clients using tools directly call `begin_workspace_file_upload` with `workspace_id`, `path`, `revision`, `size`, and a lowercase hexadecimal `sha256`, or `begin_workspace_file_download` with `workspace_id`, `path`, and an optional expected `revision`. Pass the returned `transfer_id` to `write_workspace_chunk` with `offset` and Base64 `data`, or to `read_workspace_chunk` with `offset` and an optional byte `count`. Continue at the returned `next_offset`. Retry the last chunk at the same offset after a lost response. Once all bytes have been transferred, call `finish_workspace_upload`, passing `session_ids` for locked upload targets, or `finish_workspace_download`. Both return the verified digest, byte size, and revision. Repeat finalization with the same transfer ID if its response was lost. Use `cancel_workspace_transfer` to discard a pending transfer.
 
 Each chunk carries up to 512 KiB of file bytes. The server stages the upload on the destination filesystem and reserves 256 MiB of free disk space. Available space and the filesystem determine the maximum file size. A 1 GiB file uses 2,048 chunk calls in each direction. A token can have one upload and one download active, with up to 32 active transfers per installation. Transfers expire after 15 minutes of inactivity. Restarting the server discards pending transfers. Each call checks the current Workspace grant and the server checks the destination revision again at upload commit.
 

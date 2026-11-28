@@ -2,6 +2,7 @@ from hashlib import sha256
 import os
 from pathlib import Path
 import stat
+from typing import Annotated, Any
 
 from ..node_sources import MAX_SOURCE_BYTES, SourceChanged, edit_source_file
 from ..sheet_locks import SheetLockedError
@@ -17,9 +18,31 @@ MAX_SEARCH_MATCHES = 100
 
 def register_source_tools(server, access: WorkspaceAccess) -> None:
     from mcp.server.mcpserver.exceptions import ToolError
+    from pydantic import Field
 
-    @server.tool(description="List immediate regular files and subdirectories inside a sheet directory.")
-    def list_files(workspace_id: str, path: str = ".", sheet: str = "Main") -> dict:
+    from .tool_contract import (
+        OptionalEditSession,
+        RequiredEditSession,
+        SheetName,
+        SheetPath,
+        SheetRevision,
+        WorkspaceId,
+        read_tool,
+        write_tool,
+    )
+
+    @server.tool(**read_tool(
+        "List sheet files",
+        f"List up to {MAX_ENTRIES} immediate files and subdirectories of a sheet directory, skipping hidden "
+        "entries, caches, and environments. Use list_workspace_files for paths outside a sheet or for dotfiles.",
+    ))
+    def list_files(
+        workspace_id: WorkspaceId,
+        path: Annotated[str, Field(
+            description="Directory relative to the sheet directory. '.' is the sheet root.",
+        )] = ".",
+        sheet: SheetName = "Main",
+    ) -> dict[str, Any]:
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         target, relative = resolve_sheet_file(
             root,
@@ -63,8 +86,12 @@ def register_source_tools(server, access: WorkspaceAccess) -> None:
             "truncated": truncated,
         }
 
-    @server.tool(description="Read a regular file inside a sheet directory, even when another editor holds the lock.")
-    def read_file(workspace_id: str, path: str, sheet: str = "Main") -> dict:
+    @server.tool(**read_tool(
+        "Read sheet file",
+        "Read a file in a sheet directory as UTF-8 text with the revision that write_file and apply_patch expect. "
+        "Works while another editor holds the lock. Files over 128 KiB return truncated content and no revision.",
+    ))
+    def read_file(workspace_id: WorkspaceId, path: SheetPath, sheet: SheetName = "Main") -> dict[str, Any]:
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         target, relative = resolve_sheet_file(
             root,
@@ -93,8 +120,16 @@ def register_source_tools(server, access: WorkspaceAccess) -> None:
             "truncated": truncated,
         }
 
-    @server.tool(description="Search editable source and dashboard files in a sheet for a literal text query.")
-    def search_code(workspace_id: str, query: str, sheet: str = "Main") -> dict:
+    @server.tool(**read_tool(
+        "Search sheet code",
+        f"Find lines containing a literal, case-sensitive string in a sheet's source and dashboard files. "
+        f"Returns up to {MAX_SEARCH_MATCHES} matches with path and line number; truncated is true when more exist.",
+    ))
+    def search_code(
+        workspace_id: WorkspaceId,
+        query: Annotated[str, Field(description="Literal text to find, 1 to 512 characters. Not a regular expression.")],
+        sheet: SheetName = "Main",
+    ) -> dict[str, Any]:
         if not isinstance(query, str) or not 1 <= len(query) <= 512:
             raise ToolError("query must contain 1 to 512 characters.")
         _, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
@@ -192,18 +227,24 @@ def register_source_tools(server, access: WorkspaceAccess) -> None:
                 principal, session_id, apply_edit, path=relative.as_posix(),
             )
         except SourceChanged:
-            raise ToolError("Source changed. Read the latest revision before editing.") from None
+            raise ToolError("Source changed. Call read_file for the latest revision, then retry the edit.") from None
         except (SheetLockedError, ValueError, UnicodeError, SyntaxError, OSError) as error:
             raise ToolError(str(error)) from None
 
-    @server.tool(description="Stage an unsaved draft in an active sheet editing session without modifying disk.")
+    @server.tool(**write_tool(
+        "Stage draft",
+        "Record unsaved draft text for a file in the active editing session so a human recovering the session "
+        "can review it. Does not change the file on disk; use write_file to save.",
+        destructive=False,
+        idempotent=True,
+    ))
     def stage_draft(
-        workspace_id: str,
-        path: str,
-        source: str,
-        sheet: str = "Main",
-        session_id: str = "",
-    ) -> dict:
+        workspace_id: WorkspaceId,
+        path: SheetPath,
+        source: Annotated[str, Field(description="Complete draft text of the file, up to 128 KiB.")],
+        sheet: SheetName = "Main",
+        session_id: RequiredEditSession = "",
+    ) -> dict[str, Any]:
         if not isinstance(source, str):
             raise ToolError("source must be text.")
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
@@ -229,29 +270,39 @@ def register_source_tools(server, access: WorkspaceAccess) -> None:
             "edit_lock": lock_status,
         }
 
-    @server.tool(description="Create (revision='missing') or replace a file in a sheet while holding its edit lock.")
+    @server.tool(**write_tool(
+        "Write sheet file",
+        "Create or fully replace a source or dashboard file in a sheet. Fails when the file changed since the given "
+        "revision. Returns the new revision. Use apply_patch to change one passage of an existing file.",
+        destructive=True,
+    ))
     def write_file(
-        workspace_id: str,
-        path: str,
-        revision: str,
-        source: str,
-        sheet: str = "Main",
-        session_id: str | None = None,
-    ) -> dict:
+        workspace_id: WorkspaceId,
+        path: SheetPath,
+        revision: SheetRevision,
+        source: Annotated[str, Field(description="Complete new file text, up to 128 KiB.")],
+        sheet: SheetName = "Main",
+        session_id: OptionalEditSession = None,
+    ) -> dict[str, Any]:
         if not isinstance(source, str):
             raise ToolError("source must be text.")
         return perform_sheet_edit(workspace_id, sheet, path, revision, session_id, lambda _before, _exists: source)
 
-    @server.tool(description="Replace one exact occurrence in an existing sheet file while holding its edit lock.")
+    @server.tool(**write_tool(
+        "Patch sheet file",
+        "Replace the single exact occurrence of old_text in an existing sheet file. Fails when old_text matches "
+        "zero or several places, or when the file changed since the given revision. Returns the new revision.",
+        destructive=True,
+    ))
     def apply_patch(
-        workspace_id: str,
-        path: str,
-        revision: str,
-        old_text: str,
-        new_text: str,
-        sheet: str = "Main",
-        session_id: str | None = None,
-    ) -> dict:
+        workspace_id: WorkspaceId,
+        path: SheetPath,
+        revision: Annotated[str, Field(description="Revision returned by read_file for the current file.")],
+        old_text: Annotated[str, Field(description="Exact existing text to replace. It must occur exactly once.")],
+        new_text: Annotated[str, Field(description="Replacement text. May be empty to delete old_text.")],
+        sheet: SheetName = "Main",
+        session_id: OptionalEditSession = None,
+    ) -> dict[str, Any]:
         if not isinstance(old_text, str) or not old_text or not isinstance(new_text, str):
             raise ToolError("A patch requires nonempty old_text and new_text.")
 

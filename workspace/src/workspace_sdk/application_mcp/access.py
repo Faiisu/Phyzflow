@@ -121,7 +121,7 @@ class WorkspaceAccess:
             root = self.registry.get(workspace_id)
             if root is not None and available_root(root):
                 return root
-        raise ToolError("Workspace access denied.")
+        raise ToolError("Workspace access denied. Call list_workspaces for the Workspace IDs granted to this token.")
 
     def sheet_resolver(self, workspace_id: str):
         from mcp.server.mcpserver.exceptions import ToolError
@@ -158,7 +158,7 @@ def resolve_workspace_sheet(access: WorkspaceAccess, workspace_id: str, sheet: s
     ensure_not_protected(root, access.protected_folders)
     match = find_sheet(root, sheet)
     if match is None:
-        raise ToolError(f"Unknown sheet {sheet!r}.")
+        raise ToolError(f"Unknown sheet {sheet!r}. Call inspect_workspace to list this Workspace's sheets.")
     ensure_not_protected(match, access.protected_folders)
     try:
         resolver = access.sheet_resolver(workspace_id)
