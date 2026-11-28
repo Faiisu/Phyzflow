@@ -1,12 +1,12 @@
+import json
+import os
+import re
 from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
 from contextlib import suppress
 from dataclasses import dataclass, field
 from hashlib import sha256
-import json
-import os
 from pathlib import Path
-import re
 from shutil import disk_usage
 from stat import S_IMODE
 from threading import Event, RLock, Thread
@@ -17,8 +17,17 @@ from uuid import uuid4
 from ..workspace_environment import is_protected_path
 from .access import ensure_not_protected
 from .file_paths import (
-    STAGING_PREFIX, atomic_move, checked_path, file_metadata, mutate_files, open_file,
-    path_info, relative_path, require_file, revision, verify_revision,
+    STAGING_PREFIX,
+    atomic_move,
+    checked_path,
+    file_metadata,
+    mutate_files,
+    open_file,
+    path_info,
+    relative_path,
+    require_file,
+    revision,
+    verify_revision,
 )
 from .upload_paths import UPLOAD_DIRECTORY, file_folder, file_name
 

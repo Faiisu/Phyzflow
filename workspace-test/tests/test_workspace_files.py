@@ -1,15 +1,14 @@
-from http.client import HTTPResponse
-from pathlib import Path
 import socket
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from http.client import HTTPResponse
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
-from playwright.sync_api import expect
-
 from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_lifecycle import create_workspace
 

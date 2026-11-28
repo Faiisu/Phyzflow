@@ -1,15 +1,18 @@
-from hashlib import sha256
 import os
-from pathlib import Path
 import stat
+from hashlib import sha256
+from pathlib import Path
 from typing import Annotated, Any
 
 from ..node_sources import MAX_SOURCE_BYTES, SourceChanged, edit_source_file
 from ..sheet_locks import SheetLockedError
 from ..workspace_environment import is_protected_path
-
-from .access import EDITABLE_EXTENSIONS, WorkspaceAccess, resolve_sheet_file, resolve_workspace_sheet
-
+from .access import (
+    EDITABLE_EXTENSIONS,
+    WorkspaceAccess,
+    resolve_sheet_file,
+    resolve_workspace_sheet,
+)
 
 MAX_ENTRIES = 500
 MAX_SCAN_FILES = 2000

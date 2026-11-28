@@ -1,11 +1,10 @@
 import json
-from pathlib import Path
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import tomllib
 import unittest
-
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 FLOW = """\
 from pathlib import Path
@@ -47,7 +46,7 @@ class ValidationTests(unittest.TestCase):
         args = [str(executable), command, *options]
         if command == "run":
             args.append('{"text":"hello"}')
-        return subprocess.run(args, cwd=root, capture_output=True, text=True)
+        return subprocess.run(args, cwd=root, capture_output=True, text=True, check=False)
 
     def test_workspace_format_is_checked_before_flow_import(self):
         for declaration, expected in (

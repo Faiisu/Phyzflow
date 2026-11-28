@@ -4,10 +4,8 @@ from threading import Event
 
 from ..dashboard import DASHBOARD_AUTHORING_GUIDANCE, DASHBOARD_RESIZE_GUIDANCE
 from ..mcp_flow_guidance import FLOW_AUTHORING_GUIDANCE
-
 from .access import WorkspaceAccess, request_identity
 from .tools import register_workspace_tools
-
 
 MCP_BODY_LIMIT = 1024 * 1024
 MCP_REQUEST_HEADERS = {"accept", "content-type", "mcp-protocol-version", "mcp-session-id"}

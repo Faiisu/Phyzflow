@@ -1,17 +1,16 @@
 import json
 import os
-from pathlib import Path
 import re
-from tempfile import TemporaryDirectory
-from threading import Thread
-from time import monotonic, sleep
 import unittest
+from concurrent.futures import ThreadPoolExecutor, wait
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import monotonic, sleep
 
 import anyio
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_mcp import call, mcp_client, output
 
@@ -486,15 +485,11 @@ class ApplicationEditLocksTests(unittest.TestCase):
                     )
                     rev = output(written)["revision"]
 
-                    outcomes = []
-                    def run_blocking_validate():
-                        try:
-                            outcomes.append(call(portal, client_b, "validate_flow", workspace_id=workspace_id, sheet="Main", session_id=session_b))
-                        except BaseException as exc:
-                            outcomes.append(exc)
-
-                    worker = Thread(target=run_blocking_validate, daemon=True)
-                    worker.start()
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    blocking_validation = executor.submit(
+                        call, portal, client_b, "validate_flow",
+                        workspace_id=workspace_id, sheet="Main", session_id=session_b,
+                    )
                     wait_for(lambda: (root / "hang-started").is_file() and (root / "hang-pid").is_file())
                     hang_pid = int((root / "hang-pid").read_text(encoding="utf-8"))
                     self.assertFalse(process_exited(hang_pid))
@@ -502,8 +497,9 @@ class ApplicationEditLocksTests(unittest.TestCase):
                     closed_cancel = call(portal, client_b, "close_sheet", workspace_id=workspace_id, sheet="Main", session_id=session_b, outcome="cancelled")
                     self.assertFalse(closed_cancel.is_error, closed_cancel.content[0].text)
                     self.assertTrue(process_exited(hang_pid))
-                    worker.join(timeout=5)
-                    self.assertFalse(worker.is_alive())
+                    wait([blocking_validation], timeout=5)
+                    self.assertTrue(blocking_validation.done())
+                    executor.shutdown(wait=False)
 
                     (root / "hang-started").unlink()
                     (root / "hang-pid").unlink()
@@ -513,17 +509,19 @@ class ApplicationEditLocksTests(unittest.TestCase):
                     session_abort = output(opened_abort)["session_id"]
 
                     async def abort_on_spawn():
-                        async with mcp_client(url, token_a) as async_client:
-                            async with anyio.create_task_group() as tg:
-                                async def invoke():
-                                    await async_client.call_tool(
-                                        "validate_flow",
-                                        {"workspace_id": workspace_id, "sheet": "Main", "session_id": session_abort},
-                                    )
-                                tg.start_soon(invoke)
-                                while not ((root / "hang-started").is_file() and (root / "hang-pid").is_file()):
-                                    await anyio.sleep(0.02)
-                                tg.cancel_scope.cancel()
+                        async with (
+                            mcp_client(url, token_a) as async_client,
+                            anyio.create_task_group() as tg,
+                        ):
+                            async def invoke():
+                                await async_client.call_tool(
+                                    "validate_flow",
+                                    {"workspace_id": workspace_id, "sheet": "Main", "session_id": session_abort},
+                                )
+                            tg.start_soon(invoke)
+                            while not ((root / "hang-started").is_file() and (root / "hang-pid").is_file()):
+                                await anyio.sleep(0.02)
+                            tg.cancel_scope.cancel()
 
                     portal.call(abort_on_spawn)
                     abort_pid = int((root / "hang-pid").read_text(encoding="utf-8"))

@@ -3,7 +3,6 @@ from typing import cast
 from unittest.mock import patch
 
 import torch
-
 from workspace_sdk import Flow, Output, Step, record_metrics, run
 
 
@@ -84,7 +83,6 @@ class RunnerTests(unittest.TestCase):
 
         def inspect(received):
             self.assertEqual(received, "private payload")
-            return None
 
         flow = Flow(
             inputs=(),
@@ -130,7 +128,6 @@ class RunnerTests(unittest.TestCase):
         def inspect(received):
             self.assertIs(received["items"], items)
             self.assertEqual(items, [1, 2])
-            return None
 
         flow = Flow(
             inputs=(),

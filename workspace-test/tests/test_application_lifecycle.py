@@ -1,14 +1,13 @@
 import json
 import os
 import subprocess
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from workspace_sdk.sheets import create_sheet
 
@@ -260,7 +259,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 expect(page.get_by_role("tab", name="Right")).to_contain_text("Running")
                 for directory in (left, right):
                     units = directory / "units"
-                    wait_for(lambda: units.is_file() and units.stat().st_size >= 15)
+                    wait_for(lambda units=units: units.is_file() and units.stat().st_size >= 15)
                     self.assertEqual((directory / "python").read_text(), str(python))
                 pids = {directory.name: int((directory / "child-pid").read_text()) for directory in (left, right)}
 

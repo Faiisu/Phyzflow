@@ -1,19 +1,18 @@
-from contextlib import contextmanager
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from threading import Thread
 import json
 import os
-from queue import Empty, Queue
 import signal
-from stat import S_IMODE
 import subprocess
 import sys
 import unittest
-
-from playwright.sync_api import expect
+from contextlib import contextmanager
+from pathlib import Path
+from queue import Empty, Queue
+from stat import S_IMODE
+from tempfile import TemporaryDirectory
+from threading import Thread
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 
 
 def read_application_line(stdout) -> str:
@@ -85,7 +84,7 @@ class ApplicationTests(unittest.TestCase):
             cli = Path(sys.executable).with_name("workspace.exe")
             result = subprocess.run(
                 [cli, "app", "--state-dir", state, "--port", "0"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, check=False,
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn("Phyzflow requires private access", result.stderr)
@@ -104,7 +103,7 @@ class ApplicationTests(unittest.TestCase):
             cli = Path(sys.executable).with_name("workspace.exe")
             result = subprocess.run(
                 [cli, "app", "--state-dir", state, "--port", "0"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, check=False,
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn(f"Phyzflow requires private access to {parent}", result.stderr)

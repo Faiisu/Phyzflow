@@ -1,9 +1,9 @@
+import sys
+import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
-import sys
-import unittest
 
 from workspace_sdk.agent import AgentClient, create_agent_server
 
@@ -31,7 +31,7 @@ class AgentInspectionTests(unittest.TestCase):
                     thread.join()
 
     def test_client_inspects_project_and_reads_revision(self):
-        with self.agent() as (client, project):
+        with self.agent() as (client, _project):
             result = client.request('inspect-1', 'demo', 'inspect_project')
             self.assertTrue(result['ok'])
             self.assertEqual(result['request_id'], 'inspect-1')

@@ -1,19 +1,18 @@
-from importlib.metadata import version
 import os
+import subprocess
+import unittest
+from importlib.metadata import version
 from pathlib import Path
 from shutil import copytree, ignore_patterns
-import subprocess
 from tempfile import TemporaryDirectory
-import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from playwright.sync_api import expect
-
+import workspace_sdk
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, project_python, sign_in
 from test_application_add_workspace import add_workspace, run_sheet, write_flow
-import workspace_sdk
 
 
 def application_copy(parent):

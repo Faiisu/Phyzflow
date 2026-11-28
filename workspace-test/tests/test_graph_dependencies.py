@@ -1,11 +1,9 @@
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page, local_ui
-
+from playwright.sync_api import expect
 
 TELEMETRY = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Telemetry Control Room"
 

@@ -1,11 +1,11 @@
 import argparse
+import json
+import os
+import sys
 from base64 import b64decode, b64encode
 from contextlib import suppress
 from hashlib import file_digest, sha256
-import json
-import os
 from pathlib import Path
-import sys
 from tempfile import NamedTemporaryFile
 
 import anyio

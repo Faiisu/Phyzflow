@@ -1,13 +1,12 @@
 import json
-from pathlib import Path
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 
 from flow import flow
 from ticket_demo.entrypoint import prepare
 from workspace_sdk import run
-
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -30,16 +29,16 @@ class SampleTests(unittest.TestCase):
         self.assertTrue(all(event["time"] and event["file"] and event["line"] for event in steps))
 
         cli = Path(sys.executable).with_name("workspace")
-        check = subprocess.run([cli, "check"], cwd=PROJECT, capture_output=True, text=True)
+        check = subprocess.run([cli, "check"], cwd=PROJECT, capture_output=True, text=True, check=False)
         self.assertEqual(check.returncode, 0, check.stderr)
         success = subprocess.run(
-            [cli, "run", json.dumps(sample["input"])], cwd=PROJECT, capture_output=True, text=True,
+            [cli, "run", json.dumps(sample["input"])], cwd=PROJECT, capture_output=True, text=True, check=False,
         )
         self.assertEqual(success.returncode, 0, success.stderr)
         self.assertEqual(json.loads(success.stdout), sample["output"])
 
         failure = subprocess.run(
-            [cli, "run", json.dumps(sample["failure_input"])], cwd=PROJECT, capture_output=True, text=True,
+            [cli, "run", json.dumps(sample["failure_input"])], cwd=PROJECT, capture_output=True, text=True, check=False,
         )
         self.assertEqual(failure.returncode, 1)
         self.assertIn("Predict: failed", failure.stderr)

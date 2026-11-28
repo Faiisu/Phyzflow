@@ -7,7 +7,7 @@ class AgentEditingTests(unittest.TestCase):
     agent = test_agent.AgentInspectionTests.agent
 
     def test_create_and_patch_node_with_revisions_and_diff(self):
-        with self.agent() as (client, project):
+        with self.agent() as (client, _project):
             created = client.request('create', 'demo', 'write_file', {
                 'path': 'nodes/example/entrypoint.py', 'revision': 'missing',
                 'source': 'def example(): return 1\n',

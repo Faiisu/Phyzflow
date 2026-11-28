@@ -1,12 +1,11 @@
 import json
-from pathlib import Path
 import re
-from tempfile import TemporaryDirectory
 import unittest
-
-from playwright.sync_api import expect
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
 
 
 class DashboardTests(unittest.TestCase):

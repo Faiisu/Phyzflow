@@ -1,15 +1,12 @@
-import json
 import os
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from time import monotonic, sleep
-import unittest
 from zipfile import ZipFile
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_edit_locks import issue_token, wait_for
 from test_application_mcp import mcp_client, output
@@ -452,10 +449,12 @@ class ApplicationMcpCommandsTests(unittest.TestCase):
                         ),
                         (
                             "dashboards/workflow/dashboard.js",
-                            'const out = document.querySelector("#status-text");\n'
-                            'workspaceDashboard.subscribe(({ run }) => {\n'
-                            '  out.value = run?.status ?? "idle";\n'
-                            '});\n',
+                            (
+                                'const out = document.querySelector("#status-text");\n'
+                                'workspaceDashboard.subscribe(({ run }) => {\n'
+                                '  out.value = run?.status ?? "idle";\n'
+                                '});\n'
+                            ),
                         ),
                     ):
                         dash_write = call_tool(

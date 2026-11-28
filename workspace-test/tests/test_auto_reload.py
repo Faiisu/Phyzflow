@@ -1,12 +1,10 @@
 import json
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page, local_ui, show_panel
-
+from playwright.sync_api import expect
 
 FLOW = """\
 from workspace_sdk import Flow, Output, Step

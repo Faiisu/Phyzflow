@@ -1,15 +1,13 @@
+import unittest
 from base64 import b64decode
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application
 from test_application_lifecycle import create_workspace, wait_for
 from workspace_sdk.sheets import create_sheet
-
 
 CAMERA_FLOW = '''from pathlib import Path
 from time import sleep

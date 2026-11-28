@@ -5,8 +5,20 @@ from typing import Annotated, Any
 from ..node_sources import MAX_SOURCE_BYTES
 from .access import ensure_not_protected
 from .file_paths import (
-    STAGING_PREFIX, atomic_move, checked_path, file_errors, file_metadata, is_entrypoint,
-    mutate_files, open_file, relative_path, require_file, revision as file_revision, verify_revision,
+    STAGING_PREFIX,
+    atomic_move,
+    checked_path,
+    file_errors,
+    file_metadata,
+    is_entrypoint,
+    mutate_files,
+    open_file,
+    relative_path,
+    require_file,
+    verify_revision,
+)
+from .file_paths import (
+    revision as file_revision,
 )
 from .file_transfers import CHUNK_BYTES, FileTransfers, publish_file
 from .upload_paths import UPLOAD_DIRECTORY, file_folder, file_name, folder_entries

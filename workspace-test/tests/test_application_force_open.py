@@ -1,16 +1,15 @@
-from pathlib import Path
 import json
 import os
-from tempfile import TemporaryDirectory
-from threading import Thread
-from time import monotonic, sleep
 import unittest
+from concurrent.futures import ThreadPoolExecutor, wait
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import monotonic, sleep
 
 import anyio
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_mcp import call, mcp_client, output
 
@@ -135,17 +134,19 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     self.assertFalse(written.is_error, written.content[0].text)
 
                     async def drop_connection_during_validate():
-                        async with mcp_client(url, token_a) as transient_client:
-                            async with anyio.create_task_group() as tg:
-                                async def invoke():
-                                    await transient_client.call_tool(
-                                        "validate_flow",
-                                        {"workspace_id": workspace_id, "sheet": "Second", "session_id": session_second},
-                                    )
-                                tg.start_soon(invoke)
-                                while not (second_root / "disconnect-started").is_file():
-                                    await anyio.sleep(0.02)
-                                tg.cancel_scope.cancel()
+                        async with (
+                            mcp_client(url, token_a) as transient_client,
+                            anyio.create_task_group() as tg,
+                        ):
+                            async def invoke():
+                                await transient_client.call_tool(
+                                    "validate_flow",
+                                    {"workspace_id": workspace_id, "sheet": "Second", "session_id": session_second},
+                                )
+                            tg.start_soon(invoke)
+                            while not (second_root / "disconnect-started").is_file():
+                                await anyio.sleep(0.02)
+                            tg.cancel_scope.cancel()
 
                     portal.call(drop_connection_during_validate)
 
@@ -292,18 +293,11 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     self.assertTrue(output(staged)["edit_lock"]["has_unsaved_draft"])
                     self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
 
-                    validate_outcomes = []
-
-                    def run_stuck_validate():
-                        try:
-                            validate_outcomes.append(
-                                call(portal, client_a, "validate_flow", workspace_id=workspace_id, sheet="Main", session_id=session_a)
-                            )
-                        except BaseException as exc:
-                            validate_outcomes.append(exc)
-
-                    worker = Thread(target=run_stuck_validate, daemon=True)
-                    worker.start()
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    stuck_validation = executor.submit(
+                        call, portal, client_a, "validate_flow",
+                        workspace_id=workspace_id, sheet="Main", session_id=session_a,
+                    )
                     wait_for(lambda: (root / "stuck-started").is_file() and (root / "stuck-pid").is_file())
                     stuck_pid = int((root / "stuck-pid").read_text(encoding="utf-8"))
                     self.assertFalse(process_exited(stuck_pid))
@@ -319,8 +313,9 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(confirm_dialog).to_be_hidden()
 
                     wait_for(lambda: process_exited(stuck_pid))
-                    worker.join(timeout=5)
-                    self.assertFalse(worker.is_alive())
+                    wait([stuck_validation], timeout=5)
+                    self.assertTrue(stuck_validation.done())
+                    executor.shutdown(wait=False)
                     expect(page.locator("#edit-lock-message")).to_be_hidden()
 
                     flow = page.frame_locator('iframe[title="Main flow"]')
@@ -491,20 +486,26 @@ class ApplicationForceOpenTests(unittest.TestCase):
                     expect(result).to_be_visible()
                     self.assertEqual(json.loads(result.inner_text()), {"message": "Saved output"})
 
-            with application(state) as restarted_url:
-                with portal.wrap_async_context_manager(mcp_client(restarted_url, token_a)) as old_after_restart:
-                    rejected_after_restart = call(
-                        portal, old_after_restart, "write_file",
-                        workspace_id=workspace_id, path="flow.py",
-                        revision=output(wrote_flow)["revision"],
-                        source=saved_flow.replace('"Saved Node"', '"Zombie"'),
-                        sheet="Main", session_id=session_a,
-                    )
-                    self.assertTrue(rejected_after_restart.is_error)
-                    self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
+            with (
+                application(state) as restarted_url,
+                portal.wrap_async_context_manager(mcp_client(restarted_url, token_a)) as old_after_restart,
+            ):
+                rejected_after_restart = call(
+                    portal, old_after_restart, "write_file",
+                    workspace_id=workspace_id, path="flow.py",
+                    revision=output(wrote_flow)["revision"],
+                    source=saved_flow.replace('"Saved Node"', '"Zombie"'),
+                    sheet="Main", session_id=session_a,
+                )
+                self.assertTrue(rejected_after_restart.is_error)
+                self.assertEqual((root / "flow.py").read_text(encoding="utf-8"), saved_flow)
 
     def test_invalidated_sessions_are_not_evicted_after_many_force_opens(self):
-        from workspace_sdk.sheet_locks import MAX_TRACKED_SESSIONS, SheetEditLease, SheetLockedError
+        from workspace_sdk.sheet_locks import (
+            MAX_TRACKED_SESSIONS,
+            SheetEditLease,
+            SheetLockedError,
+        )
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

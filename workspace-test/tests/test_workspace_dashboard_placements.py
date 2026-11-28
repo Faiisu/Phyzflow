@@ -4,9 +4,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from playwright.sync_api import expect
-
 from browser_support import browser_page, local_ui
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_lifecycle import create_workspace, wait_for
 from workspace_sdk.sheets import create_sheet

@@ -1,17 +1,15 @@
+import json
+import unittest
 from pathlib import Path
 from shutil import copytree, ignore_patterns
 from tempfile import TemporaryDirectory
-import json
-import unittest
 
 from anyio.from_thread import start_blocking_portal
-from playwright.sync_api import expect
-
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_edit_locks import issue_token, wait_for_open_sheet
 from test_application_mcp import call, mcp_client, output
-
 
 LIVE_COUNTER = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Live Counter"
 

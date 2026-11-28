@@ -1,12 +1,11 @@
-from hashlib import sha256
 import json
+import unittest
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_lifecycle import create_workspace
 from workspace_sdk.sheets import create_sheet
@@ -128,7 +127,7 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     self.assertEqual(module.headers["content-type"], "text/javascript; charset=utf-8")
                     self.assertEqual(page.request.get(f"{workspace_url}workspace/unknown.js").status, 404)
                     reloads = []
-                    page.on("request", lambda request: reloads.append(request.url) if "/reload/" in request.url else None)
+                    page.on("request", lambda request, reloads=reloads: reloads.append(request.url) if "/reload/" in request.url else None)
                     flow.get_by_role("button", name="Inspect Start").dblclick()
                     dialog = flow.get_by_role("dialog", name="Start files")
                     if failing_run:
@@ -150,7 +149,7 @@ class ApplicationSavedSourceTests(unittest.TestCase):
                     dialog.get_by_role("button", name="Close node files").click()
                     expect(page.locator("#reload-message")).to_contain_text("Source changed.")
                     for _ in range(4):
-                        page.wait_for_event("response", predicate=lambda response: response.url == f"{workspace_url}workspace")
+                        page.wait_for_event("response", predicate=lambda response, workspace_url=workspace_url: response.url == f"{workspace_url}workspace")
                     self.assertEqual(reloads, [])
                     expect(tab).to_contain_text("Ready")
                     expect(flow.get_by_role("button", name="Inspect Start")).to_be_visible()

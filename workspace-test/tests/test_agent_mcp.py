@@ -1,11 +1,12 @@
 """Public MCP subprocess -> verified TLS relay -> real authenticated Edge."""
 import asyncio
-import json
 import importlib.util
-from pathlib import Path
+import json
 import sys
 import time
 import unittest
+from pathlib import Path
+
 import test_agent_remote as remote_fixture
 
 

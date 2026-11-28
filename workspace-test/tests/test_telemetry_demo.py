@@ -1,12 +1,11 @@
 import json
-from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import unittest
-
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 DEMO = Path(__file__).resolve().parents[1] / "sheets-demo" / "flows" / "Telemetry Control Room"
 
@@ -25,7 +24,7 @@ class TelemetryDemoTests(unittest.TestCase):
                     cwd=project,
                     capture_output=True,
                     text=True,
-                    timeout=15,
+                    timeout=15, check=False,
                 )
 
             scoring = run("score")

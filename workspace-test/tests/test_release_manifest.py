@@ -1,13 +1,12 @@
 import json
 import os
-from pathlib import Path
-from shutil import copytree, ignore_patterns
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 import tomllib
 import unittest
-
+from pathlib import Path
+from shutil import copytree, ignore_patterns
+from tempfile import TemporaryDirectory
 
 WORKSPACE = Path(__file__).resolve().parents[2] / "workspace"
 BUILDER = WORKSPACE / "release" / "build_wheel.py"
@@ -15,7 +14,7 @@ MODULES = {"application", "cli", "runner", "web_ui", "mcp"}
 
 
 def command(*args, cwd):
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
     if result.returncode:
         raise AssertionError(f"{args} exited with {result.returncode}\n{result.stdout}\n{result.stderr}")
     return result.stdout.strip()
@@ -98,7 +97,7 @@ class ReleaseManifestTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, BUILDER, "--source", source, "--out-dir", rejected_output,
              "--previous-manifest", previous],
-            capture_output=True, text=True, cwd=root,
+            capture_output=True, text=True, cwd=root, check=False,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Invalid previous release manifest", result.stderr)

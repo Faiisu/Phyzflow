@@ -1,20 +1,19 @@
 import json
+import subprocess
+import sys
+import tomllib
+import unittest
 from pathlib import Path
 from shutil import copytree
-import subprocess
-import tomllib
-import sys
 from tempfile import TemporaryDirectory
 from time import sleep
-import unittest
 from urllib.parse import urljoin
 from urllib.request import urlopen
 
+from browser_support import browser_page, local_ui, show_panel
 from playwright.sync_api import expect
 from workspace_sdk.sheets import create_sheet
 from workspace_sdk.ui_settings import load_ui_settings
-
-from browser_support import browser_page, local_ui, show_panel
 
 
 class WorkspaceSheetTests(unittest.TestCase):
@@ -271,7 +270,7 @@ flow = Flow((), (Step("Main node", lambda: 1, {}),), Output("Main node"))
                 result = subprocess.run([str(cli), "run", "{}"], cwd=root, capture_output=True, text=True, check=True)
                 self.assertEqual(json.loads(result.stdout), 6)
                 settings.write_text('{"Limit": "invalid"}')
-                result = subprocess.run([str(cli), "check"], cwd=root, capture_output=True, text=True)
+                result = subprocess.run([str(cli), "check"], cwd=root, capture_output=True, text=True, check=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"Node settings: {settings}: Limit: Expected a int setting.", result.stderr)
 

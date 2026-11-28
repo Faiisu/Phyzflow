@@ -1,19 +1,19 @@
 """Durable operations through the installed agent process and HTTP client."""
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 import json
-from http.client import HTTPException
-from urllib.error import URLError
-from pathlib import Path
 import socket
 import subprocess
 import sys
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from http.client import HTTPException
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
-import unittest
+from urllib.error import URLError
 
-from workspace_sdk.agent import AgentClient
 from test_agent_jobs import wait_job
+from workspace_sdk.agent import AgentClient
 
 
 @contextmanager
@@ -124,9 +124,11 @@ class AgentPersistenceTests(unittest.TestCase):
                 process.kill()
                 process.wait()
                 # The previous watchdog keeps the instance lock until cleanup finishes.
-                with self.assertRaisesRegex(AssertionError, 'already using'):
-                    with agent_process(root, state):
-                        pass
+                with (
+                    self.assertRaisesRegex(AssertionError, 'already using'),
+                    agent_process(root, state),
+                ):
+                    pass
                 sleep(1.3)
             with agent_process(root, state) as (client, _):
                 job = client.request('get', 'demo', 'get_job', {'job_id': job_id})['result']
@@ -144,9 +146,11 @@ class AgentPersistenceTests(unittest.TestCase):
             root.mkdir()
             state = Path(temp) / 'state'
             with agent_process(root, state) as (client, process):
-                with self.assertRaisesRegex(AssertionError, 'already using'):
-                    with agent_process(root, state):
-                        pass
+                with (
+                    self.assertRaisesRegex(AssertionError, 'already using'),
+                    agent_process(root, state),
+                ):
+                    pass
                 started = client.request('start', 'demo', 'run_command', {'program': 'python', 'argv': ['-c', 'import time; print("ready",flush=True); time.sleep(2); open("survived.txt","w").write("bad")']})['result']
                 sleep(.1)
                 process.terminate()
@@ -215,6 +219,8 @@ class AgentPersistenceTests(unittest.TestCase):
                 replay = client.request('write', 'demo', 'write_file', arguments)
                 self.assertEqual(replay['error']['code'], 'request_conflict')
                 self.assertFalse(client.request('read', 'demo', 'read_file', {'path': 'value.py'})['ok'])
-            with self.assertRaisesRegex(AssertionError, 'outside configured projects'):
-                with agent_process(other, other / 'state'):
-                    pass
+            with (
+                self.assertRaisesRegex(AssertionError, 'outside configured projects'),
+                agent_process(other, other / 'state'),
+            ):
+                pass

@@ -1,15 +1,13 @@
-from datetime import date, datetime, timezone
 import json
 import os
+import unittest
+from datetime import UTC, date, datetime
 from pathlib import Path
 from stat import S_IMODE
 from tempfile import TemporaryDirectory
-from time import sleep
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_lifecycle import create_workspace, wait_for
 from workspace_sdk.console import ConsoleLogStore
@@ -350,7 +348,6 @@ def start(mode):
                 wait_for(lambda: prior_segment.is_file())
 
                 page.get_by_role("tab", name="Secondary").click()
-                secondary = page.frame_locator('iframe[title="Secondary flow"]')
                 page.get_by_role("button", name="Run flow").click()
                 expect(page.get_by_role("tab", name="Secondary")).to_contain_text("Succeeded")
                 sec_run_id = page.request.get(workspace_url + "workspace").json()["flows"][1]["run_id"]
@@ -424,7 +421,7 @@ def start(mode):
                 self.assertEqual(store.current_date(), date(2026, 11, 22))
                 (root / ".workspace" / "log-date").unlink()
                 del os.environ["PHYZFLOW_LOG_DATE"]
-                self.assertEqual(store.current_date(), datetime.now(timezone.utc).date())
+                self.assertEqual(store.current_date(), datetime.now(UTC).date())
             finally:
                 if previous is None:
                     os.environ.pop("PHYZFLOW_LOG_DATE", None)

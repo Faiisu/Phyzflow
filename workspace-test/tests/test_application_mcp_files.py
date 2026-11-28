@@ -1,29 +1,32 @@
+import json
+import os
+import subprocess
+import sys
+import unittest
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from hashlib import file_digest, sha256
 from io import BytesIO
-import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 from uuid import uuid4
 from zipfile import ZipFile
 
-from anyio.from_thread import start_blocking_portal
 import httpx2
-from playwright.sync_api import expect
-
+from anyio.from_thread import start_blocking_portal
 from browser_support import browser_page
+from playwright.sync_api import expect
 from test_application import application, sign_in
 from test_application_mcp import mcp_client, output
-from workspace_sdk.application_mcp.access import McpTokens, WorkspaceAccess, request_identity
+from workspace_sdk.application_mcp.access import (
+    McpTokens,
+    WorkspaceAccess,
+    request_identity,
+)
 from workspace_sdk.application_mcp.file_transfers import CHUNK_BYTES, FileTransfers
 
 
@@ -86,7 +89,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
             upload = subprocess.run([
                 sys.executable, "-m", "workspace_sdk.application_mcp.file_client",
                 "--url", url, "--workspace-id", workspace_id, "upload", "--uploads", str(source), path,
-            ], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, timeout=25)
+            ], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, timeout=25, check=False)
             self.assertEqual(upload.returncode, 0, upload.stderr)
             self.assertEqual(json.loads(upload.stdout)["sha256"], digest)
             saved = root / ".workspace/files" / path
@@ -279,7 +282,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                 source.write_bytes(content)
                 for args in (["upload", str(source), name], ["download", name, str(destination)]):
                     result = subprocess.run([*command, *args], env={**os.environ, "PHYZFLOW_MCP_TOKEN": token},
-                                            capture_output=True, text=True)
+                                            capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(json.loads(result.stdout)["sha256"], sha256(content).hexdigest())
                 self.assertEqual(destination.read_bytes(), content)
@@ -348,7 +351,7 @@ class ApplicationMcpFilesTests(unittest.TestCase):
                     start = monotonic()
                     timer = ["/usr/bin/time", "-l"] if sys.platform == "darwin" else []
                     result = subprocess.run([*timer, *command, *arguments],
-                                            env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True)
+                                            env={**os.environ, "PHYZFLOW_MCP_TOKEN": token}, capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     print(f"{arguments[0]} elapsed: {monotonic() - start:.2f}s", flush=True)
                     if timer:

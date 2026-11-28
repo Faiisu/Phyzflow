@@ -1,6 +1,6 @@
-from contextlib import suppress
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, Popen
 from tempfile import TemporaryDirectory
@@ -25,7 +25,7 @@ def register_validation_tools(server, access: WorkspaceAccess) -> None:
     async def validate_flow(
         workspace_id: WorkspaceId, sheet: SheetName = "Main", session_id: OptionalEditSession = None,
     ) -> dict[str, Any]:
-        from anyio import CancelScope, get_cancelled_exc_class, to_thread
+        from anyio import get_cancelled_exc_class, to_thread
 
         root, flow_sheet = resolve_workspace_sheet(access, workspace_id, sheet)
         interpreter = workspace_interpreter(root)
@@ -49,29 +49,25 @@ def register_validation_tools(server, access: WorkspaceAccess) -> None:
                 "PYTHONNOUSERSITE": "1",
                 "PYTHONUNBUFFERED": "1",
             }
+
+            def spawn():
+                options = {
+                    "cwd": flow_sheet.root,
+                    "env": env,
+                    "stdin": DEVNULL,
+                    "stdout": DEVNULL,
+                    "stderr": PIPE,
+                }
+                if os.name == "posix":
+                    return spawn_supervised(argv, **options)
+                return Popen(argv, **options), None
+
             lifeline = None
             process = None
             registered = False
             disconnected = False
             try:
-                if os.name == "posix":
-                    process, lifeline = spawn_supervised(
-                        argv,
-                        cwd=flow_sheet.root,
-                        env=env,
-                        stdin=DEVNULL,
-                        stdout=DEVNULL,
-                        stderr=PIPE,
-                    )
-                else:
-                    process = Popen(
-                        argv,
-                        cwd=flow_sheet.root,
-                        env=env,
-                        stdin=DEVNULL,
-                        stdout=DEVNULL,
-                        stderr=PIPE,
-                    )
+                process, lifeline = await to_thread.run_sync(spawn)
                 if session_id is not None:
                     try:
                         flow_sheet.edit_lease.register_process(session_id, process, lifeline)
@@ -84,18 +80,17 @@ def register_validation_tools(server, access: WorkspaceAccess) -> None:
                     disconnected = True
                 raise
             finally:
-                with CancelScope(shield=True):
-                    if process is not None:
-                        flow_sheet.edit_lease.cleanup_process(
-                            session_id if registered else None,
-                            process,
-                            lifeline,
-                        )
-                    elif lifeline is not None:
-                        with suppress(OSError):
-                            os.close(lifeline)
-                    if disconnected and session_id is not None:
-                        flow_sheet.edit_lease.mark_disconnected(session_id)
+                if process is not None:
+                    flow_sheet.edit_lease.cleanup_process(
+                        session_id if registered else None,
+                        process,
+                        lifeline,
+                    )
+                elif lifeline is not None:
+                    with suppress(OSError):
+                        os.close(lifeline)
+                if disconnected and session_id is not None:
+                    flow_sheet.edit_lease.mark_disconnected(session_id)
             if session_id is not None and flow_sheet.edit_lease.is_invalidated(session_id):
                 raise ToolError("This editing session is no longer active.")
             if result_path.is_file():

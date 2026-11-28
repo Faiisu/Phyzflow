@@ -1,23 +1,22 @@
-from contextlib import contextmanager
 import json
 import os
-from pathlib import Path
 import signal
-from stat import S_IMODE
 import subprocess
 import sys
+import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from stat import S_IMODE
 from tempfile import TemporaryDirectory
 from time import sleep
-import unittest
-
-from playwright.sync_api import expect
 
 from browser_support import browser_page, show_panel
+from playwright.sync_api import expect
 from test_application import read_application_line, sign_in
 from test_application_crash_restart import kill_worker
 from test_application_lifecycle import create_workspace, process_exited, wait_for
 from workspace_sdk.history import RunHistory
-from workspace_sdk.runner import Flow, Step, Output, run
+from workspace_sdk.runner import Flow, Output, Step, run
 from workspace_sdk.sheet_locks import SheetEditLease
 from workspace_sdk.sheet_runs import RunStateStore
 from workspace_sdk.sheets import create_sheet, discover_flows, initialize_workspace
@@ -231,25 +230,27 @@ class ApplicationRestoreRunsTests(unittest.TestCase):
             root = parent / "Abrupt"
             state = parent / "state"
 
-            with browser_page() as page:
-                with managed_application(state, shutdown_signal=None) as (url, _):
-                    workspace = create_workspace(page, url, state, root)
-                    sheets = write_restorable_workspace_sheets(root)
-                    workspace.click()
-                    status_url = page.url + "workspace"
+            with (
+                browser_page() as page,
+                managed_application(state, shutdown_signal=None) as (url, _),
+            ):
+                workspace = create_workspace(page, url, state, root)
+                sheets = write_restorable_workspace_sheets(root)
+                workspace.click()
+                status_url = page.url + "workspace"
 
-                    main_frame = page.frame_locator('iframe[title="Main flow"]')
-                    main_frame.locator("#input").fill('{"value": "Survives sigkill"}')
-                    main_frame.get_by_role("button", name="Run with this input").click()
-                    expect(page.get_by_role("tab", name="Main")).to_contain_text("Running")
-                    page.get_by_role("button", name="Run All").click()
+                main_frame = page.frame_locator('iframe[title="Main flow"]')
+                main_frame.locator("#input").fill('{"value": "Survives sigkill"}')
+                main_frame.get_by_role("button", name="Run with this input").click()
+                expect(page.get_by_role("tab", name="Main")).to_contain_text("Running")
+                page.get_by_role("button", name="Run All").click()
 
-                    for directory in sheets.values():
-                        wait_for(lambda d=directory: len(read_lines(d / "starts")) == 1)
-                    wait_for(lambda: (sheets["Continuous"] / "units").exists())
-                    before_states = {flow["name"]: flow for flow in page.request.get(status_url).json()["flows"]}
-                    first_pids = {name: read_lines(directory / "starts")[0][0] for name, directory in sheets.items()}
-                    child_pid = int((sheets["Continuous"] / "child-pid").read_text())
+                for directory in sheets.values():
+                    wait_for(lambda d=directory: len(read_lines(d / "starts")) == 1)
+                wait_for(lambda: (sheets["Continuous"] / "units").exists())
+                before_states = {flow["name"]: flow for flow in page.request.get(status_url).json()["flows"]}
+                first_pids = {name: read_lines(directory / "starts")[0][0] for name, directory in sheets.items()}
+                child_pid = int((sheets["Continuous"] / "child-pid").read_text())
 
             with managed_application(state, shutdown_signal=signal.SIGINT) as (url, _):
                 for pid in first_pids.values():
@@ -512,12 +513,14 @@ def start():
             root = parent / "DeletedSheet"
             state = parent / "state"
 
-            with browser_page() as page:
-                with managed_application(state, shutdown_signal=signal.SIGINT) as (url, _):
-                    workspace = create_workspace(page, url, state, root)
-                    ephemeral = create_sheet(root, "Ephemeral").parent
-                    (ephemeral / "nodes/start/entrypoint.py").write_text(
-                        '''from pathlib import Path
+            with (
+                browser_page() as page,
+                managed_application(state, shutdown_signal=signal.SIGINT) as (url, _),
+            ):
+                workspace = create_workspace(page, url, state, root)
+                ephemeral = create_sheet(root, "Ephemeral").parent
+                (ephemeral / "nodes/start/entrypoint.py").write_text(
+                    '''from pathlib import Path
 from time import sleep
 
 def start():
@@ -525,25 +528,25 @@ def start():
     while True:
         sleep(.02)
 ''',
-                        encoding="utf-8",
-                    )
-                    workspace.click()
-                    page.get_by_role("button", name="Run All").click()
-                    wait_for(lambda: (ephemeral / "starts").exists())
-                    page.get_by_role("button", name="Delete Ephemeral").click()
-                    page.get_by_role("dialog", name="Delete sheet?").get_by_role("button", name="Delete sheet").click()
-                    expect(page.get_by_role("tab", name="Ephemeral")).to_have_count(0)
+                    encoding="utf-8",
+                )
+                workspace.click()
+                page.get_by_role("button", name="Run All").click()
+                wait_for(lambda: (ephemeral / "starts").exists())
+                page.get_by_role("button", name="Delete Ephemeral").click()
+                page.get_by_role("dialog", name="Delete sheet?").get_by_role("button", name="Delete sheet").click()
+                expect(page.get_by_role("tab", name="Ephemeral")).to_have_count(0)
 
-                    recreated = create_sheet(root, "Ephemeral").parent
-                    (recreated / "nodes/start/entrypoint.py").write_text(
-                        '''from pathlib import Path
+                recreated = create_sheet(root, "Ephemeral").parent
+                (recreated / "nodes/start/entrypoint.py").write_text(
+                    '''from pathlib import Path
 
 def start():
     Path("starts").write_text("recreated", encoding="utf-8")
     return "ok"
 ''',
-                        encoding="utf-8",
-                    )
+                    encoding="utf-8",
+                )
 
             with managed_application(state, shutdown_signal=signal.SIGINT) as (url, _):
                 sleep(.6)
